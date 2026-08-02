@@ -30,6 +30,29 @@ function weekKey(d = new Date()) {
   return `${x.getUTCFullYear()}-W${String(wk).padStart(2, '0')}`;
 }
 
+/* ---------- calendar categories & helpers ---------- */
+const CATS = { School:'#3b82f6', Work:'#f59e0b', Gym:'#10b981', Study:'#06b6d4', Personal:'#ec4899', Free:'#a855f7', Other:'#64748b' };
+const catColor = c => CATS[c] || CATS.Other;
+// events for a given date = one-off events on that date + recurring events on that weekday
+function eventsForDate(iso) {
+  const wd = parseISO(iso).getDay();
+  return S.calendar.events
+    .filter(e => e.recurring ? e.weekday === wd : e.date === iso)
+    .sort((a, b) => (a.start || a.time || '').localeCompare(b.start || b.time || ''));
+}
+const evTime = e => { const s = e.start || e.time || '', en = e.end || ''; return s ? (en ? `${s}–${en}` : s) : ''; };
+// keep a one-off event's cost mirrored as a linked expense in the Money tab
+function syncEventCost(ev) {
+  const idx = S.money.transactions.findIndex(t => t.eventId === ev.id);
+  if (!ev.recurring && ev.cost > 0) {
+    const txn = { id: idx >= 0 ? S.money.transactions[idx].id : uid(), eventId: ev.id,
+      desc: ev.title, amount: ev.cost, category: ev.category, date: ev.date || todayISO(), dir: 'out' };
+    if (idx >= 0) S.money.transactions[idx] = txn; else S.money.transactions.push(txn);
+  } else if (idx >= 0) {
+    S.money.transactions.splice(idx, 1);   // recurring or cost cleared → drop the linked expense
+  }
+}
+
 /* ---------- default state ---------- */
 function defaultState() {
   const t = todayISO();
@@ -335,7 +358,7 @@ function renderHome() {
   const dateStr = `${DOW[now.getDay()]}, ${now.getDate()} ${MON[now.getMonth()]}`;
   const wx = weatherCache;
 
-  const todaysEvents = S.calendar.events.filter(e => e.date === todayISO()).sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+  const todaysEvents = eventsForDate(todayISO());
   const wk = weekKey();
   const mustDo = S.systems.weekly.filter(m => !m.weeks[wk]);
 
@@ -360,8 +383,9 @@ function renderHome() {
     <div class="card">
       <div class="list">
         ${todaysEvents.length ? todaysEvents.map(e => `
-          <div class="item"><span class="dot"></span>
-            <div class="body"><div class="t">${esc(e.title)}</div>${e.time ? `<div class="s">${esc(e.time)}</div>` : ''}</div>
+          <div class="item" style="border-left:4px solid ${catColor(e.category)}">
+            <div class="body"><div class="t">${esc(e.title)}</div><div class="s">${[evTime(e), e.category].filter(Boolean).map(esc).join(' · ')}</div></div>
+            ${e.cost>0?`<div class="trail">${AUD(e.cost,0)}</div>`:''}
           </div>`).join('') : `<div class="empty">Nothing scheduled today</div>`}
       </div>
       ${mustDo.length ? `<hr class="hr"><div class="small muted" style="margin-bottom:8px">This week's must-dos</div>
@@ -407,6 +431,9 @@ function renderCalendar() {
       </div>
       <button class="btn primary sm" data-act="addEvent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Add</button>
     </div>
+    <div class="pill-row" style="margin:12px 2px 4px">
+      ${Object.entries(CATS).map(([k,c])=>`<span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--text-2)"><i style="width:9px;height:9px;border-radius:3px;background:${c}"></i>${k}</span>`).join('')}
+    </div>
     <div id="calBody"></div>`;
   renderCalBody();
 }
@@ -423,9 +450,7 @@ function calMonth() {
   const start = new Date(first); start.setDate(1 - first.getDay());   // Sunday-first grid
   const cells = [];
   for (let i = 0; i < 42; i++) { const d = new Date(start); d.setDate(start.getDate() + i); cells.push(d); }
-  const evByDay = {};
-  S.calendar.events.forEach(e => { (evByDay[e.date] = evByDay[e.date] || []).push(e); });
-  const selEvents = (evByDay[calSel] || []).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
+  const selEvents = eventsForDate(calSel);
   return `
     <div class="card">
       <div class="section-head" style="margin:0 0 10px">
@@ -436,10 +461,10 @@ function calMonth() {
       <div class="cal-grid">
         ${DOW.map(d => `<div class="dow">${d[0]}</div>`).join('')}
         ${cells.map(d => {
-          const iso = todayISO(d), evs = evByDay[iso] || [];
+          const iso = todayISO(d), evs = eventsForDate(iso);
           const cls = [d.getMonth()!==m?'mute':'', iso===todayISO()?'today':'', iso===calSel?'sel':''].filter(Boolean).join(' ');
           return `<button class="cal-cell ${cls}" data-act="calPick" data-d="${iso}">${d.getDate()}
-            ${evs.length?`<span class="evs">${evs.slice(0,3).map(()=>'<i></i>').join('')}</span>`:''}</button>`;
+            ${evs.length?`<span class="evs">${evs.slice(0,3).map(e=>`<i style="background:${catColor(e.category)}"></i>`).join('')}</span>`:''}</button>`;
         }).join('')}
       </div>
     </div>
@@ -448,22 +473,21 @@ function calMonth() {
 }
 function calWeek() {
   const base = parseISO(calSel);
-  const monday = new Date(base); monday.setDate(base.getDate() - ((base.getDay()+6)%7));
-  const days = [...Array(7)].map((_, i) => { const d = new Date(monday); d.setDate(monday.getDate()+i); return d; });
-  return `
-    <div class="weekstrip">
-      ${days.map(d => { const iso = todayISO(d); const has = S.calendar.events.some(e=>e.date===iso);
-        return `<button class="wday ${iso===calSel?'on':''}" data-act="calPick" data-d="${iso}">
-          <div class="n">${DOW[d.getDay()]}</div><div class="d">${d.getDate()}</div>${has?'<div style="height:4px"></div>':''}</button>`; }).join('')}
-    </div>
-    <div class="spacer"></div>
-    ${days.map(d => { const iso = todayISO(d); const evs = S.calendar.events.filter(e=>e.date===iso).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
-      if (!evs.length) return '';
-      return `<div class="section-head"><h3>${fmtDay(iso)}</h3></div>${dayList(evs)}`; }).join('') ||
-      `<div class="card"><div class="empty">No events this week</div></div>`}`;
+  const sunday = new Date(base); sunday.setDate(base.getDate() - base.getDay());
+  const days = [...Array(7)].map((_, i) => { const d = new Date(sunday); d.setDate(sunday.getDate()+i); return d; });
+  return `<div class="small muted" style="margin:2px 2px 8px">Swipe across your week →</div>
+    <div class="weekcols">
+      ${days.map(d => { const iso = todayISO(d); const evs = eventsForDate(iso); const isToday = iso===todayISO();
+        return `<div class="daycol ${isToday?'today':''}">
+          <div class="dch"><span class="dn">${DOW[d.getDay()]}</span><span class="dd">${d.getDate()}</span></div>
+          ${evs.map(e=>`<div class="evcard tap" data-act="editEvent" data-id="${e.id}" style="border-left-color:${catColor(e.category)}">
+            <div class="et">${esc(e.title)}</div><div class="es">${esc(evTime(e)||e.category)}</div></div>`).join('')}
+          <button class="addmini" data-act="addEventOn" data-d="${iso}">+ add</button>
+        </div>`; }).join('')}
+    </div>`;
 }
 function calDay() {
-  const evs = S.calendar.events.filter(e => e.date === calSel).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
+  const evs = eventsForDate(calSel);
   return `
     <div class="card">
       <div class="section-head" style="margin:0">
@@ -477,9 +501,10 @@ function calDay() {
 function dayList(evs) {
   if (!evs.length) return `<div class="card"><div class="empty">No events. Tap “Add”.</div></div>`;
   return `<div class="card"><div class="list">${evs.map(e => `
-    <div class="item tap" data-act="editEvent" data-id="${e.id}">
-      <div class="trail">${e.time || '—'}</div>
-      <div class="body"><div class="t">${esc(e.title)}</div>${e.notes?`<div class="s">${esc(e.notes)}</div>`:''}</div>
+    <div class="item tap" data-act="editEvent" data-id="${e.id}" style="border-left:4px solid ${catColor(e.category)}">
+      <div class="body"><div class="t">${esc(e.title)}${e.recurring?' <span class="chip" style="padding:1px 7px;font-size:10px">weekly</span>':''}</div>
+        <div class="s">${[evTime(e), e.category, e.cost>0?AUD(e.cost,0):''].filter(Boolean).map(esc).join(' · ')}</div>
+        ${e.notes?`<div class="s">${esc(e.notes)}</div>`:''}</div>
     </div>`).join('')}</div></div>`;
 }
 
@@ -707,23 +732,38 @@ const ACT = {
   dayPrev() { const x = parseISO(calSel); x.setDate(x.getDate()-1); calSel = todayISO(x); renderCalBody(); },
   dayNext() { const x = parseISO(calSel); x.setDate(x.getDate()+1); calSel = todayISO(x); renderCalBody(); },
   addEvent() { ACT.editEvent({ id: '' }); },
+  addEventOn(d) { calSel = d.d; ACT.editEvent({ id: '' }); },
   editEvent(d) {
-    const e = S.calendar.events.find(x => x.id === d.id) || { date: calSel };
-    sheetForm(d.id?'Edit event':'New event', '',
-      field('Title','ev_title',{val:e.title,ph:'e.g. Gym, Meeting'}) +
+    const e = S.calendar.events.find(x => x.id === d.id) || { date: calSel, category:'Personal', recurring:false };
+    sheetForm(d.id?'Edit event':'New event', 'Weekly repeats on the weekday of the date you pick.',
+      field('Title','ev_title',{val:e.title,ph:'e.g. Gym, Work, Meeting'}) +
+      field('Category','ev_cat',{type:'select',val:e.category||'Personal',options:Object.keys(CATS)}) +
+      field('Repeat','ev_rep',{type:'select',val:e.recurring?'Every week':'Does not repeat',options:['Does not repeat','Every week']}) +
       field('Date','ev_date',{type:'date',val:e.date||calSel}) +
-      field('Time','ev_time',{type:'time',val:e.time||''}) +
+      `<div class="row">${field('Start','ev_start',{type:'time',val:e.start||e.time||''})}${field('End','ev_end',{type:'time',val:e.end||''})}</div>` +
+      field('Cost (optional)','ev_cost',{type:'number',step:'any',val:e.cost||'',inputmode:'decimal'}) +
       field('Notes','ev_notes',{type:'textarea',val:e.notes,ph:'Optional'}),
       { save:'saveEvent', id:d.id, del:d.id?'delEvent':'' });
   },
   saveEvent(d) {
     const title = val('ev_title'); if (!title) return toast('Add a title');
-    const rec = { title, date: val('ev_date')||calSel, time: val('ev_time'), notes: val('ev_notes') };
-    if (d.id) Object.assign(S.calendar.events.find(x=>x.id===d.id), rec);
-    else S.calendar.events.push({ id: uid(), ...rec });
-    save(); closeSheet(); calSel = rec.date; render('calendar'); toast('Saved');
+    const recurring = val('ev_rep') === 'Every week';
+    const date = val('ev_date') || calSel;
+    const rec = { title, category: val('ev_cat')||'Personal', recurring,
+      date: recurring ? null : date, weekday: parseISO(date).getDay(),
+      start: val('ev_start'), end: val('ev_end'), cost: num(val('ev_cost')), notes: val('ev_notes') };
+    let ev;
+    if (d.id) { ev = S.calendar.events.find(x=>x.id===d.id); Object.assign(ev, rec); }
+    else { ev = { id: uid(), ...rec }; S.calendar.events.push(ev); }
+    syncEventCost(ev);
+    save(); closeSheet(); if (!recurring) calSel = date; render('calendar');
+    toast(rec.cost>0 && !recurring ? 'Saved · logged to Money' : 'Saved');
   },
-  delEvent(d) { S.calendar.events = S.calendar.events.filter(x=>x.id!==d.id); save(); closeSheet(); render('calendar'); },
+  delEvent(d) {
+    S.calendar.events = S.calendar.events.filter(x=>x.id!==d.id);
+    S.money.transactions = S.money.transactions.filter(t=>t.eventId!==d.id);
+    save(); closeSheet(); render('calendar');
+  },
 
   /* ----- water ----- */
   water(d) {
