@@ -128,10 +128,20 @@ let weatherCache = null;
 function load() {
   try {
     const raw = localStorage.getItem(LS_KEY);
-    if (!raw) return defaultState();
+    if (!raw) return recoverBackup() || defaultState();
     const parsed = JSON.parse(raw);
+    localStorage.setItem(LS_KEY + '_backup', raw);   // keep a last-known-good copy
+    // deepMerge over a fresh default = any NEW fields a new version adds get defaults,
+    // while every existing value the user has is preserved (safe schema upgrade).
     return deepMerge(defaultState(), parsed);
-  } catch (e) { console.warn('load failed', e); return defaultState(); }
+  } catch (e) {
+    console.warn('load failed, trying backup', e);
+    return recoverBackup() || defaultState();
+  }
+}
+function recoverBackup() {
+  try { const b = localStorage.getItem(LS_KEY + '_backup'); return b ? deepMerge(defaultState(), JSON.parse(b)) : null; }
+  catch { return null; }
 }
 function deepMerge(base, over) {
   if (Array.isArray(base)) return Array.isArray(over) ? over : base;
