@@ -3,7 +3,8 @@
 
 # macOS
 .DS_Store
-Icon?
+Icon
+
 
 # editor / preview cruft
 .vercel
