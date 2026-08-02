@@ -338,7 +338,7 @@ function upcomingBills() {
    Rendering
    ============================================================ */
 let currentTab = 'home';
-let calView = 'month', calCursor = new Date(), calSel = todayISO();
+let calView = 'week', calCursor = new Date(), calSel = todayISO();
 
 function renderAll() { render(currentTab); refreshBadges(); }
 function render(tab) {
@@ -475,16 +475,26 @@ function calWeek() {
   const base = parseISO(calSel);
   const sunday = new Date(base); sunday.setDate(base.getDate() - base.getDay());
   const days = [...Array(7)].map((_, i) => { const d = new Date(sunday); d.setDate(sunday.getDate()+i); return d; });
-  return `<div class="small muted" style="margin:2px 2px 8px">Swipe across your week →</div>
-    <div class="weekcols">
+  const end = days[6];
+  const range = `${sunday.getDate()} ${MON[sunday.getMonth()].slice(0,3)} – ${end.getDate()} ${MON[end.getMonth()].slice(0,3)}`;
+  return `<div class="card" style="padding:8px">
+    <div class="section-head" style="margin:4px 6px 6px">
+      <button class="iconbtn" data-act="weekPrev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M15 6l-6 6 6 6"/></svg></button>
+      <h3>${range}</h3>
+      <button class="iconbtn" data-act="weekNext"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></button>
+    </div>
+    <div class="dayrows">
       ${days.map(d => { const iso = todayISO(d); const evs = eventsForDate(iso); const isToday = iso===todayISO();
-        return `<div class="daycol ${isToday?'today':''}">
-          <div class="dch"><span class="dn">${DOW[d.getDay()]}</span><span class="dd">${d.getDate()}</span></div>
-          ${evs.map(e=>`<div class="evcard tap" data-act="editEvent" data-id="${e.id}" style="border-left-color:${catColor(e.category)}">
-            <div class="et">${esc(e.title)}</div><div class="es">${esc(evTime(e)||e.category)}</div></div>`).join('')}
-          <button class="addmini" data-act="addEventOn" data-d="${iso}">+ add</button>
+        return `<div class="dayrow ${isToday?'today':''}">
+          <button class="dlabel tap" data-act="addEventOn" data-d="${iso}"><span class="dn">${DOW[d.getDay()]}</span><span class="dd">${d.getDate()}</span></button>
+          <div class="devents">
+            ${evs.map(e=>`<div class="evchip tap" data-act="editEvent" data-id="${e.id}" style="border-left-color:${catColor(e.category)}">
+              <span class="et">${esc(e.title)}</span>${evTime(e)?`<span class="es">${esc(evTime(e))}</span>`:''}</div>`).join('')
+              || `<button class="devempty tap" data-act="addEventOn" data-d="${iso}">+ add</button>`}
+          </div>
         </div>`; }).join('')}
-    </div>`;
+    </div>
+  </div>`;
 }
 function calDay() {
   const evs = eventsForDate(calSel);
@@ -731,6 +741,8 @@ const ACT = {
   calPick(d) { calSel = d.d; renderCalBody(); },
   dayPrev() { const x = parseISO(calSel); x.setDate(x.getDate()-1); calSel = todayISO(x); renderCalBody(); },
   dayNext() { const x = parseISO(calSel); x.setDate(x.getDate()+1); calSel = todayISO(x); renderCalBody(); },
+  weekPrev() { const x = parseISO(calSel); x.setDate(x.getDate()-7); calSel = todayISO(x); renderCalBody(); },
+  weekNext() { const x = parseISO(calSel); x.setDate(x.getDate()+7); calSel = todayISO(x); renderCalBody(); },
   addEvent() { ACT.editEvent({ id: '' }); },
   addEventOn(d) { calSel = d.d; ACT.editEvent({ id: '' }); },
   editEvent(d) {
@@ -1213,12 +1225,37 @@ function startApp() {
   setSyncDot(syncEnabled() ? 'ok' : 'off');
   fetchWeather().then(() => { if (currentTab === 'home') renderHome(); });
   refreshPrices();
-  pull();
+  pull().finally(seedBillsOnce);   // add imported bills once we have the latest cloud state
   checkReminders();
   refreshBadges();
   // periodic
   setInterval(refreshPrices, 5 * 60 * 1000);
   setInterval(pull, 60 * 1000);
+}
+
+// One-time import of Tyson's recurring bills (from the old dashboard). Dedupes by name; runs once per device.
+function seedBillsOnce() {
+  if (localStorage.getItem('compass_seed_bills_v1')) return;
+  const bills = [
+    { name: 'Claude',         amount: 34,   dueDay: 5 },
+    { name: 'gym',            amount: 55,   dueDay: 12 },
+    { name: 'Spotify',        amount: 13,   dueDay: 24 },
+    { name: 'stella present', amount: 1875, dueDay: 27 },
+    { name: '18 savings',     amount: 523,  dueDay: 27 },
+    { name: 'Business Gmail', amount: 13,   dueDay: 1 },
+    { name: 'rego',           amount: 75,   dueDay: 1 },
+    { name: 'phone bill',     amount: 35,   dueDay: 2 },
+    { name: 'insurance',      amount: 35,   dueDay: 2 },
+  ];
+  let added = 0;
+  bills.forEach(b => {
+    if (!S.money.bills.some(x => (x.name || '').trim().toLowerCase() === b.name.toLowerCase())) {
+      S.money.bills.push({ id: uid(), name: b.name, amount: b.amount, dueDay: clamp(b.dueDay, 1, 28), remindDays: 3, lastPaidMonth: '' });
+      added++;
+    }
+  });
+  localStorage.setItem('compass_seed_bills_v1', '1');
+  if (added) { save(); refreshBadges(); if (currentTab === 'money') renderMoney(); toast(`${added} bills added`); }
 }
 
 function boot() {
