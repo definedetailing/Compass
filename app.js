@@ -144,11 +144,47 @@ function deepMerge(base, over) {
   return over === undefined ? base : over;
 }
 let saveTimer = null, pushTimer = null;
+/* ---------- undo / redo history ---------- */
+let lastSavedJSON = JSON.stringify(S);
+let undoStack = [], redoStack = [];
 function save(touch = true) {
-  if (touch) S.updatedAt = Date.now();
+  if (touch) {
+    undoStack.push(lastSavedJSON);            // remember the previous state for undo
+    if (undoStack.length > 80) undoStack.shift();
+    redoStack = [];
+    updateHistoryButtons();
+    S.updatedAt = Date.now();
+  }
+  lastSavedJSON = JSON.stringify(S);
   localStorage.setItem(LS_KEY, JSON.stringify(S));
   clearTimeout(saveTimer);
   if (touch) schedulePush();
+}
+function applyState(json) {
+  S = deepMerge(defaultState(), JSON.parse(json));
+  S.updatedAt = Date.now();
+  lastSavedJSON = JSON.stringify(S);
+  localStorage.setItem(LS_KEY, JSON.stringify(S));
+  schedulePush();
+  renderAll();
+  updateHistoryButtons();
+}
+function undo() {
+  if (!undoStack.length) return;
+  redoStack.push(lastSavedJSON);
+  applyState(undoStack.pop());
+  toast('Undone');
+}
+function redo() {
+  if (!redoStack.length) return;
+  undoStack.push(lastSavedJSON);
+  applyState(redoStack.pop());
+  toast('Redone');
+}
+function updateHistoryButtons() {
+  const u = $('#btnUndo'), r = $('#btnRedo');
+  if (u) u.disabled = !undoStack.length;
+  if (r) r.disabled = !redoStack.length;
 }
 function loadSync() {
   try { return JSON.parse(localStorage.getItem(LS_SYNC)) || { url: '', key: '' }; }
@@ -161,25 +197,37 @@ function syncURL() { return (syncCfg.url || (location.origin + '/api/sync')).tri
 function syncEnabled() { return !!syncCfg.key; }
 function setSyncDot(s) { const d = $('#syncDot'); if (d) d.className = 'sync-dot ' + s; }
 
+let pulledOnce = false;   // never push until we've reconciled with the cloud this session
+// "empty" = no user-entered data (ignores auto-seeded bills / default lists)
+function localIsEmpty() {
+  const s = S;
+  return s.calendar.events.length === 0 && s.money.holdings.length === 0 &&
+    s.money.transactions.length === 0 && s.health.runs.length === 0 && s.health.sleep.length === 0 &&
+    Object.keys(s.health.water.log).length === 0 && s.systems.goals.length === 0 &&
+    s.systems.notes.length === 0 && !(s.systems.focus || '').trim();
+}
 async function pull() {
-  if (!syncEnabled()) { setSyncDot('off'); return; }
+  if (!syncEnabled()) { setSyncDot('off'); pulledOnce = true; return; }
   setSyncDot('busy');
   try {
     const r = await fetch(syncURL(), { headers: { 'x-sync-key': syncCfg.key } });
-    if (r.status === 404) { setSyncDot('ok'); return; }        // nothing stored yet
+    if (r.status === 404) { setSyncDot('ok'); pulledOnce = true; return; }   // nothing stored yet
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const remote = await r.json();
-    if (remote && remote.state && (remote.state.updatedAt || 0) > (S.updatedAt || 0)) {
+    // adopt the cloud copy if it's newer OR if this device has no user data yet
+    // (prevents a fresh/blank device from clobbering good cloud data)
+    if (remote && remote.state && ((remote.state.updatedAt || 0) > (S.updatedAt || 0) || localIsEmpty())) {
       S = deepMerge(defaultState(), remote.state);
+      lastSavedJSON = JSON.stringify(S);
       save(false);
       renderAll();
-      toast('Synced from cloud');
     }
     setSyncDot('ok');
+    pulledOnce = true;
   } catch (e) { console.warn('pull', e); setSyncDot('err'); }
 }
 function schedulePush() {
-  if (!syncEnabled()) return;
+  if (!syncEnabled() || !pulledOnce) return;   // gate: don't push before the first successful pull
   clearTimeout(pushTimer);
   pushTimer = setTimeout(push, 1200);
 }
@@ -317,21 +365,34 @@ function spentThisMonth(category) {
 function balance() {
   return S.money.cash + S.money.transactions.reduce((a, t) => a + (t.dir === 'in' ? t.amount : -t.amount), 0);
 }
+const FREQ_LABEL = { monthly: 'Monthly', quarterly: 'Quarterly', yearly: 'Yearly', once: 'One-off' };
 function billNextDue(bill) {
   const now = new Date();
-  let due = new Date(now.getFullYear(), now.getMonth(), Math.min(bill.dueDay, 28));
-  const mk = monthKey(due);
-  if (bill.lastPaidMonth === mk || due < new Date(now.getFullYear(), now.getMonth(), now.getDate())) {
-    if (bill.lastPaidMonth === mk || due < now) due = new Date(now.getFullYear(), now.getMonth() + 1, Math.min(bill.dueDay, 28));
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const freq = bill.freq || 'monthly';
+  if (freq === 'monthly') {
+    const day = Math.min(bill.dueDay || 1, 28);
+    let due = new Date(now.getFullYear(), now.getMonth(), day);
+    if (bill.lastPaidMonth === monthKey(due) || due < today) due = new Date(now.getFullYear(), now.getMonth() + 1, day);
+    return due;
   }
+  // date-anchored frequencies (quarterly / yearly / one-off)
+  let due = bill.due ? parseISO(bill.due) : today;
+  const paid = bill.paidUntil ? parseISO(bill.paidUntil) : null;
+  if (freq === 'once') return due;
+  const step = d => { if (freq === 'yearly') d.setFullYear(d.getFullYear() + 1); else if (freq === 'quarterly') d.setMonth(d.getMonth() + 3); else d.setDate(d.getDate() + 7); };
+  let guard = 0;
+  while ((due < today || (paid && due <= paid)) && guard++ < 3000) step(due);
   return due;
 }
 function daysUntil(d) { return Math.ceil((d - new Date(new Date().toDateString())) / 86400000); }
 function upcomingBills() {
-  return S.money.bills.map(b => {
-    const due = billNextDue(b); const dd = daysUntil(due);
-    return { ...b, due, dd, status: dd < 0 ? 'over' : dd <= (b.remindDays || 3) ? 'soon' : 'ok' };
-  }).sort((a, b) => a.due - b.due);
+  return S.money.bills
+    .filter(b => !(b.freq === 'once' && b.done))
+    .map(b => {
+      const due = billNextDue(b); const dd = daysUntil(due);
+      return { ...b, due, dd, status: dd < 0 ? 'over' : dd <= (b.remindDays || 3) ? 'soon' : 'ok' };
+    }).sort((a, b) => a.due - b.due);
 }
 
 /* ============================================================
@@ -631,7 +692,7 @@ function renderMoney() {
       ${bills.map(b => `
         <div class="item">
           <span class="dot" style="background:${b.status==='over'?'var(--red)':b.status==='soon'?'var(--amber)':'var(--primary)'}"></span>
-          <div class="body tap" data-act="editBill" data-id="${b.id}"><div class="t">${esc(b.name)}</div>
+          <div class="body tap" data-act="editBill" data-id="${b.id}"><div class="t">${esc(b.name)} <span class="muted small">· ${FREQ_LABEL[b.freq||'monthly']}</span></div>
             <div class="s">${AUD(b.amount)} · ${b.dd<0?`${-b.dd}d overdue`:b.dd===0?'due today':`in ${b.dd}d`} (${b.due.getDate()} ${MON[b.due.getMonth()].slice(0,3)})</div></div>
           <button class="btn sm ${b.status==='ok'?'ghost':'primary'}" data-act="payBill" data-id="${b.id}">Paid</button>
         </div>`).join('') || `<div class="empty">Add a monthly bill to get reminders</div>`}
@@ -894,25 +955,31 @@ const ACT = {
   /* ----- money: bills ----- */
   addBill() { ACT.editBill({ id:'' }); },
   editBill(d) {
-    const b = S.money.bills.find(x=>x.id===d.id) || { name:'', amount:'', dueDay:1, remindDays:3 };
-    sheetForm(d.id?'Edit bill':'New bill','Recurring monthly. You’ll get a reminder before it’s due.',
+    const b = S.money.bills.find(x=>x.id===d.id) || { name:'', amount:'', dueDay:1, remindDays:3, freq:'monthly', due:todayISO() };
+    sheetForm(d.id?'Edit bill':'New bill','Monthly repeats on the due day. Quarterly / Yearly / One-off use the next due date.',
       field('Name','b_name',{val:b.name,ph:'Rent, Phone, Netflix…'}) +
-      `<div class="row">${field('Amount','b_amt',{type:'number',step:'any',val:b.amount,inputmode:'decimal'})}${field('Due day (1-28)','b_day',{type:'number',val:b.dueDay,inputmode:'numeric'})}</div>` +
+      `<div class="row">${field('Amount','b_amt',{type:'number',step:'any',val:b.amount,inputmode:'decimal'})}${field('Frequency','b_freq',{type:'select',val:FREQ_LABEL[b.freq||'monthly'],options:['Monthly','Quarterly','Yearly','One-off']})}</div>` +
+      field('Due day — Monthly (1-28)','b_day',{type:'number',val:b.dueDay||1,inputmode:'numeric'}) +
+      field('Next due date — Quarterly/Yearly/One-off','b_due',{type:'date',val:b.due||todayISO()}) +
       field('Remind days before','b_rem',{type:'number',val:b.remindDays,inputmode:'numeric'}),
       { save:'saveBill', id:d.id, del:d.id?'delBill':'' });
   },
   saveBill(d) {
     const name = val('b_name'); if (!name) return toast('Add a name');
-    const rec = { name, amount: num(val('b_amt')), dueDay: clamp(num(val('b_day'),1),1,28), remindDays: num(val('b_rem'),3) };
+    const freq = ({ Monthly:'monthly', Quarterly:'quarterly', Yearly:'yearly', 'One-off':'once' })[val('b_freq')] || 'monthly';
+    const rec = { name, amount: num(val('b_amt')), freq, dueDay: clamp(num(val('b_day'),1),1,28), due: val('b_due')||todayISO(), remindDays: num(val('b_rem'),3) };
     if (d.id) Object.assign(S.money.bills.find(x=>x.id===d.id), rec);
-    else S.money.bills.push({ id: uid(), lastPaidMonth:'', ...rec });
+    else S.money.bills.push({ id: uid(), lastPaidMonth:'', paidUntil:'', done:false, ...rec });
     save(); closeSheet(); renderMoney(); refreshBadges(); toast('Saved');
   },
-  delBill(d) { S.money.bills = S.money.bills.filter(x=>x.id!==d.id); save(); closeSheet(); renderMoney(); },
+  delBill(d) { S.money.bills = S.money.bills.filter(x=>x.id!==d.id); save(); closeSheet(); renderMoney(); refreshBadges(); },
   payBill(d) {
     const b = S.money.bills.find(x=>x.id===d.id); if (!b) return;
-    b.lastPaidMonth = monthKey(billNextDue(b));
-    // also log as an expense
+    const freq = b.freq || 'monthly';
+    const due = billNextDue(b);
+    if (freq === 'monthly') b.lastPaidMonth = monthKey(due);
+    else if (freq === 'once') b.done = true;
+    else b.paidUntil = todayISO(due);
     S.money.transactions.push({ id: uid(), date: todayISO(), desc: b.name, category: 'Bills', amount: b.amount, dir: 'out' });
     save(); renderMoney(); refreshBadges(); toast(`${b.name} marked paid`);
   },
@@ -1141,6 +1208,11 @@ document.addEventListener('click', e => {
 $$('.nav button').forEach(b => b.addEventListener('click', () => render(b.dataset.tab)));
 $('#btnSettings').addEventListener('click', openSettings);
 $('#btnSync').addEventListener('click', syncNow);
+$('#btnUndo').addEventListener('click', undo);
+$('#btnRedo').addEventListener('click', redo);
+document.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+});
 
 // bound inputs (focus textarea)
 document.addEventListener('input', e => {
