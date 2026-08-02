@@ -1,0 +1,9 @@
+# local dev sync store (created by dev-server.py)
+.sync-store.json
+
+# macOS
+.DS_Store
+Icon?
+
+# editor / preview cruft
+.vercel
