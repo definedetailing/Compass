@@ -105,6 +105,7 @@ function defaultState() {
       ],
       bills: [],                     // {id, name, amount, dueDay, remindDays, lastPaidMonth}
       goals: [],                     // {id, name, target, saved}
+      period: 'monthly',             // 'monthly' | 'weekly' — sticky view for bills & budgets
     },
     systems: {
       focus: '',
@@ -115,7 +116,7 @@ function defaultState() {
         { id: uid(), text: 'Meal prep', weeks: {} },
         { id: uid(), text: 'Review finances', weeks: {} },
       ],
-      habits: [],                    // {id, text, time:"HH:MM", doneDays:{}}
+      habits: [],                    // {id, text, time:"HH:MM", days:[0-6] (empty = every day), doneDays:{}}
     },
   };
 }
@@ -430,7 +431,22 @@ function spentThisMonth(category) {
 function balance() {
   return S.money.cash + S.money.transactions.reduce((a, t) => a + (t.dir === 'in' ? t.amount : -t.amount), 0);
 }
-const FREQ_LABEL = { monthly: 'Monthly', quarterly: 'Quarterly', yearly: 'Yearly', once: 'One-off' };
+const FREQ_LABEL = { weekly: 'Weekly', monthly: 'Monthly', quarterly: 'Quarterly', yearly: 'Yearly', once: 'One-off' };
+const PER_YEAR = { weekly: 52, monthly: 12, quarterly: 4, yearly: 1, once: 0 };
+// normalise any bill to a per-week or per-month figure so the toggle can show either
+function billPer(bill, period) {
+  const n = PER_YEAR[bill.freq || 'monthly'] ?? 12;
+  const yearly = (Number(bill.amount) || 0) * n;
+  return period === 'weekly' ? yearly / 52 : yearly / 12;
+}
+const periodIsWeekly = () => (S.money.period || 'monthly') === 'weekly';
+function weekStartISO(d = new Date()) { const x = new Date(d); x.setDate(x.getDate() - x.getDay()); return todayISO(x); }
+function spentThisWeek(category) {
+  const start = weekStartISO();
+  return S.money.transactions
+    .filter(t => t.dir === 'out' && (!category || t.category === category) && t.date >= start && t.date <= todayISO())
+    .reduce((a, t) => a + t.amount, 0);
+}
 function billNextDue(bill) {
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -466,6 +482,53 @@ function upcomingBills() {
 let currentTab = 'home';
 let calView = 'week', calCursor = new Date(), calSel = todayISO();
 let briefOpen = false;   // Morning brief card collapsed by default
+let arranging = false;   // section-reorder mode
+
+/* ---------- section ordering ----------
+   Each tab renders named blocks; the user's saved order wins, and any block
+   added by a future update just appends at the end. */
+function orderBlocks(tab, blocks) {
+  const saved = (S.settings.order && S.settings.order[tab]) || [];
+  const byKey = Object.fromEntries(blocks.map(b => [b.key, b]));
+  const out = [];
+  saved.forEach(k => { if (byKey[k]) { out.push(byKey[k]); delete byKey[k]; } });
+  blocks.forEach(b => { if (byKey[b.key]) out.push(b); });
+  return out;
+}
+function renderBlocks(tab, blocks) {
+  const ordered = orderBlocks(tab, blocks);
+  currentBlockKeys[tab] = ordered.map(b => b.key);
+  const one = (b, i) => `<div class="sec" data-sec="${b.key}">
+    ${arranging ? `<div class="arrange-bar">
+      <span class="an">${esc(b.name)}</span>
+      <span class="pill-row">
+        <button class="iconbtn sm" data-act="secUp" data-tab="${tab}" data-k="${b.key}" ${i===0?'disabled':''}>↑</button>
+        <button class="iconbtn sm" data-act="secDown" data-tab="${tab}" data-k="${b.key}" ${i===ordered.length-1?'disabled':''}>↓</button>
+      </span></div>` : ''}
+    ${b.html}
+  </div>`;
+  // split into two balanced columns — on mobile .cols collapses to one, so this
+  // is simply sequential order there
+  const half = Math.ceil(ordered.length / 2);
+  const colA = ordered.slice(0, half).map((b, i) => one(b, i)).join('');
+  const colB = ordered.slice(half).map((b, i) => one(b, i + half)).join('');
+  return `<div class="cols"><div class="col">${colA}</div><div class="col">${colB}</div></div>`;
+}
+function moveSection(tab, key, dir) {
+  const blocks = currentBlockKeys[tab] || [];
+  const cur = orderBlocks(tab, blocks.map(k => ({ key: k }))).map(b => b.key);
+  const i = cur.indexOf(key), j = i + dir;
+  if (i < 0 || j < 0 || j >= cur.length) return;
+  cur.splice(j, 0, cur.splice(i, 1)[0]);
+  S.settings.order = S.settings.order || {};
+  S.settings.order[tab] = cur;
+  save();
+  render(tab);
+}
+let currentBlockKeys = {};   // tab -> [key] as last rendered
+function arrangeHeader(tab) {
+  return `<button class="link" data-act="toggleArrange" data-tab="${tab}">${arranging ? 'Done' : 'Arrange'}</button>`;
+}
 
 function renderAll() { render(currentTab); refreshBadges(); }
 function render(tab) {
@@ -570,7 +633,7 @@ function renderHome() {
                   <div class="body"><div class="t">${esc(e.title)}${e.source==='email'?' <span class="chip src" title="added from your email">✉︎</span>':''}</div><div class="s">${[evTime(e), e.category].filter(Boolean).map(esc).join(' · ')}</div></div>
                   ${e.cost>0?`<div class="trail">${AUD(e.cost,0)}</div>`:''}
                 </div>` })),
-              ...(S.systems.habits||[]).map(h => ({ time: h.time || '', html: `
+              ...habitsToday().map(h => ({ time: h.time || '', html: `
                 <div class="item ${h.doneDays && h.doneDays[iso] ? 'hab-done' : ''}" style="border-left:4px dashed var(--blue-300)">
                   <div class="body"><div class="t">${esc(h.text)}</div><div class="s">${esc(h.time)} · habit</div></div>
                   <span class="box tap ${h.doneDays && h.doneDays[iso] ? 'on' : ''}" data-act="toggleHabit" data-id="${h.id}" style="width:22px;height:22px;border-radius:7px;border:2px solid ${h.doneDays && h.doneDays[iso] ? 'var(--primary)' : 'var(--border)'};background:${h.doneDays && h.doneDays[iso] ? 'var(--primary)' : 'transparent'};display:grid;place-items:center;color:#fff;flex:none">${h.doneDays && h.doneDays[iso] ? '✓' : ''}</span>
@@ -657,12 +720,12 @@ function calWeek() {
     </div>
     <div class="dayrows">
       ${days.map(d => { const iso = todayISO(d); const evs = eventsForDate(iso); const isToday = iso===todayISO();
-        return `<div class="dayrow ${isToday?'today':''}">
+        return `<div class="dayrow ${isToday?'today':''}" data-day="${iso}">
           <button class="dlabel tap" data-act="addEventOn" data-d="${iso}"><span class="dn">${DOW[d.getDay()]}</span><span class="dd">${d.getDate()}</span></button>
           <div class="devents">
-            ${evs.map(e=>`<div class="evchip tap" data-act="editEvent" data-id="${e.id}" style="border-left-color:${catColor(e.category)}">
-              <span class="et">${esc(e.title)}</span>${evTime(e)?`<span class="es">${esc(evTime(e))}</span>`:''}</div>`).join('')
-              || `<button class="devempty tap" data-act="addEventOn" data-d="${iso}">+ add</button>`}
+            ${evs.map(e=>`<div class="evchip tap" draggable="true" data-ev="${e.id}" data-act="editEvent" data-id="${e.id}" style="border-left-color:${catColor(e.category)}">
+              <span class="et">${esc(e.title)}</span>${evTime(e)?`<span class="es">${esc(evTime(e))}</span>`:''}</div>`).join('')}
+            <button class="devempty tap" data-act="addEventOn" data-d="${iso}">+ add</button>
           </div>
         </div>`; }).join('')}
     </div>
@@ -777,6 +840,7 @@ function renderMoney() {
   const hist = series || S.money.portfolioHistory.slice(-30).map(h => h.value);
   const bills = upcomingBills();
   const bal = balance();
+  const wk = periodIsWeekly();
 
   $('#view-money').innerHTML = `
     <div class="view-title">Money</div>
@@ -816,11 +880,20 @@ function renderMoney() {
     <div class="section-head"><h3>Money goals</h3><button class="link" data-act="addMoneyGoal">+ Goal</button></div>
     <div class="card"><div class="list">
       ${(S.money.goals||[]).map(g => { const p = clamp((g.saved||0)/(g.target||1), 0, 1);
+        let pace = '';
+        if (g.by) {
+          const left = daysUntil(parseISO(g.by)), rem = Math.max((g.target||0)-(g.saved||0), 0);
+          const weeks = Math.max(left/7, 0);
+          pace = p>=1 ? `<span class="pos">Goal reached 🎉</span>`
+            : left < 0 ? `<span class="neg">Target date passed · ${AUD(rem,0)} short</span>`
+            : `by ${fmtDay(g.by)} · <b>${AUD(weeks>=1?rem/weeks:rem, 0)}/wk</b> to get there`;
+        }
         return `<div class="mgoal">
           <div class="mgoal-top tap" data-act="editMoneyGoal" data-id="${g.id}">
             <span class="t">${esc(g.name)}</span>
             <span class="${p>=1?'pos':'muted'} small nowrap">${AUD(g.saved||0,0)} / ${AUD(g.target,0)} (${Math.round(p*100)}%)</span>
           </div>
+          ${pace?`<div class="s muted" style="margin-top:3px">${pace}</div>`:''}
           <div class="bar" style="margin:7px 0 9px"><i style="width:${p*100}%;${p>=1?'background:var(--green)':''}"></i></div>
           <div class="row"><input type="number" inputmode="decimal" placeholder="add $" id="mg_${g.id}" class="sm-input">
             <button class="btn sm" data-act="addToMoneyGoal" data-id="${g.id}">Add</button></div>
@@ -829,24 +902,36 @@ function renderMoney() {
 
     </div><div class="col">
 
-    <div class="section-head"><h3>Bills</h3><button class="link" data-act="addBill">+ Bill</button></div>
-    <div class="card"><div class="list">
+    <div class="section-head"><h3>Bills</h3>
+      <div class="pill-row">
+        <div class="seg sm">
+          ${['weekly','monthly'].map(p=>`<button data-act="setPeriod" data-p="${p}" class="${(S.money.period||'monthly')===p?'on':''}">${p[0].toUpperCase()+p.slice(1)}</button>`).join('')}
+        </div>
+        <button class="link" data-act="addBill">+ Bill</button>
+      </div></div>
+    <div class="card">
+      ${bills.length ? `<div class="stat" style="margin-bottom:12px"><div class="k">Total ${wk?'per week':'per month'}</div>
+        <div class="v">${AUD(bills.reduce((a,b)=>a+billPer(b, wk?'weekly':'monthly'),0), 2)}</div></div>` : ''}
+      <div class="list">
       ${bills.map(b => `
         <div class="item">
           <span class="dot" style="background:${b.status==='over'?'var(--red)':b.status==='soon'?'var(--amber)':'var(--primary)'}"></span>
           <div class="body tap" data-act="editBill" data-id="${b.id}"><div class="t">${esc(b.name)} <span class="muted small">· ${FREQ_LABEL[b.freq||'monthly']}</span></div>
-            <div class="s">${AUD(b.amount)} · ${b.dd<0?`${-b.dd}d overdue`:b.dd===0?'due today':`in ${b.dd}d`} (${b.due.getDate()} ${MON[b.due.getMonth()].slice(0,3)})</div></div>
+            <div class="s">${AUD(b.amount)}${(b.freq||'monthly')!==(wk?'weekly':'monthly') && b.freq!=='once' ? ` <span class="muted">(${AUD(billPer(b, wk?'weekly':'monthly'),2)}/${wk?'wk':'mo'})</span>` : ''} · ${b.dd<0?`${-b.dd}d overdue`:b.dd===0?'due today':`in ${b.dd}d`} (${b.due.getDate()} ${MON[b.due.getMonth()].slice(0,3)})</div></div>
           <button class="btn sm ${b.status==='ok'?'ghost':'primary'}" data-act="payBill" data-id="${b.id}">Paid</button>
-        </div>`).join('') || `<div class="empty">Add a monthly bill to get reminders</div>`}
+        </div>`).join('') || `<div class="empty">Add a bill to get reminders</div>`}
     </div></div>
 
-    <div class="section-head"><h3>Budgets — ${MON[new Date().getMonth()]}</h3><button class="link" data-act="addBudget">+ Budget</button></div>
+    <div class="section-head"><h3>Budgets — ${wk ? 'this week' : MON[new Date().getMonth()]}</h3><button class="link" data-act="addBudget">+ Budget</button></div>
     <div class="card"><div class="list">
-      ${S.money.budgets.map(bd => { const sp = spentThisMonth(bd.category); const p = clamp(sp/bd.limit,0,1);
+      ${S.money.budgets.map(bd => {
+        const lim = wk ? bd.limit/(52/12) : bd.limit;
+        const sp = wk ? spentThisWeek(bd.category) : spentThisMonth(bd.category);
+        const p = clamp(sp/(lim||1),0,1);
         return `<div data-act="editBudget" data-id="${bd.id}" class="tap">
           <div style="display:flex;justify-content:space-between;font-size:13.5px;font-weight:650;margin-bottom:6px">
-            <span>${esc(bd.category)}</span><span class="${sp>bd.limit?'neg':'muted'}">${AUD(sp,0)} / ${AUD(bd.limit,0)}</span></div>
-          <div class="bar"><i style="width:${p*100}%;background:${sp>bd.limit?'var(--red)':''}"></i></div>
+            <span>${esc(bd.category)}</span><span class="${sp>lim?'neg':'muted'}">${AUD(sp,0)} / ${AUD(lim,0)}</span></div>
+          <div class="bar"><i style="width:${p*100}%;background:${sp>lim?'var(--red)':''}"></i></div>
         </div>`; }).join('') || `<div class="empty">No budgets set</div>`}
     </div></div>
 
@@ -867,13 +952,12 @@ function renderMoney() {
 function renderSystems() {
   const wk = weekKey();
   const iso = todayISO();
-  $('#view-systems').innerHTML = `
-    <div class="view-title">Systems</div>
-    <div class="cols"><div class="col">
-
+  const B = [];
+  B.push({ key:'focus', name:'Current focus', html: `
     <div class="section-head"><h3>Current focus</h3></div>
-    <div class="card"><textarea id="focusInput" data-bind="focus" placeholder="What are you focusing on right now?">${esc(S.systems.focus)}</textarea></div>
+    <div class="card"><textarea id="focusInput" data-bind="focus" placeholder="What are you focusing on right now?">${esc(S.systems.focus)}</textarea></div>` });
 
+  B.push({ key:'goals', name:'Goals', html: `
     <div class="section-head"><h3>Goals</h3><button class="link" data-act="addGoal">+ Goal</button></div>
     <div class="card"><div class="list">
       ${S.systems.goals.map(g => `
@@ -882,8 +966,9 @@ function renderSystems() {
           <span class="txt tap" data-act="editGoal" data-id="${g.id}">${esc(g.text)}</span>
           <button class="del" data-act="delGoal" data-id="${g.id}">✕</button>
         </div>`).join('') || `<div class="empty">Add your first goal</div>`}
-    </div></div>
+    </div></div>` });
 
+  B.push({ key:'weekly', name:'Weekly must-dos', html: `
     <div class="section-head"><h3>Weekly must-dos</h3><button class="link" data-act="addWeekly">+ Add</button></div>
     <div class="card"><div class="list">
       ${S.systems.weekly.map(m => `
@@ -892,30 +977,41 @@ function renderSystems() {
           <span class="txt tap" data-act="editWeekly" data-id="${m.id}">${esc(m.text)}</span>
           <button class="del" data-act="delWeekly" data-id="${m.id}">✕</button>
         </div>`).join('') || `<div class="empty">What must happen every week?</div>`}
-    </div></div>
+    </div></div>` });
 
-    </div><div class="col">
-
+  // habits: not-yet-done float to the top, completed sink to the bottom crossed out
+  const hSorted = (S.systems.habits||[]).slice().sort((a,b) => {
+    const da = a.doneDays && a.doneDays[iso] ? 1 : 0, db = b.doneDays && b.doneDays[iso] ? 1 : 0;
+    if (da !== db) return da - db;
+    const oa = habitRunsOn(a) ? 0 : 1, ob = habitRunsOn(b) ? 0 : 1;
+    if (oa !== ob) return oa - ob;
+    return (a.time||'').localeCompare(b.time||'');
+  });
+  const hLeft = hSorted.filter(h => habitRunsOn(h) && !(h.doneDays && h.doneDays[iso])).length;
+  B.push({ key:'habits', name:'Habit reminders', html: `
     <div class="section-head"><h3>Habit reminders</h3><button class="link" data-act="addHabit">+ Habit</button></div>
-    <div class="card"><div class="small muted" style="margin-bottom:10px">Daily habits with a time — you'll get a reminder.</div><div class="list">
-      ${(S.systems.habits||[]).slice().sort((a,b)=>(a.time||'').localeCompare(b.time||'')).map(h => `
-        <div class="check ${h.doneDays && h.doneDays[iso] ? 'done' : ''}">
+    <div class="card"><div class="small muted" style="margin-bottom:10px">${hSorted.length ? (hLeft ? `${hLeft} left today` : 'All done today 🎉') : "Habits with a time — you'll get a reminder."}</div><div class="list habit-list">
+      ${hSorted.map(h => `
+        <div class="check habit ${h.doneDays && h.doneDays[iso] ? 'done' : ''} ${habitRunsOn(h)?'':'offday'}" data-habit="${h.id}">
           <span class="box tap" data-act="toggleHabit" data-id="${h.id}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 12l4 4 10-11"/></svg></span>
-          <span class="txt tap" data-act="editHabit" data-id="${h.id}">${esc(h.text)}</span>
+          <span class="txt tap" data-act="editHabit" data-id="${h.id}">${esc(h.text)}
+            <span class="s muted" style="display:block;font-size:11.5px">${esc(habitDaysLabel(h))}</span></span>
           ${habitStreak(h) > 1 ? `<span class="chip good nowrap" title="day streak">🔥 ${habitStreak(h)}</span>` : ''}
           <span class="chip nowrap">${esc(h.time||'')}</span>
           <button class="del" data-act="delHabit" data-id="${h.id}">✕</button>
-        </div>`).join('') || `<div class="empty">e.g. Smoothie — 8:00 am, Gym — 4:00 pm</div>`}
-    </div></div>
+        </div>`).join('') || `<div class="empty">e.g. Smoothie — 8:00 am daily, Run — Tuesdays</div>`}
+    </div></div>` });
 
+  B.push({ key:'badday', name:'Bad-day minimums', html: `
     <div class="section-head"><h3>Bad-day minimums</h3><button class="link" data-act="addBadDay">+ Add</button></div>
     <div class="card"><div class="small muted" style="margin-bottom:10px">The bare minimum on a hard day.</div><div class="list">
       ${S.systems.badDay.map((t, i) => `
         <div class="item"><span class="dot" style="background:var(--amber)"></span>
           <div class="body"><div class="t">${esc(t)}</div></div>
           <button class="del" data-act="delBadDay" data-i="${i}">✕</button></div>`).join('') || `<div class="empty">Add a minimum</div>`}
-    </div></div>
+    </div></div>` });
 
+  B.push({ key:'notes', name:'Notes', html: `
     <div class="section-head"><h3>Notes</h3><button class="link" data-act="addNote">+ Note</button></div>
     <div class="card"><div class="list">
       ${S.systems.notes.slice().sort((a,b)=>b.updatedAt-a.updatedAt).map(n => `
@@ -923,10 +1019,11 @@ function renderSystems() {
           <div class="body"><div class="t">${esc(n.title||'Untitled')}</div><div class="s">${esc((n.body||'').slice(0,60))}</div></div>
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--text-3)" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg>
         </div>`).join('') || `<div class="empty">No notes yet</div>`}
-    </div></div>
+    </div></div>` });
 
-    </div></div>
-  `;
+  $('#view-systems').innerHTML =
+    `<div class="section-head" style="margin-top:0"><div class="view-title" style="margin:0">Systems</div>${arrangeHeader('systems')}</div>`
+    + renderBlocks('systems', B);
 }
 
 /* ============================================================
@@ -958,6 +1055,9 @@ const ACT = {
   /* nav-ish */
   editFocus() { render('systems'); setTimeout(()=>{ const f=$('#focusInput'); if(f){f.focus();} }, 80); },
   toggleBrief() { briefOpen = !briefOpen; renderHome(); },
+  toggleArrange(d) { arranging = !arranging; render(d.tab); if (arranging) toast('Use ↑ ↓ to reorder, then Done'); },
+  secUp(d) { moveSection(d.tab, d.k, -1); },
+  secDown(d) { moveSection(d.tab, d.k, 1); },
 
   /* ----- calendar ----- */
   calPrev() { calCursor = new Date(calCursor.getFullYear(), calCursor.getMonth()-1, 1); renderCalBody(); },
@@ -1116,20 +1216,21 @@ const ACT = {
   async refreshPrices() { await refreshPrices(); toast('Prices updated'); },
 
   /* ----- money: bills ----- */
+  setPeriod(d) { S.money.period = d.p; save(); renderMoney(); },
   addBill() { ACT.editBill({ id:'' }); },
   editBill(d) {
     const b = S.money.bills.find(x=>x.id===d.id) || { name:'', amount:'', dueDay:1, remindDays:3, freq:'monthly', due:todayISO() };
     sheetForm(d.id?'Edit bill':'New bill','Monthly repeats on the due day. Quarterly / Yearly / One-off use the next due date.',
       field('Name','b_name',{val:b.name,ph:'Rent, Phone, Netflix…'}) +
-      `<div class="row">${field('Amount','b_amt',{type:'number',step:'any',val:b.amount,inputmode:'decimal'})}${field('Frequency','b_freq',{type:'select',val:FREQ_LABEL[b.freq||'monthly'],options:['Monthly','Quarterly','Yearly','One-off']})}</div>` +
+      `<div class="row">${field('Amount','b_amt',{type:'number',step:'any',val:b.amount,inputmode:'decimal'})}${field('Frequency','b_freq',{type:'select',val:FREQ_LABEL[b.freq||'monthly'],options:['Weekly','Monthly','Quarterly','Yearly','One-off']})}</div>` +
       field('Due day — Monthly (1-28)','b_day',{type:'number',val:b.dueDay||1,inputmode:'numeric'}) +
-      field('Next due date — Quarterly/Yearly/One-off','b_due',{type:'date',val:b.due||todayISO()}) +
+      field('Next due date — Weekly/Quarterly/Yearly/One-off','b_due',{type:'date',val:b.due||todayISO()}) +
       field('Remind days before','b_rem',{type:'number',val:b.remindDays,inputmode:'numeric'}),
       { save:'saveBill', id:d.id, del:d.id?'delBill':'' });
   },
   saveBill(d) {
     const name = val('b_name'); if (!name) return toast('Add a name');
-    const freq = ({ Monthly:'monthly', Quarterly:'quarterly', Yearly:'yearly', 'One-off':'once' })[val('b_freq')] || 'monthly';
+    const freq = ({ Weekly:'weekly', Monthly:'monthly', Quarterly:'quarterly', Yearly:'yearly', 'One-off':'once' })[val('b_freq')] || 'monthly';
     const rec = { name, amount: num(val('b_amt')), freq, dueDay: clamp(num(val('b_day'),1),1,28), due: val('b_due')||todayISO(), remindDays: num(val('b_rem'),3) };
     if (d.id) Object.assign(S.money.bills.find(x=>x.id===d.id), rec);
     else S.money.bills.push({ id: uid(), lastPaidMonth:'', paidUntil:'', done:false, ...rec });
@@ -1142,6 +1243,7 @@ const ACT = {
     const due = billNextDue(b);
     if (freq === 'monthly') b.lastPaidMonth = monthKey(due);
     else if (freq === 'once') b.done = true;
+    else if (freq === 'weekly') b.paidUntil = todayISO(due);
     else b.paidUntil = todayISO(due);
     S.money.transactions.push({ id: uid(), date: todayISO(), desc: b.name, category: 'Bills', amount: b.amount, dir: 'out' });
     save(); renderMoney(); refreshBadges(); toast(`${b.name} marked paid`);
@@ -1238,18 +1340,37 @@ const ACT = {
   /* ----- systems: habit reminders ----- */
   addHabit() { ACT.editHabit({ id:'' }); },
   editHabit(d) {
-    const h = (S.systems.habits||[]).find(x=>x.id===d.id) || { text:'', time:'' };
-    sheetForm(d.id?'Edit habit':'New habit','Daily habit with a reminder time.',
-      field('Habit','hb_text',{val:h.text,ph:'e.g. Gym, Smoothie'}) +
-      field('Time','hb_time',{type:'time',val:h.time}),
+    const h = (S.systems.habits||[]).find(x=>x.id===d.id) || { text:'', time:'', days:[] };
+    const on = h.days && h.days.length ? h.days : [0,1,2,3,4,5,6];
+    sheetForm(d.id?'Edit habit':'New habit','Pick the days it runs — you’ll only be reminded on those.',
+      field('Habit','hb_text',{val:h.text,ph:'e.g. Gym, Smoothie, Run'}) +
+      field('Time','hb_time',{type:'time',val:h.time}) +
+      `<label class="field"><span>Repeats on</span>
+        <div class="daypick" id="hb_days">
+          ${DOW.map((n,i)=>`<button type="button" class="dp ${on.includes(i)?'on':''}" data-act="toggleHabitDay" data-i="${i}">${n[0]}</button>`).join('')}
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button type="button" class="btn sm ghost" data-act="habitDaysPreset" data-p="all">Every day</button>
+          <button type="button" class="btn sm ghost" data-act="habitDaysPreset" data-p="weekdays">Weekdays</button>
+          <button type="button" class="btn sm ghost" data-act="habitDaysPreset" data-p="weekends">Weekends</button>
+        </div>
+      </label>`,
       { save:'saveHabit', id:d.id, del:d.id?'delHabit':'' });
+  },
+  toggleHabitDay(d, el) { el.classList.toggle('on'); },
+  habitDaysPreset(d) {
+    const want = d.p==='weekdays' ? [1,2,3,4,5] : d.p==='weekends' ? [0,6] : [0,1,2,3,4,5,6];
+    $$('#hb_days .dp').forEach((b,i)=>b.classList.toggle('on', want.includes(i)));
   },
   async saveHabit(d) {
     const text = val('hb_text'); if (!text) return toast('Name the habit');
     const time = val('hb_time'); if (!time) return toast('Pick a time');
+    let days = $$('#hb_days .dp').map((b,i)=>b.classList.contains('on')?i:-1).filter(i=>i>=0);
+    if (!days.length) return toast('Pick at least one day');
+    if (days.length === 7) days = [];                       // all days = daily
     if (!S.systems.habits) S.systems.habits = [];
-    if (d.id) Object.assign(S.systems.habits.find(x=>x.id===d.id), { text, time });
-    else S.systems.habits.push({ id: uid(), text, time, doneDays: {} });
+    if (d.id) Object.assign(S.systems.habits.find(x=>x.id===d.id), { text, time, days });
+    else S.systems.habits.push({ id: uid(), text, time, days, doneDays: {} });
     save(); closeSheet(); renderSystems();
     // make sure reminders can actually fire
     if ('Notification' in window && Notification.permission === 'default') {
@@ -1263,24 +1384,33 @@ const ACT = {
     const h = (S.systems.habits||[]).find(x=>x.id===d.id); if (!h) return;
     if (!h.doneDays) h.doneDays = {};
     const iso = todayISO();
-    h.doneDays[iso] = !h.doneDays[iso];
-    save(); render(currentTab);
+    const nowDone = !h.doneDays[iso];
+    h.doneDays[iso] = nowDone;
+    // in Systems, completing a habit crosses it out and slides it away so the
+    // next one moves up; Home just re-renders in place
+    const row = currentTab === 'systems' && nowDone && $(`.habit[data-habit="${h.id}"]`);
+    if (row) {
+      row.classList.add('completing');
+      save();
+      setTimeout(() => renderSystems(), 420);
+    } else { save(); render(currentTab); }
   },
 
   /* ----- money: goals ----- */
   addMoneyGoal() { ACT.editMoneyGoal({ id:'' }); },
   editMoneyGoal(d) {
-    const g = (S.money.goals||[]).find(x=>x.id===d.id) || { name:'', target:'', saved:'' };
-    sheetForm(d.id?'Edit money goal':'New money goal','',
+    const g = (S.money.goals||[]).find(x=>x.id===d.id) || { name:'', target:'', saved:'', by:'' };
+    sheetForm(d.id?'Edit money goal':'New money goal','Add a target date and Compass works out what you need to save per week.',
       field('Goal','mg_name',{val:g.name,ph:'e.g. Car, Trip to Japan'}) +
-      `<div class="row">${field('Target ($)','mg_target',{type:'number',step:'any',val:g.target,inputmode:'decimal'})}${field('Saved so far ($)','mg_saved',{type:'number',step:'any',val:g.saved,inputmode:'decimal'})}</div>`,
+      `<div class="row">${field('Target ($)','mg_target',{type:'number',step:'any',val:g.target,inputmode:'decimal'})}${field('Saved so far ($)','mg_saved',{type:'number',step:'any',val:g.saved,inputmode:'decimal'})}</div>` +
+      field('Target date (optional)','mg_by',{type:'date',val:g.by||''}),
       { save:'saveMoneyGoal', id:d.id, del:d.id?'delMoneyGoal':'' });
   },
   saveMoneyGoal(d) {
     const name = val('mg_name'); if (!name) return toast('Name the goal');
     const target = num(val('mg_target')); if (!target) return toast('Set a target');
     if (!S.money.goals) S.money.goals = [];
-    const rec = { name, target, saved: num(val('mg_saved')) };
+    const rec = { name, target, saved: num(val('mg_saved')), by: val('mg_by') || '' };
     if (d.id) Object.assign(S.money.goals.find(x=>x.id===d.id), rec);
     else S.money.goals.push({ id: uid(), ...rec });
     save(); closeSheet(); renderMoney();
@@ -1327,19 +1457,35 @@ function refreshBadges() {
   else if (badge) badge.remove();
 }
 
-// consecutive days completed, counting back from today (or yesterday if today isn't done yet)
+// a habit with no `days` runs every day; otherwise only on the listed weekdays (0=Sun)
+const habitRunsOn = (h, d = new Date()) => !h.days || !h.days.length || h.days.includes(d.getDay());
+const habitsToday = () => (S.systems.habits || []).filter(h => habitRunsOn(h));
+function habitDaysLabel(h) {
+  if (!h.days || !h.days.length) return 'Daily';
+  if (h.days.length === 7) return 'Daily';
+  const s = [...h.days].sort();
+  if (s.join() === '1,2,3,4,5') return 'Weekdays';
+  if (s.join() === '0,6') return 'Weekends';
+  return s.map(i => DOW[i]).join(' ');
+}
+// consecutive SCHEDULED days completed, counting back from today
+// (skips days the habit wasn't due, so a Tuesday-only run keeps its streak all week)
 function habitStreak(h) {
   const done = h.doneDays || {};
-  let n = 0;
+  let n = 0, guard = 0;
   const d = new Date();
-  if (!done[todayISO(d)]) d.setDate(d.getDate() - 1);   // today still pending — don't break the streak
-  while (done[todayISO(d)]) { n++; d.setDate(d.getDate() - 1); }
+  if (habitRunsOn(h, d) && !done[todayISO(d)]) d.setDate(d.getDate() - 1);  // today still pending
+  while (guard++ < 400) {
+    if (!habitRunsOn(h, d)) { d.setDate(d.getDate() - 1); continue; }        // not due — doesn't break it
+    if (!done[todayISO(d)]) break;
+    n++; d.setDate(d.getDate() - 1);
+  }
   return n;
 }
 // how much of today's plan is done (habits + weekly must-dos) — the "5-second" signal
 function dayProgress() {
   const iso = todayISO(), wk = weekKey();
-  const habits = S.systems.habits || [];
+  const habits = habitsToday();
   const weekly = S.systems.weekly || [];
   const total = habits.length + weekly.length;
   if (!total) return null;
@@ -1355,6 +1501,7 @@ function checkHabitReminders() {
   const fired = JSON.parse(localStorage.getItem(key) || '[]');
   habits.forEach(h => {
     if (!h.time || fired.includes(h.id)) return;
+    if (!habitRunsOn(h)) return;                              // not scheduled for today
     if (h.doneDays && h.doneDays[todayISO()]) return;         // already done today
     if (h.time <= hm && hm <= addMinutes(h.time, 10)) {        // fire within a 10-min window
       if ('Notification' in window && Notification.permission === 'granted') {
@@ -1488,6 +1635,78 @@ document.addEventListener('input', e => {
   const b = e.target.closest('[data-bind]');
   if (b && b.dataset.bind === 'focus') { S.systems.focus = e.target.value; clearTimeout(saveTimer); saveTimer = setTimeout(()=>save(), 500); }
 });
+
+/* ============================================================
+   Moving events between days — mouse drag + touch long-press
+   ============================================================ */
+let dragEventId = null;          // set while an event is being moved
+function moveEventToDate(id, iso) {
+  const e = S.calendar.events.find(x => x.id === id);
+  if (!e || !iso) return false;
+  const wd = parseISO(iso).getDay();
+  if (e.recurring) { if (e.weekday === wd) return false; e.weekday = wd; }
+  else { if (e.date === iso) return false; e.date = iso; e.weekday = wd; }
+  save();
+  toast(`${e.title} → ${fmtDay(iso)}`);
+  return true;
+}
+function clearMoveMode() {
+  dragEventId = null;
+  $$('.dayrow.drop-ok, .dayrow.drop-over').forEach(r => r.classList.remove('drop-ok', 'drop-over'));
+  $$('.evchip.lifted').forEach(c => c.classList.remove('lifted'));
+}
+function enterMoveMode(id, chip) {
+  dragEventId = id;
+  chip && chip.classList.add('lifted');
+  $$('#view-calendar .dayrow').forEach(r => r.classList.add('drop-ok'));
+  toast('Now tap the day to move it to');
+}
+/* --- mouse drag --- */
+document.addEventListener('dragstart', e => {
+  const chip = e.target.closest('.evchip[data-ev]'); if (!chip) return;
+  dragEventId = chip.dataset.ev;
+  e.dataTransfer.effectAllowed = 'move';
+  try { e.dataTransfer.setData('text/plain', dragEventId); } catch (_) {}
+  chip.classList.add('lifted');
+  $$('#view-calendar .dayrow').forEach(r => r.classList.add('drop-ok'));
+});
+document.addEventListener('dragend', clearMoveMode);
+document.addEventListener('dragover', e => {
+  const row = e.target.closest('.dayrow[data-day]'); if (!row || !dragEventId) return;
+  e.preventDefault(); e.dataTransfer.dropEffect = 'move';
+  $$('.dayrow.drop-over').forEach(r => r.classList.remove('drop-over'));
+  row.classList.add('drop-over');
+});
+document.addEventListener('drop', e => {
+  const row = e.target.closest('.dayrow[data-day]'); if (!row || !dragEventId) return;
+  e.preventDefault();
+  const id = dragEventId, iso = row.dataset.day;
+  clearMoveMode();
+  if (moveEventToDate(id, iso)) renderCalBody();
+});
+/* --- touch: long-press to pick up, tap a day to place --- */
+let pressTimer = null, pressChip = null;
+document.addEventListener('touchstart', e => {
+  const chip = e.target.closest('.evchip[data-ev]'); if (!chip) return;
+  pressChip = chip;
+  pressTimer = setTimeout(() => {
+    pressTimer = null;
+    if (navigator.vibrate) navigator.vibrate(15);
+    enterMoveMode(chip.dataset.ev, chip);
+  }, 450);
+}, { passive: true });
+document.addEventListener('touchmove', () => { clearTimeout(pressTimer); pressTimer = null; }, { passive: true });
+document.addEventListener('touchend', () => { clearTimeout(pressTimer); pressTimer = null; }, { passive: true });
+// while in move mode, the next tap on a day row places the event (capture beats the edit handler)
+document.addEventListener('click', e => {
+  if (!dragEventId) return;
+  const row = e.target.closest('.dayrow[data-day]');
+  e.preventDefault(); e.stopPropagation();
+  const id = dragEventId, iso = row ? row.dataset.day : null;
+  clearMoveMode();
+  if (row && moveEventToDate(id, iso)) renderCalBody();
+  else if (!row) toast('Move cancelled');
+}, true);
 
 /* toast */
 let toastTimer;
