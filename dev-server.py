@@ -17,6 +17,27 @@ SYNC_SECRET = os.environ.get("SYNC_SECRET", "localdev")
 STORE = os.path.join(HERE, ".sync-store.json")
 
 
+def yahoo_chart(symbol):
+    for host in ("query1.finance.yahoo.com", "query2.finance.yahoo.com"):
+        try:
+            url = f"https://{host}/v8/finance/chart/{urllib.parse.quote(symbol)}?range=1mo&interval=1d"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; Compass/1.0)"})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                j = json.load(r)
+            res = j["chart"]["result"][0]
+            t = res.get("timestamp") or []
+            c = (res.get("indicators", {}).get("quote") or [{}])[0].get("close") or []
+            T, C = [], []
+            for i, v in enumerate(c):
+                if isinstance(v, (int, float)):
+                    T.append(t[i]); C.append(v)
+            if len(C) >= 2:
+                return {"t": T, "c": C}
+        except Exception:
+            continue
+    return None
+
+
 def yahoo(symbol):
     for host in ("query1.finance.yahoo.com", "query2.finance.yahoo.com"):
         try:
@@ -56,6 +77,16 @@ class H(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if self.path.startswith("/api/chart"):
+            qs = urllib.parse.urlparse(self.path).query
+            raw = urllib.parse.parse_qs(qs).get("symbols", [""])[0]
+            syms = [s.strip().upper() for s in raw.split(",") if s.strip()][:40]
+            out = {}
+            for s in syms:
+                ch = yahoo_chart(s)
+                if ch:
+                    out[s] = ch
+            return self._json(200, out)
         if self.path.startswith("/api/quote"):
             qs = urllib.parse.urlparse(self.path).query
             raw = urllib.parse.parse_qs(qs).get("symbols", [""])[0]

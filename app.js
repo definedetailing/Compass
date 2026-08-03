@@ -103,6 +103,7 @@ function defaultState() {
         { id: uid(), category: 'Fuel', limit: 200 },
       ],
       bills: [],                     // {id, name, amount, dueDay, remindDays, lastPaidMonth}
+      goals: [],                     // {id, name, target, saved}
     },
     systems: {
       focus: '',
@@ -113,6 +114,7 @@ function defaultState() {
         { id: uid(), text: 'Meal prep', weeks: {} },
         { id: uid(), text: 'Review finances', weeks: {} },
       ],
+      habits: [],                    // {id, text, time:"HH:MM", doneDays:{}}
     },
   };
 }
@@ -289,6 +291,17 @@ function areaChart(vals, opts = {}) {
     <path d="${line}" fill="none" stroke="${col}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
   </svg>`;
 }
+function sparkline(vals, opts = {}) {   // tiny inline trend chart
+  const w = opts.w || 72, h = opts.h || 26, pad = 2;
+  if (!vals || vals.length < 2) return '';
+  const min = Math.min(...vals), max = Math.max(...vals), span = (max - min) || 1;
+  const X = i => pad + (i / (vals.length - 1)) * (w - pad * 2);
+  const Y = v => pad + (1 - (v - min) / span) * (h - pad * 2);
+  const line = vals.map((v, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join(' ');
+  const col = vals[vals.length - 1] >= vals[0] ? 'var(--green)' : 'var(--red)';
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="flex:none;display:block">
+    <path d="${line}" fill="none" stroke="${col}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
 function barChart(items, opts = {}) {   // items: [{label, v}]
   const h = opts.h || 110, n = items.length;
   if (!n) return `<div class="empty small">No data yet</div>`;
@@ -328,6 +341,32 @@ async function fetchQuotes(symbols) {
     for (const s in data) quoteCache[s] = { ...data[s], ts: Date.now() };
     return quoteCache;
   } catch (e) { console.warn('quotes', e); return quoteCache; }
+}
+let chartCache = {};   // symbol -> { t:[...], c:[...] } last ~30 days of closes
+async function fetchCharts(symbols) {
+  symbols = [...new Set(symbols.filter(Boolean).map(s => s.toUpperCase()))];
+  if (!symbols.length) return chartCache;
+  try {
+    const r = await fetch('/api/chart?symbols=' + encodeURIComponent(symbols.join(',')));
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    for (const s in data) chartCache[s] = data[s];
+  } catch (e) { console.warn('charts', e); }
+  return chartCache;
+}
+// combined portfolio series over the last month (sum of shares x daily close)
+function portfolioSeries() {
+  const hs = S.money.holdings.filter(h => chartCache[h.symbol.toUpperCase()]?.c?.length);
+  if (!hs.length) return null;
+  const len = Math.min(...hs.map(h => chartCache[h.symbol.toUpperCase()].c.length));
+  if (len < 2) return null;
+  const out = [];
+  for (let i = 0; i < len; i++) {
+    let v = 0;
+    for (const h of hs) { const c = chartCache[h.symbol.toUpperCase()].c; v += h.shares * c[c.length - len + i]; }
+    out.push(v);
+  }
+  return out;
 }
 async function fetchWeather() {
   if (!S.settings.weatherOn) return null;
@@ -478,7 +517,8 @@ function renderHome() {
       <div class="card stat tap" data-tab-go="health">
         <div class="k">💧 Water</div>
         <div class="v">${(waterToday/1000).toFixed(2)}<small> / ${(S.health.water.goalMl/1000).toFixed(1)} L</small></div>
-        <div class="bar"><i style="width:${waterPct*100}%"></i></div>
+        <div class="sub">${Math.round(waterPct*100)}% of goal</div>
+        <div class="bar slim"><i style="width:${waterPct*100}%"></i></div>
       </div>
       <div class="card stat tap" data-tab-go="money">
         <div class="k">📈 Portfolio</div>
@@ -503,11 +543,22 @@ function renderHome() {
       <div class="card">
         <div class="card-label">Today's agenda</div>
         <div class="list">
-          ${todaysEvents.length ? todaysEvents.map(e => `
-            <div class="item" style="border-left:4px solid ${catColor(e.category)}">
-              <div class="body"><div class="t">${esc(e.title)}</div><div class="s">${[evTime(e), e.category].filter(Boolean).map(esc).join(' · ')}</div></div>
-              ${e.cost>0?`<div class="trail">${AUD(e.cost,0)}</div>`:''}
-            </div>`).join('') : `<div class="empty">Nothing scheduled today</div>`}
+          ${(() => {
+            const iso = todayISO();
+            const rows = [
+              ...todaysEvents.map(e => ({ time: e.start || e.time || '', html: `
+                <div class="item" style="border-left:4px solid ${catColor(e.category)}">
+                  <div class="body"><div class="t">${esc(e.title)}</div><div class="s">${[evTime(e), e.category].filter(Boolean).map(esc).join(' · ')}</div></div>
+                  ${e.cost>0?`<div class="trail">${AUD(e.cost,0)}</div>`:''}
+                </div>` })),
+              ...(S.systems.habits||[]).map(h => ({ time: h.time || '', html: `
+                <div class="item ${h.doneDays && h.doneDays[iso] ? 'hab-done' : ''}" style="border-left:4px dashed var(--blue-300)">
+                  <div class="body"><div class="t">${esc(h.text)}</div><div class="s">${esc(h.time)} · habit</div></div>
+                  <span class="box tap ${h.doneDays && h.doneDays[iso] ? 'on' : ''}" data-act="toggleHabit" data-id="${h.id}" style="width:22px;height:22px;border-radius:7px;border:2px solid ${h.doneDays && h.doneDays[iso] ? 'var(--primary)' : 'var(--border)'};background:${h.doneDays && h.doneDays[iso] ? 'var(--primary)' : 'transparent'};display:grid;place-items:center;color:#fff;flex:none">${h.doneDays && h.doneDays[iso] ? '✓' : ''}</span>
+                </div>` })),
+            ].sort((a,b)=>a.time.localeCompare(b.time));
+            return rows.length ? rows.map(r=>r.html).join('') : `<div class="empty">Nothing scheduled today</div>`;
+          })()}
         </div>
       </div>
       <div class="card">
@@ -631,6 +682,7 @@ function renderHealth() {
 
   $('#view-health').innerHTML = `
     <div class="view-title">Health</div>
+    <div class="cols"><div class="col">
 
     <div class="section-head"><h3>Water</h3><button class="link" data-act="editWaterGoal">Goal</button></div>
     <div class="card">
@@ -665,6 +717,8 @@ function renderHealth() {
         </div>`).join('')}
     </div>
 
+    </div><div class="col">
+
     <div class="section-head"><h3>Personal bests</h3><button class="link" data-act="addPB">+ PB</button></div>
     <div class="card"><div class="list">
       ${S.health.pbs.map(p => `
@@ -691,6 +745,8 @@ function renderHealth() {
       ${sleep.length ? barChart(sleep.map(s => ({ label: s.date.slice(5), v: s.hours })), { h: 90, min: 8 }) : ''}
       <div class="stat" style="margin-top:8px"><div class="k">7-night average</div><div class="v">${avgSleep.toFixed(1)} <small>hrs</small></div></div>
     </div>
+
+    </div></div>
   `;
 }
 
@@ -698,7 +754,8 @@ function renderHealth() {
 function renderMoney() {
   const pv = portfolioValue(), pc = portfolioDayChange(), cost = portfolioCost();
   const totalRet = pv - cost;
-  const hist = S.money.portfolioHistory.slice(-30).map(h => h.value);
+  const series = portfolioSeries();
+  const hist = series || S.money.portfolioHistory.slice(-30).map(h => h.value);
   const bills = upcomingBills();
   const bal = balance();
 
@@ -709,24 +766,49 @@ function renderMoney() {
       <div class="date">Portfolio value</div>
       <div class="greet">${AUD(pv, 2)}</div>
       <div class="weather" style="gap:14px">
-        <span class="${pc>=0?'':''}" style="color:${pc>=0?'#86efac':'#fca5a5'}">${pc>=0?'▲':'▼'} ${AUD(Math.abs(pc),2)} today</span>
+        <span style="color:${pc>=0?'#86efac':'#fca5a5'}">${pc>=0?'▲':'▼'} ${AUD(Math.abs(pc),2)} today</span>
         ${cost>0?`<span style="color:${totalRet>=0?'#86efac':'#fca5a5'}">${totalRet>=0?'▲':'▼'} ${AUD(Math.abs(totalRet),2)} total</span>`:''}
       </div>
     </div>
-    ${hist.length>1?`<div class="card" style="margin-top:14px">${areaChart(hist, { h: 110, color: 'var(--blue-500)' })}<div class="chart-legend"><span class="small muted">Last ${hist.length} snapshots</span></div></div>`:''}
+
+    <div class="cols"><div class="col">
+
+    <div class="section-head"><h3>Portfolio — last month</h3></div>
+    <div class="card">
+      ${hist.length>1 ? areaChart(hist, { h: 120, color: 'var(--blue-500)' }) + `<div class="chart-legend"><span class="small muted">${series ? 'Live daily closes · last month' : `Last ${hist.length} snapshots`}</span></div>` : `<div class="empty">Add a holding to see your live graph</div>`}
+    </div>
 
     <div class="section-head"><h3>Holdings</h3><div class="pill-row"><button class="link" data-act="refreshPrices">↻ Prices</button><button class="link" data-act="addHolding">+ Add</button></div></div>
     <div class="card"><div class="list">
       ${S.money.holdings.map(h => {
-        const q = quoteCache[h.symbol.toUpperCase()]; const val = holdingValue(h); const dc = holdingDayChange(h);
+        const sym = h.symbol.toUpperCase();
+        const q = quoteCache[sym]; const val = holdingValue(h); const dc = holdingDayChange(h);
         const pctc = q ? ((q.price - q.prev)/q.prev*100) : 0;
+        const spark = sparkline(chartCache[sym]?.c);
         return `<div class="item tap" data-act="editHolding" data-id="${h.id}">
-          <div class="body"><div class="t">${esc(h.symbol.toUpperCase())} <span class="muted small">${esc(h.name||'')}</span></div>
+          <div class="body"><div class="t">${esc(sym)} <span class="muted small">${esc(h.name||'')}</span></div>
             <div class="s">${h.shares} @ ${q?AUD(q.price):'—'}</div></div>
-          <div class="right"><div class="trail">${AUD(val,2)}</div>
+          ${spark}
+          <div class="right" style="min-width:86px"><div class="trail">${AUD(val,2)}</div>
             <div class="s ${dc>=0?'pos':'neg'}">${q?`${dc>=0?'+':''}${pctc.toFixed(2)}%`:'…'}</div></div>
         </div>`; }).join('') || `<div class="empty">Add stocks/ETFs (e.g. VAS.AX, VOO)</div>`}
     </div></div>
+
+    <div class="section-head"><h3>Money goals</h3><button class="link" data-act="addMoneyGoal">+ Goal</button></div>
+    <div class="card"><div class="list">
+      ${(S.money.goals||[]).map(g => { const p = clamp((g.saved||0)/(g.target||1), 0, 1);
+        return `<div class="mgoal">
+          <div class="mgoal-top tap" data-act="editMoneyGoal" data-id="${g.id}">
+            <span class="t">${esc(g.name)}</span>
+            <span class="${p>=1?'pos':'muted'} small nowrap">${AUD(g.saved||0,0)} / ${AUD(g.target,0)} (${Math.round(p*100)}%)</span>
+          </div>
+          <div class="bar" style="margin:7px 0 9px"><i style="width:${p*100}%;${p>=1?'background:var(--green)':''}"></i></div>
+          <div class="row"><input type="number" inputmode="decimal" placeholder="add $" id="mg_${g.id}" class="sm-input">
+            <button class="btn sm" data-act="addToMoneyGoal" data-id="${g.id}">Add</button></div>
+        </div>`; }).join('') || `<div class="empty">Saving for something? Add a goal (e.g. Car — $20,000)</div>`}
+    </div></div>
+
+    </div><div class="col">
 
     <div class="section-head"><h3>Bills</h3><button class="link" data-act="addBill">+ Bill</button></div>
     <div class="card"><div class="list">
@@ -757,14 +839,18 @@ function renderMoney() {
           <div class="trail ${t.dir==='in'?'pos':'neg'}">${t.dir==='in'?'+':'−'}${AUD(t.amount)}</div>
         </div>`).join('') || `<div class="empty">Log income & expenses</div>`}
     </div></div>
+
+    </div></div>
   `;
 }
 
 /* ---------- SYSTEMS ---------- */
 function renderSystems() {
   const wk = weekKey();
+  const iso = todayISO();
   $('#view-systems').innerHTML = `
     <div class="view-title">Systems</div>
+    <div class="cols"><div class="col">
 
     <div class="section-head"><h3>Current focus</h3></div>
     <div class="card"><textarea id="focusInput" data-bind="focus" placeholder="What are you focusing on right now?">${esc(S.systems.focus)}</textarea></div>
@@ -789,6 +875,19 @@ function renderSystems() {
         </div>`).join('') || `<div class="empty">What must happen every week?</div>`}
     </div></div>
 
+    </div><div class="col">
+
+    <div class="section-head"><h3>Habit reminders</h3><button class="link" data-act="addHabit">+ Habit</button></div>
+    <div class="card"><div class="small muted" style="margin-bottom:10px">Daily habits with a time — you'll get a reminder.</div><div class="list">
+      ${(S.systems.habits||[]).slice().sort((a,b)=>(a.time||'').localeCompare(b.time||'')).map(h => `
+        <div class="check ${h.doneDays && h.doneDays[iso] ? 'done' : ''}">
+          <span class="box tap" data-act="toggleHabit" data-id="${h.id}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 12l4 4 10-11"/></svg></span>
+          <span class="txt tap" data-act="editHabit" data-id="${h.id}">${esc(h.text)}</span>
+          <span class="chip nowrap">${esc(h.time||'')}</span>
+          <button class="del" data-act="delHabit" data-id="${h.id}">✕</button>
+        </div>`).join('') || `<div class="empty">e.g. Smoothie — 8:00 am, Gym — 4:00 pm</div>`}
+    </div></div>
+
     <div class="section-head"><h3>Bad-day minimums</h3><button class="link" data-act="addBadDay">+ Add</button></div>
     <div class="card"><div class="small muted" style="margin-bottom:10px">The bare minimum on a hard day.</div><div class="list">
       ${S.systems.badDay.map((t, i) => `
@@ -804,6 +903,8 @@ function renderSystems() {
           <div class="body"><div class="t">${esc(n.title||'Untitled')}</div><div class="s">${esc((n.body||'').slice(0,60))}</div></div>
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--text-3)" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg>
         </div>`).join('') || `<div class="empty">No notes yet</div>`}
+    </div></div>
+
     </div></div>
   `;
 }
@@ -1112,6 +1213,65 @@ const ACT = {
     save(); closeSheet(); renderSystems();
   },
   delNote(d) { S.systems.notes = S.systems.notes.filter(x=>x.id!==d.id); save(); closeSheet(); renderSystems(); },
+
+  /* ----- systems: habit reminders ----- */
+  addHabit() { ACT.editHabit({ id:'' }); },
+  editHabit(d) {
+    const h = (S.systems.habits||[]).find(x=>x.id===d.id) || { text:'', time:'' };
+    sheetForm(d.id?'Edit habit':'New habit','Daily habit with a reminder time.',
+      field('Habit','hb_text',{val:h.text,ph:'e.g. Gym, Smoothie'}) +
+      field('Time','hb_time',{type:'time',val:h.time}),
+      { save:'saveHabit', id:d.id, del:d.id?'delHabit':'' });
+  },
+  async saveHabit(d) {
+    const text = val('hb_text'); if (!text) return toast('Name the habit');
+    const time = val('hb_time'); if (!time) return toast('Pick a time');
+    if (!S.systems.habits) S.systems.habits = [];
+    if (d.id) Object.assign(S.systems.habits.find(x=>x.id===d.id), { text, time });
+    else S.systems.habits.push({ id: uid(), text, time, doneDays: {} });
+    save(); closeSheet(); renderSystems();
+    // make sure reminders can actually fire
+    if ('Notification' in window && Notification.permission === 'default') {
+      const p = await Notification.requestPermission();
+      S.settings.notify = p === 'granted'; save(false);
+    }
+    toast(S.settings.notify || Notification.permission === 'granted' ? 'Habit saved — reminder set' : 'Saved (enable notifications in Settings for alerts)');
+  },
+  delHabit(d) { S.systems.habits = (S.systems.habits||[]).filter(x=>x.id!==d.id); save(); closeSheet(); renderSystems(); },
+  toggleHabit(d) {
+    const h = (S.systems.habits||[]).find(x=>x.id===d.id); if (!h) return;
+    if (!h.doneDays) h.doneDays = {};
+    const iso = todayISO();
+    h.doneDays[iso] = !h.doneDays[iso];
+    save(); render(currentTab);
+  },
+
+  /* ----- money: goals ----- */
+  addMoneyGoal() { ACT.editMoneyGoal({ id:'' }); },
+  editMoneyGoal(d) {
+    const g = (S.money.goals||[]).find(x=>x.id===d.id) || { name:'', target:'', saved:'' };
+    sheetForm(d.id?'Edit money goal':'New money goal','',
+      field('Goal','mg_name',{val:g.name,ph:'e.g. Car, Trip to Japan'}) +
+      `<div class="row">${field('Target ($)','mg_target',{type:'number',step:'any',val:g.target,inputmode:'decimal'})}${field('Saved so far ($)','mg_saved',{type:'number',step:'any',val:g.saved,inputmode:'decimal'})}</div>`,
+      { save:'saveMoneyGoal', id:d.id, del:d.id?'delMoneyGoal':'' });
+  },
+  saveMoneyGoal(d) {
+    const name = val('mg_name'); if (!name) return toast('Name the goal');
+    const target = num(val('mg_target')); if (!target) return toast('Set a target');
+    if (!S.money.goals) S.money.goals = [];
+    const rec = { name, target, saved: num(val('mg_saved')) };
+    if (d.id) Object.assign(S.money.goals.find(x=>x.id===d.id), rec);
+    else S.money.goals.push({ id: uid(), ...rec });
+    save(); closeSheet(); renderMoney();
+  },
+  delMoneyGoal(d) { S.money.goals = (S.money.goals||[]).filter(x=>x.id!==d.id); save(); closeSheet(); renderMoney(); },
+  addToMoneyGoal(d) {
+    const g = (S.money.goals||[]).find(x=>x.id===d.id); if (!g) return;
+    const amt = num(val('mg_' + d.id)); if (!amt) return toast('Type an amount');
+    g.saved = (g.saved||0) + amt;
+    save(); renderMoney();
+    toast(g.saved >= g.target ? `${g.name}: goal reached! 🎉` : `+${AUD(amt,0)} to ${g.name}`);
+  },
 };
 
 /* ============================================================
@@ -1119,7 +1279,10 @@ const ACT = {
    ============================================================ */
 async function refreshPrices() {
   if (!S.money.holdings.length) return;
-  await fetchQuotes(S.money.holdings.map(h => h.symbol));
+  await Promise.all([
+    fetchQuotes(S.money.holdings.map(h => h.symbol)),
+    fetchCharts(S.money.holdings.map(h => h.symbol)),
+  ]);
   // snapshot portfolio value for today
   const pv = portfolioValue();
   if (pv > 0) {
@@ -1143,6 +1306,31 @@ function refreshBadges() {
   else if (badge) badge.remove();
 }
 
+function checkHabitReminders() {
+  const habits = S.systems.habits || [];
+  if (!habits.length) return;
+  const now = new Date();
+  const hm = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+  const key = 'compass_habits_fired_' + todayISO();
+  const fired = JSON.parse(localStorage.getItem(key) || '[]');
+  habits.forEach(h => {
+    if (!h.time || fired.includes(h.id)) return;
+    if (h.doneDays && h.doneDays[todayISO()]) return;         // already done today
+    if (h.time <= hm && hm <= addMinutes(h.time, 10)) {        // fire within a 10-min window
+      if ('Notification' in window && Notification.permission === 'granted') {
+        try { new Notification('⏰ ' + h.text, { body: `It's ${h.time} — time for ${h.text.toLowerCase()}`, icon: 'icons/icon-192.png', tag: 'habit-' + h.id }); } catch (e) {}
+      }
+      toast(`⏰ ${h.time} — ${h.text}`);
+      fired.push(h.id);
+    }
+  });
+  localStorage.setItem(key, JSON.stringify(fired));
+}
+function addMinutes(hm, mins) {
+  const [h, m] = hm.split(':').map(Number);
+  const t = h * 60 + m + mins;
+  return `${String(Math.floor(t / 60) % 24).padStart(2,'0')}:${String(t % 60).padStart(2,'0')}`;
+}
 async function checkReminders() {
   if (!S.settings.notify || Notification.permission !== 'granted') return;
   const key = 'compass_notified_' + todayISO();
@@ -1341,9 +1529,11 @@ function startApp() {
   pull().finally(seedBillsOnce);   // add imported bills once we have the latest cloud state
   checkReminders();
   refreshBadges();
+  checkHabitReminders();
   // periodic
   setInterval(refreshPrices, 5 * 60 * 1000);
   setInterval(pull, 60 * 1000);
+  setInterval(checkHabitReminders, 30 * 1000);
 }
 
 // One-time import of Tyson's recurring bills (from the old dashboard). Dedupes by name; runs once per device.
@@ -1380,5 +1570,5 @@ function boot() {
   // register SW
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
 }
-document.addEventListener('visibilitychange', () => { if (!document.hidden) { pull(); checkReminders(); } });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { pull(); checkReminders(); checkHabitReminders(); } });
 boot();
