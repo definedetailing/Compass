@@ -450,26 +450,12 @@ function renderHome() {
       </div>
     </div>
 
-    <div class="section-head"><h3>Today</h3><button class="link" data-tab-go="calendar">Calendar →</button></div>
-    <div class="card">
-      <div class="list">
-        ${todaysEvents.length ? todaysEvents.map(e => `
-          <div class="item" style="border-left:4px solid ${catColor(e.category)}">
-            <div class="body"><div class="t">${esc(e.title)}</div><div class="s">${[evTime(e), e.category].filter(Boolean).map(esc).join(' · ')}</div></div>
-            ${e.cost>0?`<div class="trail">${AUD(e.cost,0)}</div>`:''}
-          </div>`).join('') : `<div class="empty">Nothing scheduled today</div>`}
-      </div>
-      ${mustDo.length ? `<hr class="hr"><div class="small muted" style="margin-bottom:8px">This week's must-dos</div>
-        <div class="list">${mustDo.map(m => `
-          <div class="check" data-act="toggleWeekly" data-id="${m.id}"><span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 12l4 4 10-11"/></svg></span><span class="txt">${esc(m.text)}</span></div>`).join('')}</div>` : ''}
-    </div>
-
     <div class="section-head"><h3>Snapshot</h3></div>
-    <div class="grid g2">
+    <div class="stats-row">
       <div class="card stat tap" data-tab-go="health">
         <div class="k">💧 Water</div>
         <div class="v">${(waterToday/1000).toFixed(2)}<small> / ${(S.health.water.goalMl/1000).toFixed(1)} L</small></div>
-        <div class="bar" style="margin-top:8px"><i style="width:${waterPct*100}%"></i></div>
+        <div class="bar"><i style="width:${waterPct*100}%"></i></div>
       </div>
       <div class="card stat tap" data-tab-go="money">
         <div class="k">📈 Portfolio</div>
@@ -478,14 +464,36 @@ function renderHome() {
       </div>
       <div class="card stat tap" data-tab-go="money">
         <div class="k">🧾 Next bill</div>
-        ${nextBill ? `<div class="v" style="font-size:17px">${esc(nextBill.name)}</div>
+        ${nextBill ? `<div class="v" style="font-size:18px">${esc(nextBill.name)}</div>
           <div class="sub ${nextBill.status==='over'?'neg':''}">${AUD(nextBill.amount)} · ${nextBill.dd<0?`${-nextBill.dd}d overdue`:nextBill.dd===0?'due today':`in ${nextBill.dd}d`}</div>`
-          : `<div class="v" style="font-size:15px" class="muted">None set</div>`}
+          : `<div class="v muted" style="font-size:16px">None set</div>`}
       </div>
       <div class="card stat tap" data-tab-go="systems">
         <div class="k">🎯 Goals</div>
         <div class="v">${S.systems.goals.filter(g=>g.done).length}<small> / ${S.systems.goals.length} done</small></div>
         <div class="sub">${S.systems.goals.length ? 'Keep going' : 'Add a goal'}</div>
+      </div>
+    </div>
+
+    <div class="section-head"><h3>Today</h3><button class="link" data-tab-go="calendar">Calendar →</button></div>
+    <div class="home-cols">
+      <div class="card">
+        <div class="card-label">Today's agenda</div>
+        <div class="list">
+          ${todaysEvents.length ? todaysEvents.map(e => `
+            <div class="item" style="border-left:4px solid ${catColor(e.category)}">
+              <div class="body"><div class="t">${esc(e.title)}</div><div class="s">${[evTime(e), e.category].filter(Boolean).map(esc).join(' · ')}</div></div>
+              ${e.cost>0?`<div class="trail">${AUD(e.cost,0)}</div>`:''}
+            </div>`).join('') : `<div class="empty">Nothing scheduled today</div>`}
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-label">This week's must-dos</div>
+        <div class="list">
+          ${mustDo.length ? mustDo.map(m => `
+            <div class="check" data-act="toggleWeekly" data-id="${m.id}"><span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 12l4 4 10-11"/></svg></span><span class="txt">${esc(m.text)}</span></div>`).join('')
+            : `<div class="empty">All done for this week 🎉</div>`}
+        </div>
       </div>
     </div>
   `;

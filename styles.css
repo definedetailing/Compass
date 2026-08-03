@@ -193,11 +193,13 @@ label.field > span { display: block; font-size: 12.5px; font-weight: 600; color:
 .grid.g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .grid.g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .grid.g2 > * , .grid.g3 > * { min-width: 0; }
-/* home snapshot: force all tiles to identical size (min-height must exceed the
-   tallest tile — Water, which has a progress bar — so every tile matches it) */
-#view-home .grid.g2 { grid-auto-rows: 1fr; align-items: stretch; }
-#view-home .grid.g2 .card { min-height: 132px; height: 100%; display: flex; flex-direction: column; justify-content: center; }
-#view-home .grid.g2 .card .bar { margin-top: 10px; }
+
+/* ---------- Home layout ---------- */
+.stats-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--gap); align-items: stretch; }
+.stats-row .card { min-width: 0; min-height: 128px; display: flex; flex-direction: column; justify-content: center; gap: 2px; }
+.stats-row .card .bar { margin-top: 10px; }
+.home-cols { display: grid; grid-template-columns: 1fr; gap: var(--gap); align-items: start; }
+.card-label { font-size: 11.5px; font-weight: 700; color: var(--text-3); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 12px; }
 @media (max-width: 430px) { .grid.g3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 .hero {
@@ -421,8 +423,11 @@ label.field > span { display: block; font-size: 12.5px; font-weight: 600; color:
   .view > * { break-inside: avoid; }
   .view-title, .view-sub, .hero { column-span: all; }
   .section-head { break-after: avoid; }
-  #view-calendar { column-count: 1; }   /* calendar stays full-width */
+  #view-calendar, #view-home { column-count: 1; }   /* these use their own full-width layout */
   .topbar { padding-left: 4px; padding-right: 4px; }
+  /* Home: KPI row of 4, then agenda + must-dos side by side */
+  .stats-row { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .home-cols { grid-template-columns: 1.3fr 1fr; }
 }
 
 /* misc */
