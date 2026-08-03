@@ -58,6 +58,7 @@ function defaultState() {
   const t = todayISO();
   return {
     v: 1, updatedAt: Date.now(),
+    brief: { text: '', date: '', generated: 0 },   // 7am email brief (written by the scheduled task)
     profile: { name: 'Tyson', city: 'Gold Coast', lat: -28.0167, lon: 153.4000 },
     settings: { theme: 'auto', pinHash: null, weatherOn: true, notify: false },
     calendar: { events: [] },
@@ -512,6 +513,17 @@ function renderHome() {
       </div>` : ''}
     </div>
 
+    ${(() => {
+      const b = S.brief;
+      if (!b || !b.text) return '';
+      const fresh = b.date === todayISO();
+      return `<div class="section-head"><h3>Morning brief</h3>
+        <span class="small muted">${fresh ? 'today' : esc(b.date || '')}</span></div>
+        <div class="card brief-card ${fresh ? '' : 'stale'}">
+          <pre class="brief-text">${esc(b.text)}</pre>
+        </div>`;
+    })()}
+
     <div class="section-head"><h3>Snapshot</h3></div>
     <div class="stats-row">
       <div class="card stat tap" data-tab-go="health">
@@ -552,7 +564,7 @@ function renderHome() {
             const rows = [
               ...todaysEvents.map(e => ({ time: e.start || e.time || '', html: `
                 <div class="item" style="border-left:4px solid ${catColor(e.category)}">
-                  <div class="body"><div class="t">${esc(e.title)}</div><div class="s">${[evTime(e), e.category].filter(Boolean).map(esc).join(' · ')}</div></div>
+                  <div class="body"><div class="t">${esc(e.title)}${e.source==='email'?' <span class="chip src" title="added from your email">✉︎</span>':''}</div><div class="s">${[evTime(e), e.category].filter(Boolean).map(esc).join(' · ')}</div></div>
                   ${e.cost>0?`<div class="trail">${AUD(e.cost,0)}</div>`:''}
                 </div>` })),
               ...(S.systems.habits||[]).map(h => ({ time: h.time || '', html: `
@@ -669,7 +681,7 @@ function dayList(evs) {
   if (!evs.length) return `<div class="card"><div class="empty">No events. Tap “Add”.</div></div>`;
   return `<div class="card"><div class="list">${evs.map(e => `
     <div class="item tap" data-act="editEvent" data-id="${e.id}" style="border-left:4px solid ${catColor(e.category)}">
-      <div class="body"><div class="t">${esc(e.title)}${e.recurring?' <span class="chip" style="padding:1px 7px;font-size:10px">weekly</span>':''}</div>
+      <div class="body"><div class="t">${esc(e.title)}${e.recurring?' <span class="chip" style="padding:1px 7px;font-size:10px">weekly</span>':''}${e.source==='email'?' <span class="chip src" title="added from your email">✉︎</span>':''}</div>
         <div class="s">${[evTime(e), e.category, e.cost>0?AUD(e.cost,0):''].filter(Boolean).map(esc).join(' · ')}</div>
         ${e.notes?`<div class="s">${esc(e.notes)}</div>`:''}</div>
     </div>`).join('')}</div></div>`;
@@ -839,7 +851,7 @@ function renderMoney() {
     <div class="card"><div class="list">
       ${S.money.transactions.slice().reverse().slice(0,12).map(t => `
         <div class="item tap" data-act="editTxn" data-id="${t.id}">
-          <div class="body"><div class="t">${esc(t.desc)}</div><div class="s">${esc(t.category||'—')} · ${esc(t.date)}</div></div>
+          <div class="body"><div class="t">${esc(t.desc)}${t.source==='email'?' <span class="chip src" title="added from your email">✉︎</span>':''}</div><div class="s">${esc(t.category||'—')} · ${esc(t.date)}</div></div>
           <div class="trail ${t.dir==='in'?'pos':'neg'}">${t.dir==='in'?'+':'−'}${AUD(t.amount)}</div>
         </div>`).join('') || `<div class="empty">Log income & expenses</div>`}
     </div></div>
