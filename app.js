@@ -532,9 +532,13 @@ function renderHome() {
           : `<div class="v muted" style="font-size:16px">None set</div>`}
       </div>
       <div class="card stat tap" data-tab-go="systems">
-        <div class="k">🎯 Goals</div>
-        <div class="v">${S.systems.goals.filter(g=>g.done).length}<small> / ${S.systems.goals.length} done</small></div>
-        <div class="sub">${S.systems.goals.length ? 'Keep going' : 'Add a goal'}</div>
+        <div class="k">✅ Today</div>
+        ${(() => { const dp = dayProgress();
+          return dp ? `<div class="v">${dp.done}<small> / ${dp.total} done</small></div>
+            <div class="sub">${dp.pct>=1 ? 'All clear 🎉' : `${dp.total-dp.done} left today`}</div>
+            <div class="bar slim"><i style="width:${dp.pct*100}%"></i></div>`
+          : `<div class="v">${S.systems.goals.filter(g=>g.done).length}<small> / ${S.systems.goals.length} goals</small></div>
+            <div class="sub">Add habits in Systems</div>`; })()}
       </div>
     </div>
 
@@ -883,6 +887,7 @@ function renderSystems() {
         <div class="check ${h.doneDays && h.doneDays[iso] ? 'done' : ''}">
           <span class="box tap" data-act="toggleHabit" data-id="${h.id}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 12l4 4 10-11"/></svg></span>
           <span class="txt tap" data-act="editHabit" data-id="${h.id}">${esc(h.text)}</span>
+          ${habitStreak(h) > 1 ? `<span class="chip good nowrap" title="day streak">🔥 ${habitStreak(h)}</span>` : ''}
           <span class="chip nowrap">${esc(h.time||'')}</span>
           <button class="del" data-act="delHabit" data-id="${h.id}">✕</button>
         </div>`).join('') || `<div class="empty">e.g. Smoothie — 8:00 am, Gym — 4:00 pm</div>`}
@@ -1306,6 +1311,25 @@ function refreshBadges() {
   else if (badge) badge.remove();
 }
 
+// consecutive days completed, counting back from today (or yesterday if today isn't done yet)
+function habitStreak(h) {
+  const done = h.doneDays || {};
+  let n = 0;
+  const d = new Date();
+  if (!done[todayISO(d)]) d.setDate(d.getDate() - 1);   // today still pending — don't break the streak
+  while (done[todayISO(d)]) { n++; d.setDate(d.getDate() - 1); }
+  return n;
+}
+// how much of today's plan is done (habits + weekly must-dos) — the "5-second" signal
+function dayProgress() {
+  const iso = todayISO(), wk = weekKey();
+  const habits = S.systems.habits || [];
+  const weekly = S.systems.weekly || [];
+  const total = habits.length + weekly.length;
+  if (!total) return null;
+  const done = habits.filter(h => h.doneDays && h.doneDays[iso]).length + weekly.filter(m => m.weeks[wk]).length;
+  return { done, total, pct: done / total };
+}
 function checkHabitReminders() {
   const habits = S.systems.habits || [];
   if (!habits.length) return;
