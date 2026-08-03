@@ -465,6 +465,7 @@ function upcomingBills() {
    ============================================================ */
 let currentTab = 'home';
 let calView = 'week', calCursor = new Date(), calSel = todayISO();
+let briefOpen = false;   // Morning brief card collapsed by default
 
 function renderAll() { render(currentTab); refreshBadges(); }
 function render(tab) {
@@ -517,10 +518,12 @@ function renderHome() {
       const b = S.brief;
       if (!b || !b.text) return '';
       const fresh = b.date === todayISO();
+      const long = b.text.split('\n').length > 7 || b.text.length > 340;
       return `<div class="section-head"><h3>Morning brief</h3>
         <span class="small muted">${fresh ? 'today' : esc(b.date || '')}</span></div>
-        <div class="card brief-card ${fresh ? '' : 'stale'}">
+        <div class="card brief-card ${fresh ? '' : 'stale'} ${long && !briefOpen ? 'clipped' : ''}">
           <pre class="brief-text">${esc(b.text)}</pre>
+          ${long ? `<button class="brief-more" data-act="toggleBrief">${briefOpen ? 'Show less' : 'Show more'}</button>` : ''}
         </div>`;
     })()}
 
@@ -954,6 +957,7 @@ const val = id => { const el = $('#' + id); return el ? el.value.trim() : ''; };
 const ACT = {
   /* nav-ish */
   editFocus() { render('systems'); setTimeout(()=>{ const f=$('#focusInput'); if(f){f.focus();} }, 80); },
+  toggleBrief() { briefOpen = !briefOpen; renderHome(); },
 
   /* ----- calendar ----- */
   calPrev() { calCursor = new Date(calCursor.getFullYear(), calCursor.getMonth()-1, 1); renderCalBody(); },
