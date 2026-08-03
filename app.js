@@ -355,6 +355,21 @@ function wxIcon(code) {
   if (code >= 95) return '⛈️';
   return '🌡️';
 }
+// Animated weather layer for the hero, chosen by weather code.
+function heroWeatherFX(code) {
+  const sun = `<div class="fx-sun"></div>`;
+  const cloud = c => `<div class="fx-cloud ${c}"><span></span><span></span></div>`;
+  const many = (cls, n) => { let s = ''; for (let i = 0; i < n; i++) s += `<i class="${cls}" style="left:${Math.round(Math.random()*100)}%;animation-delay:${(Math.random()*2).toFixed(2)}s;animation-duration:${(cls==='fx-drop'?0.7+Math.random()*0.5:3+Math.random()*2.5).toFixed(2)}s"></i>`; return s; };
+  let inner;
+  if (code === 0 || code === 1) inner = sun;
+  else if (code === 2) inner = sun + cloud('c1');
+  else if (code === 3 || code === 45 || code === 48) inner = cloud('c1') + cloud('c2');
+  else if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) inner = cloud('c1') + many('fx-drop', 18);
+  else if ((code >= 71 && code <= 77) || code === 85 || code === 86) inner = cloud('c1') + many('fx-snow', 16);
+  else if (code >= 95) inner = cloud('c2') + many('fx-drop', 18) + `<div class="fx-flash"></div>`;
+  else inner = sun;
+  return `<div class="hero-fx">${inner}</div>`;
+}
 
 /* ============================================================
    Money helpers
@@ -441,6 +456,7 @@ function renderHome() {
 
   $('#view-home').innerHTML = `
     <div class="hero">
+      ${heroWeatherFX(wx ? wx.code : 0)}
       <div class="hero-lead">
         <div class="greet">${greet}, ${esc(S.profile.name)}</div>
         <div class="date">${dateStr}</div>
@@ -616,7 +632,7 @@ function renderHealth() {
   $('#view-health').innerHTML = `
     <div class="view-title">Health</div>
 
-    <div class="section-head"><h3>💧 Water</h3><button class="link" data-act="editWaterGoal">Goal</button></div>
+    <div class="section-head"><h3>Water</h3><button class="link" data-act="editWaterGoal">Goal</button></div>
     <div class="card">
       <div class="ring-wrap">
         ${ring(wp, { size: 84 })}
@@ -633,7 +649,7 @@ function renderHealth() {
       </div>
     </div>
 
-    <div class="section-head"><h3>🏋️ Gym split</h3><button class="link" data-act="addSplit">+ Day</button></div>
+    <div class="section-head"><h3>Gym split</h3><button class="link" data-act="addSplit">+ Day</button></div>
     <div class="list">
       ${S.health.splits.map(sp => `
         <div class="card">
@@ -649,7 +665,7 @@ function renderHealth() {
         </div>`).join('')}
     </div>
 
-    <div class="section-head"><h3>🏆 Personal bests</h3><button class="link" data-act="addPB">+ PB</button></div>
+    <div class="section-head"><h3>Personal bests</h3><button class="link" data-act="addPB">+ PB</button></div>
     <div class="card"><div class="list">
       ${S.health.pbs.map(p => `
         <div class="item tap" data-act="editPB" data-id="${p.id}">
@@ -658,7 +674,7 @@ function renderHealth() {
         </div>`).join('') || '<div class="empty">No PBs yet</div>'}
     </div></div>
 
-    <div class="section-head"><h3>🏃 Runs</h3><button class="link" data-act="addRun">+ Run</button></div>
+    <div class="section-head"><h3>Runs</h3><button class="link" data-act="addRun">+ Run</button></div>
     <div class="card">
       ${runs.length ? barChart(runs.map(r => ({ label: r.date.slice(5), v: r.distanceKm })), { h: 90 }) : ''}
       <div class="list" style="margin-top:10px">
@@ -670,7 +686,7 @@ function renderHealth() {
       </div>
     </div>
 
-    <div class="section-head"><h3>😴 Sleep</h3><button class="link" data-act="addSleep">+ Log</button></div>
+    <div class="section-head"><h3>Sleep</h3><button class="link" data-act="addSleep">+ Log</button></div>
     <div class="card">
       ${sleep.length ? barChart(sleep.map(s => ({ label: s.date.slice(5), v: s.hours })), { h: 90, min: 8 }) : ''}
       <div class="stat" style="margin-top:8px"><div class="k">7-night average</div><div class="v">${avgSleep.toFixed(1)} <small>hrs</small></div></div>
@@ -712,7 +728,7 @@ function renderMoney() {
         </div>`; }).join('') || `<div class="empty">Add stocks/ETFs (e.g. VAS.AX, VOO)</div>`}
     </div></div>
 
-    <div class="section-head"><h3>🧾 Bills</h3><button class="link" data-act="addBill">+ Bill</button></div>
+    <div class="section-head"><h3>Bills</h3><button class="link" data-act="addBill">+ Bill</button></div>
     <div class="card"><div class="list">
       ${bills.map(b => `
         <div class="item">
@@ -723,7 +739,7 @@ function renderMoney() {
         </div>`).join('') || `<div class="empty">Add a monthly bill to get reminders</div>`}
     </div></div>
 
-    <div class="section-head"><h3>💳 Budgets — ${MON[new Date().getMonth()]}</h3><button class="link" data-act="addBudget">+ Budget</button></div>
+    <div class="section-head"><h3>Budgets — ${MON[new Date().getMonth()]}</h3><button class="link" data-act="addBudget">+ Budget</button></div>
     <div class="card"><div class="list">
       ${S.money.budgets.map(bd => { const sp = spentThisMonth(bd.category); const p = clamp(sp/bd.limit,0,1);
         return `<div data-act="editBudget" data-id="${bd.id}" class="tap">
@@ -733,7 +749,7 @@ function renderMoney() {
         </div>`; }).join('') || `<div class="empty">No budgets set</div>`}
     </div></div>
 
-    <div class="section-head"><h3>💸 Money tracker</h3><div class="pill-row"><span class="chip ${bal>=0?'good':'bad'}">Balance ${AUD(bal,2)}</span><button class="link" data-act="addTxn">+ Entry</button></div></div>
+    <div class="section-head"><h3>Money tracker</h3><div class="pill-row"><span class="chip ${bal>=0?'good':'bad'}">Balance ${AUD(bal,2)}</span><button class="link" data-act="addTxn">+ Entry</button></div></div>
     <div class="card"><div class="list">
       ${S.money.transactions.slice().reverse().slice(0,12).map(t => `
         <div class="item tap" data-act="editTxn" data-id="${t.id}">
@@ -750,10 +766,10 @@ function renderSystems() {
   $('#view-systems').innerHTML = `
     <div class="view-title">Systems</div>
 
-    <div class="section-head"><h3>🎯 Current focus</h3></div>
+    <div class="section-head"><h3>Current focus</h3></div>
     <div class="card"><textarea id="focusInput" data-bind="focus" placeholder="What are you focusing on right now?">${esc(S.systems.focus)}</textarea></div>
 
-    <div class="section-head"><h3>🏁 Goals</h3><button class="link" data-act="addGoal">+ Goal</button></div>
+    <div class="section-head"><h3>Goals</h3><button class="link" data-act="addGoal">+ Goal</button></div>
     <div class="card"><div class="list">
       ${S.systems.goals.map(g => `
         <div class="check ${g.done?'done':''}">
@@ -763,7 +779,7 @@ function renderSystems() {
         </div>`).join('') || `<div class="empty">Add your first goal</div>`}
     </div></div>
 
-    <div class="section-head"><h3>🔁 Weekly must-dos</h3><button class="link" data-act="addWeekly">+ Add</button></div>
+    <div class="section-head"><h3>Weekly must-dos</h3><button class="link" data-act="addWeekly">+ Add</button></div>
     <div class="card"><div class="list">
       ${S.systems.weekly.map(m => `
         <div class="check ${m.weeks[wk]?'done':''}">
@@ -773,7 +789,7 @@ function renderSystems() {
         </div>`).join('') || `<div class="empty">What must happen every week?</div>`}
     </div></div>
 
-    <div class="section-head"><h3>🛟 Bad-day minimums</h3><button class="link" data-act="addBadDay">+ Add</button></div>
+    <div class="section-head"><h3>Bad-day minimums</h3><button class="link" data-act="addBadDay">+ Add</button></div>
     <div class="card"><div class="small muted" style="margin-bottom:10px">The bare minimum on a hard day.</div><div class="list">
       ${S.systems.badDay.map((t, i) => `
         <div class="item"><span class="dot" style="background:var(--amber)"></span>
@@ -781,7 +797,7 @@ function renderSystems() {
           <button class="del" data-act="delBadDay" data-i="${i}">✕</button></div>`).join('') || `<div class="empty">Add a minimum</div>`}
     </div></div>
 
-    <div class="section-head"><h3>📝 Notes</h3><button class="link" data-act="addNote">+ Note</button></div>
+    <div class="section-head"><h3>Notes</h3><button class="link" data-act="addNote">+ Note</button></div>
     <div class="card"><div class="list">
       ${S.systems.notes.slice().sort((a,b)=>b.updatedAt-a.updatedAt).map(n => `
         <div class="item tap" data-act="openNote" data-id="${n.id}">
