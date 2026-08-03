@@ -498,32 +498,32 @@ function orderBlocks(tab, blocks) {
 function renderBlocks(tab, blocks) {
   const ordered = orderBlocks(tab, blocks);
   currentBlockKeys[tab] = ordered.map(b => b.key);
-  const one = (b, i) => `<div class="sec" data-sec="${b.key}">
+  const one = (b) => `<div class="sec ${arranging?'arrangeable':''}" data-sec="${b.key}" data-tab="${tab}" ${arranging?'draggable="true"':''}>
     ${arranging ? `<div class="arrange-bar">
-      <span class="an">${esc(b.name)}</span>
-      <span class="pill-row">
-        <button class="iconbtn sm" data-act="secUp" data-tab="${tab}" data-k="${b.key}" ${i===0?'disabled':''}>↑</button>
-        <button class="iconbtn sm" data-act="secDown" data-tab="${tab}" data-k="${b.key}" ${i===ordered.length-1?'disabled':''}>↓</button>
-      </span></div>` : ''}
+      <span class="grip">⠿</span><span class="an">${esc(b.name)}</span>
+      <span class="small muted">drag to move</span></div>` : ''}
     ${b.html}
   </div>`;
   // split into two balanced columns — on mobile .cols collapses to one, so this
   // is simply sequential order there
   const half = Math.ceil(ordered.length / 2);
-  const colA = ordered.slice(0, half).map((b, i) => one(b, i)).join('');
-  const colB = ordered.slice(half).map((b, i) => one(b, i + half)).join('');
-  return `<div class="cols"><div class="col">${colA}</div><div class="col">${colB}</div></div>`;
+  const colA = ordered.slice(0, half).map(one).join('');
+  const colB = ordered.slice(half).map(one).join('');
+  return `<div class="cols ${arranging?'arranging':''}"><div class="col">${colA}</div><div class="col">${colB}</div></div>`;
 }
-function moveSection(tab, key, dir) {
-  const blocks = currentBlockKeys[tab] || [];
-  const cur = orderBlocks(tab, blocks.map(k => ({ key: k }))).map(b => b.key);
-  const i = cur.indexOf(key), j = i + dir;
-  if (i < 0 || j < 0 || j >= cur.length) return;
-  cur.splice(j, 0, cur.splice(i, 1)[0]);
+// drop `key` immediately before `beforeKey` (or at the end when null)
+function reorderSection(tab, key, beforeKey) {
+  const cur = (currentBlockKeys[tab] || []).slice();
+  const i = cur.indexOf(key);
+  if (i < 0 || key === beforeKey) return false;
+  cur.splice(i, 1);
+  const j = beforeKey ? cur.indexOf(beforeKey) : -1;
+  if (j < 0) cur.push(key); else cur.splice(j, 0, key);
   S.settings.order = S.settings.order || {};
   S.settings.order[tab] = cur;
   save();
   render(tab);
+  return true;
 }
 let currentBlockKeys = {};   // tab -> [key] as last rendered
 function arrangeHeader(tab) {
@@ -590,6 +590,7 @@ function renderHome() {
         </div>`;
     })()}
 
+    ${arranging ? '' : `<div class="section-head" style="margin-top:8px"><span></span>${arrangeHeader('home')}</div>`}
     <div class="section-head"><h3>Snapshot</h3></div>
     <div class="stats-row">
       <div class="card stat tap" data-tab-go="health">
@@ -762,10 +763,8 @@ function renderHealth() {
   const avgSleep = sleep.length ? (sleep.reduce((a,s)=>a+s.hours,0)/sleep.length) : 0;
   const runs = S.health.runs.slice(-8);
 
-  $('#view-health').innerHTML = `
-    <div class="view-title">Health</div>
-    <div class="cols"><div class="col">
-
+  const B = [];
+  B.push({ key:'water', name:'Water', html: `
     <div class="section-head"><h3>Water</h3><button class="link" data-act="editWaterGoal">Goal</button></div>
     <div class="card">
       <div class="ring-wrap">
@@ -781,8 +780,9 @@ function renderHealth() {
         <button class="btn sm" data-act="water" data-ml="750">+750</button>
         <button class="btn sm ghost" data-act="water" data-ml="-250">−250</button>
       </div>
-    </div>
+    </div>` });
 
+  B.push({ key:'split', name:'Gym split', html: `
     <div class="section-head"><h3>Gym split</h3><button class="link" data-act="addSplit">+ Day</button></div>
     <div class="list">
       ${S.health.splits.map(sp => `
@@ -797,10 +797,9 @@ function renderHealth() {
             <div class="item"><div class="body"><div class="t">${esc(x.n)}</div></div>
               <div class="trail">${esc(x.s)}×${esc(x.r)}</div></div>`).join('') || '<div class="empty small">No exercises</div>'}</div>
         </div>`).join('')}
-    </div>
+    </div>` });
 
-    </div><div class="col">
-
+  B.push({ key:'pbs', name:'Personal bests', html: `
     <div class="section-head"><h3>Personal bests</h3><button class="link" data-act="addPB">+ PB</button></div>
     <div class="card"><div class="list">
       ${S.health.pbs.map(p => `
@@ -808,8 +807,9 @@ function renderHealth() {
           <div class="body"><div class="t">${esc(p.lift)}</div><div class="s">${esc(p.date)}</div></div>
           <div class="trail">${p.weight} kg${p.reps>1?` ×${p.reps}`:''}</div>
         </div>`).join('') || '<div class="empty">No PBs yet</div>'}
-    </div></div>
+    </div></div>` });
 
+  B.push({ key:'runs', name:'Runs', html: `
     <div class="section-head"><h3>Runs</h3><button class="link" data-act="addRun">+ Run</button></div>
     <div class="card">
       ${runs.length ? barChart(runs.map(r => ({ label: r.date.slice(5), v: r.distanceKm })), { h: 90 }) : ''}
@@ -820,16 +820,18 @@ function renderHealth() {
             <div class="trail">${r.timeMin && r.distanceKm ? (r.timeMin/r.distanceKm).toFixed(1)+' /km' : ''}</div>
           </div>`).join('') || '<div class="empty">Log your first run</div>'}
       </div>
-    </div>
+    </div>` });
 
+  B.push({ key:'sleep', name:'Sleep', html: `
     <div class="section-head"><h3>Sleep</h3><button class="link" data-act="addSleep">+ Log</button></div>
     <div class="card">
       ${sleep.length ? barChart(sleep.map(s => ({ label: s.date.slice(5), v: s.hours })), { h: 90, min: 8 }) : ''}
       <div class="stat" style="margin-top:8px"><div class="k">7-night average</div><div class="v">${avgSleep.toFixed(1)} <small>hrs</small></div></div>
-    </div>
+    </div>` });
 
-    </div></div>
-  `;
+  $('#view-health').innerHTML =
+    `<div class="section-head" style="margin-top:0"><div class="view-title" style="margin:0">Health</div>${arrangeHeader('health')}</div>`
+    + renderBlocks('health', B);
 }
 
 /* ---------- MONEY ---------- */
@@ -843,7 +845,7 @@ function renderMoney() {
   const wk = periodIsWeekly();
 
   $('#view-money').innerHTML = `
-    <div class="view-title">Money</div>
+    <div class="section-head" style="margin-top:0"><div class="view-title" style="margin:0">Money</div>${arrangeHeader('money')}</div>
 
     <div class="hero" style="background:linear-gradient(140deg,#0f4c81,#1d4ed8 60%,#2563eb)">
       <div class="date">Portfolio value</div>
@@ -854,13 +856,16 @@ function renderMoney() {
       </div>
     </div>
 
-    <div class="cols"><div class="col">
+    `;
 
+  const B = [];
+  B.push({ key:'chart', name:'Portfolio chart', html: `
     <div class="section-head"><h3>Portfolio — last month</h3></div>
     <div class="card">
       ${hist.length>1 ? areaChart(hist, { h: 120, color: 'var(--blue-500)' }) + `<div class="chart-legend"><span class="small muted">${series ? 'Live daily closes · last month' : `Last ${hist.length} snapshots`}</span></div>` : `<div class="empty">Add a holding to see your live graph</div>`}
-    </div>
+    </div>` });
 
+  B.push({ key:'holdings', name:'Holdings', html: `
     <div class="section-head"><h3>Holdings</h3><div class="pill-row"><button class="link" data-act="refreshPrices">↻ Prices</button><button class="link" data-act="addHolding">+ Add</button></div></div>
     <div class="card"><div class="list">
       ${S.money.holdings.map(h => {
@@ -875,8 +880,9 @@ function renderMoney() {
           <div class="right" style="min-width:86px"><div class="trail">${AUD(val,2)}</div>
             <div class="s ${dc>=0?'pos':'neg'}">${q?`${dc>=0?'+':''}${pctc.toFixed(2)}%`:'…'}</div></div>
         </div>`; }).join('') || `<div class="empty">Add stocks/ETFs (e.g. VAS.AX, VOO)</div>`}
-    </div></div>
+    </div></div>` });
 
+  B.push({ key:'goals', name:'Money goals', html: `
     <div class="section-head"><h3>Money goals</h3><button class="link" data-act="addMoneyGoal">+ Goal</button></div>
     <div class="card"><div class="list">
       ${(S.money.goals||[]).map(g => { const p = clamp((g.saved||0)/(g.target||1), 0, 1);
@@ -898,10 +904,9 @@ function renderMoney() {
           <div class="row"><input type="number" inputmode="decimal" placeholder="add $" id="mg_${g.id}" class="sm-input">
             <button class="btn sm" data-act="addToMoneyGoal" data-id="${g.id}">Add</button></div>
         </div>`; }).join('') || `<div class="empty">Saving for something? Add a goal (e.g. Car — $20,000)</div>`}
-    </div></div>
+    </div></div>` });
 
-    </div><div class="col">
-
+  B.push({ key:'bills', name:'Bills', html: `
     <div class="section-head"><h3>Bills</h3>
       <div class="pill-row">
         <div class="seg sm">
@@ -920,8 +925,9 @@ function renderMoney() {
             <div class="s">${AUD(b.amount)}${(b.freq||'monthly')!==(wk?'weekly':'monthly') && b.freq!=='once' ? ` <span class="muted">(${AUD(billPer(b, wk?'weekly':'monthly'),2)}/${wk?'wk':'mo'})</span>` : ''} · ${b.dd<0?`${-b.dd}d overdue`:b.dd===0?'due today':`in ${b.dd}d`} (${b.due.getDate()} ${MON[b.due.getMonth()].slice(0,3)})</div></div>
           <button class="btn sm ${b.status==='ok'?'ghost':'primary'}" data-act="payBill" data-id="${b.id}">Paid</button>
         </div>`).join('') || `<div class="empty">Add a bill to get reminders</div>`}
-    </div></div>
+    </div></div>` });
 
+  B.push({ key:'budgets', name:'Budgets', html: `
     <div class="section-head"><h3>Budgets — ${wk ? 'this week' : MON[new Date().getMonth()]}</h3><button class="link" data-act="addBudget">+ Budget</button></div>
     <div class="card"><div class="list">
       ${S.money.budgets.map(bd => {
@@ -933,8 +939,9 @@ function renderMoney() {
             <span>${esc(bd.category)}</span><span class="${sp>lim?'neg':'muted'}">${AUD(sp,0)} / ${AUD(lim,0)}</span></div>
           <div class="bar"><i style="width:${p*100}%;background:${sp>lim?'var(--red)':''}"></i></div>
         </div>`; }).join('') || `<div class="empty">No budgets set</div>`}
-    </div></div>
+    </div></div>` });
 
+  B.push({ key:'tracker', name:'Money tracker', html: `
     <div class="section-head"><h3>Money tracker</h3><div class="pill-row"><span class="chip ${bal>=0?'good':'bad'}">Balance ${AUD(bal,2)}</span><button class="link" data-act="addTxn">+ Entry</button></div></div>
     <div class="card"><div class="list">
       ${S.money.transactions.slice().reverse().slice(0,12).map(t => `
@@ -942,10 +949,9 @@ function renderMoney() {
           <div class="body"><div class="t">${esc(t.desc)}${t.source==='email'?' <span class="chip src" title="added from your email">✉︎</span>':''}</div><div class="s">${esc(t.category||'—')} · ${esc(t.date)}</div></div>
           <div class="trail ${t.dir==='in'?'pos':'neg'}">${t.dir==='in'?'+':'−'}${AUD(t.amount)}</div>
         </div>`).join('') || `<div class="empty">Log income & expenses</div>`}
-    </div></div>
+    </div></div>` });
 
-    </div></div>
-  `;
+  $('#view-money').innerHTML += renderBlocks('money', B);
 }
 
 /* ---------- SYSTEMS ---------- */
@@ -1055,9 +1061,7 @@ const ACT = {
   /* nav-ish */
   editFocus() { render('systems'); setTimeout(()=>{ const f=$('#focusInput'); if(f){f.focus();} }, 80); },
   toggleBrief() { briefOpen = !briefOpen; renderHome(); },
-  toggleArrange(d) { arranging = !arranging; render(d.tab); if (arranging) toast('Use ↑ ↓ to reorder, then Done'); },
-  secUp(d) { moveSection(d.tab, d.k, -1); },
-  secDown(d) { moveSection(d.tab, d.k, 1); },
+  toggleArrange(d) { arranging = !arranging; render(d.tab); if (arranging) toast('Drag sections to reorder, then Done'); },
 
   /* ----- calendar ----- */
   calPrev() { calCursor = new Date(calCursor.getFullYear(), calCursor.getMonth()-1, 1); renderCalBody(); },
@@ -1661,7 +1665,61 @@ function enterMoveMode(id, chip) {
   $$('#view-calendar .dayrow').forEach(r => r.classList.add('drop-ok'));
   toast('Now tap the day to move it to');
 }
-/* --- mouse drag --- */
+/* ---------- dragging whole sections while in Arrange mode ---------- */
+let dragSec = null;
+function secUnderPoint(x, y) {
+  const el = document.elementFromPoint(x, y);
+  return el && el.closest ? el.closest('.sec.arrangeable') : null;
+}
+function markSecTarget(sec) {
+  $$('.sec.sec-over').forEach(s => s.classList.remove('sec-over'));
+  if (sec && sec !== dragSec) sec.classList.add('sec-over');
+}
+function endSecDrag(dropOn) {
+  if (dragSec && dropOn && dropOn !== dragSec) {
+    reorderSection(dragSec.dataset.tab, dragSec.dataset.sec, dropOn.dataset.sec);
+  }
+  $$('.sec.sec-over').forEach(s => s.classList.remove('sec-over'));
+  $$('.sec.sec-dragging').forEach(s => s.classList.remove('sec-dragging'));
+  dragSec = null;
+}
+document.addEventListener('dragstart', e => {
+  const sec = e.target.closest('.sec.arrangeable'); if (!sec) return;
+  dragSec = sec; sec.classList.add('sec-dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  try { e.dataTransfer.setData('text/plain', sec.dataset.sec); } catch (_) {}
+});
+document.addEventListener('dragover', e => {
+  if (!dragSec) return;
+  const sec = e.target.closest('.sec.arrangeable'); if (!sec) return;
+  e.preventDefault(); e.dataTransfer.dropEffect = 'move';
+  markSecTarget(sec);
+});
+document.addEventListener('drop', e => {
+  if (!dragSec) return;
+  e.preventDefault();
+  endSecDrag(e.target.closest('.sec.arrangeable'));
+});
+document.addEventListener('dragend', () => { if (dragSec) endSecDrag(null); });
+/* touch: press the section and drag it (works on phone) */
+document.addEventListener('touchstart', e => {
+  if (!arranging) return;
+  const sec = e.target.closest('.sec.arrangeable'); if (!sec) return;
+  dragSec = sec; sec.classList.add('sec-dragging');
+  if (navigator.vibrate) navigator.vibrate(12);
+}, { passive: true });
+document.addEventListener('touchmove', e => {
+  if (!arranging || !dragSec) return;
+  const t = e.touches[0];
+  markSecTarget(secUnderPoint(t.clientX, t.clientY));
+}, { passive: true });
+document.addEventListener('touchend', e => {
+  if (!arranging || !dragSec) return;
+  const t = e.changedTouches[0];
+  endSecDrag(secUnderPoint(t.clientX, t.clientY));
+});
+
+/* --- mouse drag (calendar events) --- */
 document.addEventListener('dragstart', e => {
   const chip = e.target.closest('.evchip[data-ev]'); if (!chip) return;
   dragEventId = chip.dataset.ev;
