@@ -441,13 +441,20 @@ function renderHome() {
 
   $('#view-home').innerHTML = `
     <div class="hero">
-      <div class="greet">${greet}, ${esc(S.profile.name)}</div>
-      <div class="date">${dateStr}</div>
-      ${wx ? `<div class="weather">${wxIcon(wx.code)} ${wx.temp}° · ${wxText(wx.code)} · ${esc(S.profile.city)}</div>` : ''}
-      <div class="focus-chip tap" data-act="editFocus">
-        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>
-        <span>${S.systems.focus ? esc(S.systems.focus) : 'Set your focus…'}</span>
+      <div class="hero-lead">
+        <div class="greet">${greet}, ${esc(S.profile.name)}</div>
+        <div class="date">${dateStr}</div>
+        ${wx ? `<div class="weather">${wxIcon(wx.code)} ${wx.temp}° · ${wxText(wx.code)} · ${esc(S.profile.city)}</div>` : ''}
+        <div class="focus-chip tap" data-act="editFocus">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>
+          <span>${S.systems.focus ? esc(S.systems.focus) : 'Set your focus…'}</span>
+        </div>
       </div>
+      ${wx ? `<div class="hero-wx">
+        <div class="wx-emoji">${wxIcon(wx.code)}</div>
+        <div class="wx-temp">${wx.temp}°</div>
+        <div class="wx-desc">${wxText(wx.code)}<br>${esc(S.profile.city)}</div>
+      </div>` : ''}
     </div>
 
     <div class="section-head"><h3>Snapshot</h3></div>
