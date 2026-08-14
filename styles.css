@@ -138,6 +138,7 @@ input:focus, textarea:focus, select:focus {
 }
 textarea { resize: vertical; min-height: 72px; line-height: 1.45; }
 label.field { display: block; margin-bottom: 10px; }
+[hidden] { display: none !important; }   /* author display rules must not beat the hidden attribute */
 label.field > span { display: block; font-size: 12.5px; font-weight: 600; color: var(--text-2); margin-bottom: 5px; }
 .row { display: flex; gap: 10px; }
 .row > * { flex: 1; }
@@ -558,6 +559,33 @@ label.field > span { display: block; font-size: 12.5px; font-weight: 600; color:
 .right { text-align: right; }
 .nowrap { white-space: nowrap; }
 .badge-count { background: var(--red); color: #fff; border-radius: 999px; font-size: 10px; font-weight: 700; padding: 1px 6px; position: absolute; top: 4px; right: 50%; margin-right: -22px; }
+
+/* ---------- Tasks (day / week / month to-dos) ---------- */
+.check.task .txt { line-height: 1.3; }
+.check.task .txt .s { display: block; font-size: 11.5px; margin-top: 1px; }
+.check.task.done .txt .s { text-decoration: none; }
+.section-head > span { display: inline-flex; align-items: center; gap: 12px; }
+
+/* keep the two add buttons together on their own line under the day's chips */
+.dadd { flex-basis: 100%; display: flex; gap: 8px; }
+
+/* task chip inside a week-view day row */
+.tchip { display: inline-flex; align-items: center; gap: 7px; background: transparent;
+  border: 1px dashed var(--border); border-radius: 10px; padding: 6px 11px; min-width: 92px;
+  color: var(--text); text-align: left; -webkit-user-select: none; user-select: none; }
+.tchip .tbox { width: 16px; height: 16px; border-radius: 5px; border: 2px solid var(--border);
+  flex: none; display: grid; place-items: center; color: #fff; transition: .15s; }
+.tchip .tbox svg { width: 11px; height: 11px; opacity: 0; }
+.tchip .tt { font-size: 12.5px; font-weight: 600; }
+.tchip.done { opacity: .5; }
+.tchip.done .tbox { background: var(--primary); border-color: var(--primary); }
+.tchip.done .tbox svg { opacity: 1; }
+.tchip.done .tt { text-decoration: line-through; }
+.tchip:active { transform: scale(.97); }
+
+/* month-grid task marker — a hollow ring so it reads apart from the solid event dots */
+.cal-cell .evs i.tk { background: transparent; border: 1.5px solid var(--amber); width: 6px; height: 6px; }
+.cal-cell .evs i.tk.off { opacity: .35; }
 
 .sync-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-3); }
 .sync-dot.ok { background: var(--green); }

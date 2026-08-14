@@ -53,6 +53,55 @@ function syncEventCost(ev) {
   }
 }
 
+/* ---------- tasks: lightweight to-dos pinned to a day, week or month ----------
+   Deliberately lighter than an event (no time, no slot) and lighter than a habit
+   (no reminder, no streak). A task belongs to exactly one horizon and stays on it. */
+const TASKS = () => (S.calendar.tasks || (S.calendar.tasks = []));
+const repeats = t => !!t.repeat && t.repeat !== 'none';
+// a repeating day-task runs on the weekdays in `days` (empty = every day), from its start date on
+function taskRunsOn(t, iso) {
+  if (t.scope !== 'day') return false;
+  if (!repeats(t)) return t.date === iso;
+  if (t.date && iso < t.date) return false;
+  return !t.days || !t.days.length || t.days.includes(parseISO(iso).getDay());
+}
+const taskDone = (t, iso) => repeats(t) ? !!(t.doneDays || {})[iso] : !!t.done;
+const tasksForDate  = iso => TASKS().filter(t => taskRunsOn(t, iso));
+const tasksForWeek  = wk  => TASKS().filter(t => t.scope === 'week'  && t.week  === wk);
+const tasksForMonth = mk  => TASKS().filter(t => t.scope === 'month' && t.month === mk);
+function taskRepeatLabel(t) {
+  if (!repeats(t)) return '';
+  const s = [...(t.days || [])].sort();
+  if (!s.length || s.length === 7) return 'Every day';
+  if (s.join() === '1,2,3,4,5') return 'Weekdays';
+  if (s.join() === '0,6') return 'Weekends';
+  return s.map(i => DOW[i]).join(' ');
+}
+// one checkable row. `iso` is the day being ticked off (repeating tasks tick per-day)
+function taskRow(t, iso) {
+  const done = taskDone(t, iso), rep = taskRepeatLabel(t);
+  return `<div class="check task ${done ? 'done' : ''}">
+    <span class="box tap" data-act="toggleTask" data-id="${t.id}" data-d="${iso || ''}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 12l4 4 10-11"/></svg></span>
+    <span class="txt tap" data-act="editTask" data-id="${t.id}">${esc(t.text)}${rep ? `<span class="s muted">↻ ${esc(rep)}</span>` : ''}</span>
+    <button class="del" data-act="delTask" data-id="${t.id}">✕</button>
+  </div>`;
+}
+// the tasks card that sits under each Calendar view
+function tasksCard(scope, key, empty) {
+  const iso   = scope === 'day' ? key : todayISO();
+  const list  = scope === 'day' ? tasksForDate(key) : scope === 'week' ? tasksForWeek(key) : tasksForMonth(key);
+  const left  = list.filter(t => !taskDone(t, iso)).length;
+  const title = { day: 'Tasks', week: "This week's tasks", month: "This month's tasks" }[scope];
+  // done ones sink to the bottom so what's left is always at eye level
+  const sorted = list.slice().sort((a, b) => (taskDone(a, iso) ? 1 : 0) - (taskDone(b, iso) ? 1 : 0));
+  return `<div class="section-head"><h3>${title}</h3>
+      <button class="link" data-act="addTask" data-scope="${scope}" data-d="${scope === 'day' ? key : ''}">+ Task</button></div>
+    <div class="card">
+      ${list.length ? `<div class="small muted" style="margin-bottom:10px">${left ? `${left} of ${list.length} to go` : 'All done ✓'}</div>` : ''}
+      <div class="list">${sorted.map(t => taskRow(t, iso)).join('') || `<div class="empty">${empty}</div>`}</div>
+    </div>`;
+}
+
 /* ---------- default state ---------- */
 function defaultState() {
   const t = todayISO();
@@ -61,7 +110,7 @@ function defaultState() {
     brief: { text: '', date: '', generated: 0 },   // 7am email brief (written by the scheduled task)
     profile: { name: 'Tyson', city: 'Gold Coast', lat: -28.0167, lon: 153.4000 },
     settings: { theme: 'auto', pinHash: null, weatherOn: true, notify: false },
-    calendar: { events: [] },
+    calendar: { events: [], tasks: [] },
     health: {
       splits: [
         { id: uid(), name: 'Push', ex: [
@@ -617,11 +666,11 @@ function renderHome() {
             <div class="sub">${dp.pct>=1 ? 'All clear 🎉' : `${dp.total-dp.done} left today`}</div>
             <div class="bar slim"><i style="width:${dp.pct*100}%"></i></div>`
           : `<div class="v">${S.systems.goals.filter(g=>g.done).length}<small> / ${S.systems.goals.length} goals</small></div>
-            <div class="sub">Add habits in Systems</div>`; })()}
+            <div class="sub">Add tasks in Calendar</div>`; })()}
       </div>
     </div>
 
-    <div class="section-head"><h3>Today</h3><button class="link" data-tab-go="calendar">Calendar →</button></div>
+    <div class="section-head"><h3>Today</h3><span><button class="link" data-act="addTask" data-scope="day" data-d="${todayISO()}">+ Task</button><button class="link" data-tab-go="calendar">Calendar →</button></span></div>
     <div class="home-cols">
       <div class="card">
         <div class="card-label">Today's agenda</div>
@@ -638,6 +687,12 @@ function renderHome() {
                 <div class="item ${h.doneDays && h.doneDays[iso] ? 'hab-done' : ''}" style="border-left:4px dashed var(--blue-300)">
                   <div class="body"><div class="t">${esc(h.text)}</div><div class="s">${esc(h.time)} · habit</div></div>
                   <span class="box tap ${h.doneDays && h.doneDays[iso] ? 'on' : ''}" data-act="toggleHabit" data-id="${h.id}" style="width:22px;height:22px;border-radius:7px;border:2px solid ${h.doneDays && h.doneDays[iso] ? 'var(--primary)' : 'var(--border)'};background:${h.doneDays && h.doneDays[iso] ? 'var(--primary)' : 'transparent'};display:grid;place-items:center;color:#fff;flex:none">${h.doneDays && h.doneDays[iso] ? '✓' : ''}</span>
+                </div>` })),
+              // tasks have no time, so they sit under everything that's scheduled
+              ...tasksForDate(iso).map(t => ({ time: '~', html: `
+                <div class="item ${taskDone(t, iso) ? 'hab-done' : ''}" style="border-left:4px dashed var(--amber)">
+                  <div class="body"><div class="t">${esc(t.text)}</div><div class="s">task${taskRepeatLabel(t) ? ' · ↻ ' + esc(taskRepeatLabel(t)) : ''}</div></div>
+                  <span class="box tap" data-act="toggleTask" data-id="${t.id}" data-d="${iso}" style="width:22px;height:22px;border-radius:7px;border:2px solid ${taskDone(t, iso) ? 'var(--primary)' : 'var(--border)'};background:${taskDone(t, iso) ? 'var(--primary)' : 'transparent'};display:grid;place-items:center;color:#fff;flex:none">${taskDone(t, iso) ? '✓' : ''}</span>
                 </div>` })),
             ].sort((a,b)=>a.time.localeCompare(b.time));
             return rows.length ? rows.map(r=>r.html).join('') : `<div class="empty">Nothing scheduled today</div>`;
@@ -665,7 +720,7 @@ function renderCalendar() {
       <div class="seg" id="calSeg">
         ${['day','week','month'].map(k => `<button data-cal="${k}" class="${calView===k?'on':''}">${k[0].toUpperCase()+k.slice(1)}</button>`).join('')}
       </div>
-      <button class="btn primary sm" data-act="addEvent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Add</button>
+      <button class="btn primary sm" data-act="addEvent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Event</button>
     </div>
     <div class="pill-row" style="margin:12px 2px 4px">
       ${Object.entries(CATS).map(([k,c])=>`<span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--text-2)"><i style="width:9px;height:9px;border-radius:3px;background:${c}"></i>${k}</span>`).join('')}
@@ -697,15 +752,21 @@ function calMonth() {
       <div class="cal-grid">
         ${DOW.map(d => `<div class="dow">${d[0]}</div>`).join('')}
         ${cells.map(d => {
-          const iso = todayISO(d), evs = eventsForDate(iso);
+          const iso = todayISO(d), evs = eventsForDate(iso), tks = tasksForDate(iso);
           const cls = [d.getMonth()!==m?'mute':'', iso===todayISO()?'today':'', iso===calSel?'sel':''].filter(Boolean).join(' ');
+          const dots = [
+            ...evs.slice(0,3).map(e=>`<i style="background:${catColor(e.category)}"></i>`),
+            ...(tks.length ? [`<i class="tk ${tks.every(t=>taskDone(t,iso))?'off':''}"></i>`] : []),
+          ];
           return `<button class="cal-cell ${cls}" data-act="calPick" data-d="${iso}">${d.getDate()}
-            ${evs.length?`<span class="evs">${evs.slice(0,3).map(e=>`<i style="background:${catColor(e.category)}"></i>`).join('')}</span>`:''}</button>`;
+            ${dots.length?`<span class="evs">${dots.join('')}</span>`:''}</button>`;
         }).join('')}
       </div>
     </div>
+    ${tasksCard('month', `${y}-${String(m+1).padStart(2,'0')}`, "What's the plan for the month?")}
     <div class="section-head"><h3>${fmtDay(calSel)}</h3></div>
-    ${dayList(selEvents)}`;
+    ${dayList(selEvents)}
+    ${tasksCard('day', calSel, 'No tasks on this day')}`;
 }
 function calWeek() {
   const base = parseISO(calSel);
@@ -721,16 +782,24 @@ function calWeek() {
     </div>
     <div class="dayrows">
       ${days.map(d => { const iso = todayISO(d); const evs = eventsForDate(iso); const isToday = iso===todayISO();
+        const tks = tasksForDate(iso).sort((a,b)=>(taskDone(a,iso)?1:0)-(taskDone(b,iso)?1:0));
         return `<div class="dayrow ${isToday?'today':''}" data-day="${iso}">
           <button class="dlabel tap" data-act="addEventOn" data-d="${iso}"><span class="dn">${DOW[d.getDay()]}</span><span class="dd">${d.getDate()}</span></button>
           <div class="devents">
             ${evs.map(e=>`<div class="evchip tap" draggable="true" data-ev="${e.id}" data-act="editEvent" data-id="${e.id}" style="border-left-color:${catColor(e.category)}">
               <span class="et">${esc(e.title)}</span>${evTime(e)?`<span class="es">${esc(evTime(e))}</span>`:''}</div>`).join('')}
-            <button class="devempty tap" data-act="addEventOn" data-d="${iso}">+ add</button>
+            ${tks.map(t=>`<button class="tchip ${taskDone(t,iso)?'done':''}" data-act="toggleTask" data-id="${t.id}" data-d="${iso}">
+              <span class="tbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round"><path d="M5 12l4 4 10-11"/></svg></span>
+              <span class="tt">${esc(t.text)}</span></button>`).join('')}
+            <span class="dadd">
+              <button class="devempty tap" data-act="addEventOn" data-d="${iso}">+ event</button>
+              <button class="devempty tap" data-act="addTask" data-scope="day" data-d="${iso}">+ task</button>
+            </span>
           </div>
         </div>`; }).join('')}
     </div>
-  </div>`;
+  </div>
+  ${tasksCard('week', weekKey(base), 'What has to happen this week?')}`;
 }
 function calDay() {
   const evs = eventsForDate(calSel);
@@ -742,10 +811,12 @@ function calDay() {
         <button class="iconbtn" data-act="dayNext"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></button>
       </div>
     </div>
-    ${dayList(evs)}`;
+    <div class="section-head"><h3>Events</h3></div>
+    ${dayList(evs)}
+    ${tasksCard('day', calSel, 'Nothing to tick off — add a task')}`;
 }
 function dayList(evs) {
-  if (!evs.length) return `<div class="card"><div class="empty">No events. Tap “Add”.</div></div>`;
+  if (!evs.length) return `<div class="card"><div class="empty">No events. Tap “Event” to add one.</div></div>`;
   return `<div class="card"><div class="list">${evs.map(e => `
     <div class="item tap" data-act="editEvent" data-id="${e.id}" style="border-left:4px solid ${catColor(e.category)}">
       <div class="body"><div class="t">${esc(e.title)}${e.recurring?' <span class="chip" style="padding:1px 7px;font-size:10px">weekly</span>':''}${e.source==='email'?' <span class="chip src" title="added from your email">✉︎</span>':''}</div>
@@ -1103,6 +1174,86 @@ const ACT = {
     S.calendar.events = S.calendar.events.filter(x=>x.id!==d.id);
     S.money.transactions = S.money.transactions.filter(t=>t.eventId!==d.id);
     save(); closeSheet(); render('calendar');
+  },
+
+  /* ----- calendar: tasks ----- */
+  addTask(d) { ACT.editTask({ id:'', scope: d.scope || 'day', d: d.d || '' }); },
+  editTask(d) {
+    const SCOPES = { day:'Just this day', week:'This week', month:'This month' };
+    const t = TASKS().find(x => x.id === d.id)
+      || { scope: d.scope || 'day', date: d.d || calSel, repeat:'none', days:[] };
+    const lbl = taskRepeatLabel(t);
+    const repVal = !repeats(t) ? 'Does not repeat'
+      : ['Every day','Weekdays','Weekends'].includes(lbl) ? lbl : 'Certain days';
+    const on = t.days && t.days.length ? t.days : [0,1,2,3,4,5,6];
+    sheetForm(d.id ? 'Edit task' : 'New task',
+      'A task is just something to tick off — no time slot, no reminder. Pick the day, week or month it belongs to.',
+      field('Task','tk_text',{val:t.text,ph:'e.g. Order microfibres, Call the accountant'}) +
+      field('Belongs to','tk_scope',{type:'select',val:SCOPES[t.scope]||SCOPES.day,options:Object.values(SCOPES)}) +
+      field('Date','tk_date',{type:'date',val:t.date||calSel}) +
+      `<div id="tk_repwrap">
+        ${field('Repeat','tk_rep',{type:'select',val:repVal,options:['Does not repeat','Every day','Weekdays','Weekends','Certain days']})}
+        <label class="field" id="tk_dayswrap" ${repVal==='Certain days'?'':'hidden'}><span>On these days</span>
+          <div class="daypick" id="tk_days">
+            ${DOW.map((n,i)=>`<button type="button" class="dp ${on.includes(i)?'on':''}" data-act="toggleTaskDay" data-i="${i}">${n[0]}</button>`).join('')}
+          </div>
+        </label>
+      </div>`,
+      { save:'saveTask', id:d.id, del:d.id?'delTask':'' });
+    // repeat only makes sense day-by-day; week/month tasks live on their week or month
+    const sync = () => {
+      const isDay = val('tk_scope') === SCOPES.day;
+      $('#tk_repwrap').hidden = !isDay;
+      $('#tk_dayswrap').hidden = !isDay || val('tk_rep') !== 'Certain days';
+      $('#tk_date').closest('.field').querySelector('span').textContent =
+        isDay ? 'Date' : val('tk_scope') === SCOPES.week ? 'Any day in that week' : 'Any day in that month';
+    };
+    $('#tk_scope').addEventListener('change', sync);
+    $('#tk_rep').addEventListener('change', sync);
+    sync();
+  },
+  toggleTaskDay(d, el) { el.classList.toggle('on'); },
+  saveTask(d) {
+    const SCOPES = { 'Just this day':'day', 'This week':'week', 'This month':'month' };
+    const text = val('tk_text'); if (!text) return toast('Name the task');
+    const scope = SCOPES[val('tk_scope')] || 'day';
+    const date = val('tk_date') || calSel || todayISO();
+    const repSel = scope === 'day' ? val('tk_rep') : 'Does not repeat';
+    let repeat = 'none', days = [];
+    if (repSel !== 'Does not repeat') {
+      repeat = 'days';
+      days = repSel === 'Weekdays' ? [1,2,3,4,5]
+           : repSel === 'Weekends' ? [0,6]
+           : repSel === 'Certain days' ? $$('#tk_days .dp').map((b,i)=>b.classList.contains('on')?i:-1).filter(i=>i>=0)
+           : [];
+      if (repSel === 'Certain days' && !days.length) return toast('Pick at least one day');
+      if (days.length === 7) days = [];                     // all seven = every day
+    }
+    const rec = { text, scope, date, week: weekKey(parseISO(date)), month: date.slice(0,7), repeat, days };
+    if (d.id) {
+      const t = TASKS().find(x => x.id === d.id);
+      Object.assign(t, rec);
+      if (repeat === 'none') t.doneDays = {}; else t.done = false;   // switching modes clears the stale tick
+    } else {
+      TASKS().push({ id: uid(), ...rec, done:false, doneDays:{} });
+    }
+    save(); closeSheet();
+    if (scope === 'day') calSel = date;
+    render(currentTab);
+    toast(d.id ? 'Saved' : repeat === 'none' ? 'Task added' : 'Repeating task added');
+  },
+  toggleTask(d) {
+    const t = TASKS().find(x => x.id === d.id); if (!t) return;
+    if (repeats(t)) {
+      const iso = d.d || todayISO();
+      if (!t.doneDays) t.doneDays = {};
+      t.doneDays[iso] = !t.doneDays[iso];
+    } else t.done = !t.done;
+    save(); render(currentTab);
+  },
+  delTask(d) {
+    S.calendar.tasks = TASKS().filter(x => x.id !== d.id);
+    save(); closeSheet(); render(currentTab);
   },
 
   /* ----- water ----- */
@@ -1486,14 +1637,17 @@ function habitStreak(h) {
   }
   return n;
 }
-// how much of today's plan is done (habits + weekly must-dos) — the "5-second" signal
+// how much of today's plan is done (tasks + habits + weekly must-dos) — the "5-second" signal
 function dayProgress() {
   const iso = todayISO(), wk = weekKey();
   const habits = habitsToday();
   const weekly = S.systems.weekly || [];
-  const total = habits.length + weekly.length;
+  const tasks  = tasksForDate(iso);
+  const total = habits.length + weekly.length + tasks.length;
   if (!total) return null;
-  const done = habits.filter(h => h.doneDays && h.doneDays[iso]).length + weekly.filter(m => m.weeks[wk]).length;
+  const done = habits.filter(h => h.doneDays && h.doneDays[iso]).length
+             + weekly.filter(m => m.weeks[wk]).length
+             + tasks.filter(t => taskDone(t, iso)).length;
   return { done, total, pct: done / total };
 }
 function checkHabitReminders() {
