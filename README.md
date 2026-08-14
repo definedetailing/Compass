@@ -84,11 +84,53 @@ That's it. 🎉
 
 ---
 
+## Optional — connect Strava (pulls your runs in automatically)
+
+Compass can import your runs from Strava so you never log one by hand. Rides and
+swims are ignored — runs only.
+
+### Step 1 — Create a Strava API application
+1. Go to **https://www.strava.com/settings/api** and log in.
+2. Fill in the form (any name/website is fine, e.g. *Compass* / your Vercel URL).
+3. **Authorization Callback Domain** — this one matters. Enter your Vercel domain
+   **without** `https://` or any path, e.g. `compass-abc123.vercel.app`.
+   To also test locally, Strava lets you use `localhost` — but only one domain at a
+   time, so set it to `localhost` while testing, then change it to your real domain.
+4. You'll now see a **Client ID** and a **Client Secret**. Keep the secret private —
+   it never goes in the app, only into Vercel.
+
+### Step 2 — Add the two env vars on Vercel
+1. Vercel project → **Settings** → **Environment Variables**.
+2. Add `STRAVA_CLIENT_ID` = your Client ID.
+3. Add `STRAVA_CLIENT_SECRET` = your Client Secret.
+4. **Deployments** → latest → **Redeploy**.
+
+### Step 3 — Connect, in the app
+1. **Health** tab → **Runs** → **Connect Strava**.
+2. Strava asks you to authorise; say yes. You land back in Compass and your last
+   12 months of runs import straight away.
+3. After that it tops up automatically (at most once an hour when you open the app),
+   and **↻ Sync** pulls new runs on demand.
+
+**Disconnect** at any time from the orange Strava bar — runs already imported stay put.
+
+Running locally instead? Set the same two variables before starting the dev server:
+
+```bash
+STRAVA_CLIENT_ID=xxxxx STRAVA_CLIENT_SECRET=yyyyy python3 dev-server.py
+```
+
+---
+
 ## Using the app
 
 - **Home** — greeting, weather, today's events, this week's must-dos, and snapshot tiles. Tap the focus chip to set your focus.
-- **Calendar** — Day / Week / Month. Tap **Add** or a day to create events.
+- **Calendar** — Day / Week / Month, for both **events** (timed) and **tasks** (just tick them off).
+  A task belongs to a day, a week or a month; day tasks can repeat (daily / weekdays / your own days)
+  without the reminder or streak that a Habit carries. Tap **Event** or **+ Task** to add.
 - **Health** — tap **+250/+500/+750** for water; edit your gym split (one exercise per line: `Name | sets | reps`); log PBs, runs, sleep.
+  Runs can import from **Strava** (see above). Sleep tracks bed/wake times (hours are worked out for you),
+  quality, notes, a nightly goal, 7-night average, **sleep debt**, and how much your bedtime swings around.
 - **Money** — add holdings (e.g. `VAS.AX`, `VOO`), tap **↻ Prices** to refresh; add bills (get countdowns + a red badge when due), budgets, and income/expenses. Tap **Paid** to clear a bill (also logs it as an expense).
 - **Systems** — current focus, goals, weekly must-dos, bad-day minimums, and notes.
 

@@ -9,12 +9,46 @@ On Vercel, the real api/*.js functions handle these. Run locally with:
     python3 dev-server.py           # http://localhost:8787
 The local sync secret is 'localdev' (enter it as the Secret key in Settings).
 """
-import json, os, http.server, socketserver, urllib.request, urllib.parse, uuid, time, datetime
+import json, os, http.server, socketserver, urllib.request, urllib.error, urllib.parse, uuid, time, datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("PORT", "8787"))
 SYNC_SECRET = os.environ.get("SYNC_SECRET", "localdev")
 STORE = os.path.join(HERE, ".sync-store.json")
+STRAVA_ID = os.environ.get("STRAVA_CLIENT_ID", "")
+STRAVA_SECRET = os.environ.get("STRAVA_CLIENT_SECRET", "")
+
+
+def post_json(url, payload=None, headers=None):
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(url, data=data, method="POST" if data else "GET",
+                                 headers={"Content-Type": "application/json", **(headers or {})})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.load(r)
+
+
+def get_json(url, headers=None):
+    req = urllib.request.Request(url, headers=headers or {})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.load(r)
+
+
+def strava_token(params):
+    """Exchange or refresh a Strava token. Mirrors api/strava.js."""
+    payload = {"client_id": STRAVA_ID, "client_secret": STRAVA_SECRET, **params}
+    return post_json("https://www.strava.com/oauth/token", payload)
+
+
+def slim_activity(a):
+    return {
+        "id": a.get("id"), "name": a.get("name"),
+        "type": a.get("sport_type") or a.get("type"),
+        "startLocal": a.get("start_date_local"),
+        "distance": a.get("distance"), "movingTime": a.get("moving_time"),
+        "elapsedTime": a.get("elapsed_time"), "elevation": a.get("total_elevation_gain"),
+        "avgHeartrate": a.get("average_heartrate"), "maxHeartrate": a.get("max_heartrate"),
+        "avgSpeed": a.get("average_speed"),
+    }
 
 
 def yahoo_chart(symbol):
@@ -107,6 +141,61 @@ class H(http.server.SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_POST(self):
+        if self.path.startswith("/api/strava"):
+            n = int(self.headers.get("Content-Length", "0"))
+            try:
+                body = json.loads(self.rfile.read(n) or b"{}")
+            except Exception:
+                return self._json(400, {"error": "bad json"})
+            action = body.get("action")
+            if action == "config":
+                return self._json(200, {"configured": bool(STRAVA_ID and STRAVA_SECRET),
+                                        "clientId": STRAVA_ID})
+            if not (STRAVA_ID and STRAVA_SECRET):
+                return self._json(501, {"error": "Strava not configured (set STRAVA_CLIENT_ID "
+                                                 "and STRAVA_CLIENT_SECRET)"})
+            try:
+                if action == "exchange":
+                    if not body.get("code"):
+                        return self._json(400, {"error": "no code"})
+                    j = strava_token({"code": body["code"], "grant_type": "authorization_code"})
+                    ath = j.get("athlete") or {}
+                    return self._json(200, {
+                        "accessToken": j.get("access_token"), "refreshToken": j.get("refresh_token"),
+                        "expiresAt": j.get("expires_at"),
+                        "athlete": {"id": ath.get("id"), "firstname": ath.get("firstname"),
+                                    "lastname": ath.get("lastname")} if ath else None})
+                if action == "refresh":
+                    if not body.get("refreshToken"):
+                        return self._json(400, {"error": "no refresh token"})
+                    j = strava_token({"refresh_token": body["refreshToken"],
+                                      "grant_type": "refresh_token"})
+                    return self._json(200, {"accessToken": j.get("access_token"),
+                                            "refreshToken": j.get("refresh_token"),
+                                            "expiresAt": j.get("expires_at")})
+                if action == "activities":
+                    tok = body.get("accessToken")
+                    if not tok:
+                        return self._json(400, {"error": "no access token"})
+                    after = int(body.get("after") or 0)
+                    out = []
+                    for page in range(1, 6):
+                        url = ("https://www.strava.com/api/v3/athlete/activities"
+                               f"?per_page=100&page={page}" + (f"&after={after}" if after else ""))
+                        batch = get_json(url, {"Authorization": f"Bearer {tok}"})
+                        if not batch:
+                            break
+                        out.extend(slim_activity(a) for a in batch)
+                        if len(batch) < 100:
+                            break
+                    return self._json(200, {"activities": out})
+            except urllib.error.HTTPError as e:
+                if e.code == 401:
+                    return self._json(401, {"error": "strava token expired"})
+                return self._json(500, {"error": f"Strava HTTP {e.code}"})
+            except Exception as e:
+                return self._json(500, {"error": str(e)})
+            return self._json(400, {"error": "unknown action"})
         if self.path.startswith("/api/brief"):
             if self.headers.get("x-sync-key") != SYNC_SECRET:
                 return self._json(401, {"error": "unauthorized"})

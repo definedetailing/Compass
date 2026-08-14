@@ -22,6 +22,13 @@ const parseISO = (s) => { const [y, m, d] = s.split('-').map(Number); return new
 const DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 const MON = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const fmtDay = (iso) => { const d = parseISO(iso); return `${DOW[d.getDay()]} ${d.getDate()} ${MON[d.getMonth()].slice(0,3)}`; };
+function fmtAgo(ms) {
+  const s = Math.max(0, (Date.now() - ms) / 1000);
+  if (s < 90) return 'just now';
+  if (s < 5400) return `${Math.round(s/60)} min ago`;
+  if (s < 172800) return `${Math.round(s/3600)} h ago`;
+  return `${Math.round(s/86400)} d ago`;
+}
 function weekKey(d = new Date()) {
   const x = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
   const day = x.getUTCDay() || 7; x.setUTCDate(x.getUTCDate() + 4 - day);
@@ -142,6 +149,9 @@ function defaultState() {
       water: { goalMl: 3000, log: {} },
       runs: [],
       sleep: [],
+      sleepGoal: 8,                  // hours per night
+      // Strava link: refresh token + short-lived access token, plus the last import time
+      strava: { refreshToken: '', accessToken: '', expiresAt: 0, athlete: null, lastSync: 0, auto: true },
     },
     money: {
       holdings: [],                  // {id, symbol, name, shares, cost}
@@ -312,6 +322,152 @@ async function syncNow() {
   await pull(); await push(); toast('Synced');
 }
 
+/* ============================================================
+   Strava — OAuth + run import
+   The client secret lives in /api/strava (server side); the browser only ever
+   holds the refresh + access tokens for this athlete.
+   ============================================================ */
+const STRAVA_SCOPE = 'activity:read_all';
+const RUN_TYPES = ['Run', 'TrailRun', 'VirtualRun'];
+const stravaCfg = () => (S.health.strava || (S.health.strava = { refreshToken:'', accessToken:'', expiresAt:0, athlete:null, lastSync:0, auto:true }));
+const stravaLinked = () => !!stravaCfg().refreshToken;
+
+async function stravaAPI(payload) {
+  const r = await fetch('/api/strava', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
+  });
+  const j = await r.json().catch(() => null);
+  if (!r.ok) throw new Error((j && j.error) || 'HTTP ' + r.status);
+  return j;
+}
+// Strava's callback drops us back on the app root with ?code=…
+const stravaRedirect = () => location.origin + location.pathname;
+
+async function stravaConnect() {
+  let cfg;
+  try { cfg = await stravaAPI({ action: 'config' }); }
+  catch (e) { return toast('Strava endpoint unreachable'); }
+  if (!cfg.configured) return toast('Add STRAVA_CLIENT_ID + SECRET first (see README)');
+  const url = 'https://www.strava.com/oauth/authorize'
+    + `?client_id=${encodeURIComponent(cfg.clientId)}`
+    + '&response_type=code'
+    + `&redirect_uri=${encodeURIComponent(stravaRedirect())}`
+    + '&approval_prompt=auto'
+    + `&scope=${STRAVA_SCOPE}`;
+  location.href = url;   // Strava sends the athlete back to stravaRedirect()
+}
+
+// Called on boot when Strava has redirected back with ?code=
+async function stravaHandleCallback() {
+  const q = new URLSearchParams(location.search);
+  const code = q.get('code');
+  if (!code) return false;
+  // clear the code out of the address bar straight away — it is single-use and sensitive
+  history.replaceState({}, '', stravaRedirect());
+  if (!q.get('scope') || !q.get('scope').includes('activity:read')) {
+    toast('Strava needs activity read access'); return true;
+  }
+  try {
+    const j = await stravaAPI({ action: 'exchange', code });
+    const c = stravaCfg();
+    Object.assign(c, { refreshToken: j.refreshToken, accessToken: j.accessToken, expiresAt: j.expiresAt, athlete: j.athlete });
+    save();
+    toast('Strava connected 🏃');
+    await stravaImport(true);
+  } catch (e) { toast('Strava: ' + e.message); }
+  return true;
+}
+
+// make sure the access token is valid for the next minute, refreshing if not
+async function stravaToken() {
+  const c = stravaCfg();
+  if (!c.refreshToken) throw new Error('not connected');
+  if (c.accessToken && c.expiresAt > Date.now() / 1000 + 60) return c.accessToken;
+  const j = await stravaAPI({ action: 'refresh', refreshToken: c.refreshToken });
+  Object.assign(c, { accessToken: j.accessToken, refreshToken: j.refreshToken || c.refreshToken, expiresAt: j.expiresAt });
+  save(false);
+  return c.accessToken;
+}
+
+function activityToRun(a) {
+  const km = (a.distance || 0) / 1000;
+  return {
+    id: uid(), stravaId: a.id,
+    name: a.name || 'Run',
+    date: (a.startLocal || '').slice(0, 10),
+    distanceKm: +km.toFixed(2),
+    timeMin: Math.round((a.movingTime || 0) / 60),
+    elevM: Math.round(a.elevation || 0),
+    avgHr: a.avgHeartrate ? Math.round(a.avgHeartrate) : 0,
+    notes: '', source: 'strava',
+  };
+}
+
+// full=true pulls the last 12 months; otherwise only what's new since the last import
+async function stravaImport(full = false) {
+  const c = stravaCfg();
+  if (!c.refreshToken) { toast('Connect Strava first'); return 0; }
+  setSyncDot('busy');
+  try {
+    const accessToken = await stravaToken();
+    const after = full || !c.lastSync
+      ? Math.floor(Date.now() / 1000) - 365 * 86400
+      : Math.max(0, c.lastSync - 86400);          // 1-day overlap so nothing slips through
+    const { activities } = await stravaAPI({ action: 'activities', accessToken, after });
+    const have = new Set(S.health.runs.map(r => String(r.stravaId || '')));
+    let added = 0;
+    (activities || []).forEach(a => {
+      if (!RUN_TYPES.includes(a.type)) return;         // runs only — rides/swims stay out
+      if (have.has(String(a.id))) return;
+      S.health.runs.push(activityToRun(a));
+      have.add(String(a.id));
+      added++;
+    });
+    S.health.runs.sort((a, b) => a.date.localeCompare(b.date));
+    c.lastSync = Math.floor(Date.now() / 1000);
+    save();
+    setSyncDot(syncEnabled() ? 'ok' : 'off');
+    if (currentTab === 'health') renderHealth();
+    toast(added ? `Imported ${added} run${added > 1 ? 's' : ''} from Strava` : 'Strava: already up to date');
+    return added;
+  } catch (e) {
+    setSyncDot('err');
+    toast('Strava: ' + e.message);
+    return 0;
+  }
+}
+
+/* ============================================================
+   Sleep
+   ============================================================ */
+const sleepGoal = () => num(S.health.sleepGoal, 8) || 8;
+const hhmmToMin = hm => { const [h, m] = String(hm || '').split(':').map(Number); return isNaN(h) ? null : h * 60 + (m || 0); };
+const minToHHMM = t => `${String(Math.floor(((t % 1440) + 1440) % 1440 / 60)).padStart(2,'0')}:${String(Math.round(t) % 60).padStart(2,'0')}`;
+// hours between bed and wake, wrapping past midnight (22:30 → 06:30 = 8h)
+function sleepHoursFrom(bed, wake) {
+  const b = hhmmToMin(bed), w = hhmmToMin(wake);
+  if (b === null || w === null) return null;
+  return +(((w - b + 1440) % 1440) / 60).toFixed(2);
+}
+const sleepNights = (n = 7) => S.health.sleep.slice(-n);
+const avgOf = (arr, f) => arr.length ? arr.reduce((a, x) => a + f(x), 0) / arr.length : 0;
+// hours short of goal across the window — the number that actually motivates an earlier night
+function sleepDebt(n = 7) {
+  const nights = sleepNights(n);
+  return nights.reduce((a, s) => a + Math.min(0, (s.hours || 0) - sleepGoal()), 0);
+}
+// how much bedtime moves around; a low spread is the strongest predictor of feeling rested.
+// Bedtimes are folded around midnight so 23:40 and 00:20 read as 40 min apart, not 23 hours.
+function bedtimeSpread(n = 7) {
+  const mins = sleepNights(n).map(s => hhmmToMin(s.bed)).filter(m => m !== null)
+    .map(m => (m < 720 ? m + 1440 : m));      // anything before noon belongs to the night before
+  if (mins.length < 2) return null;
+  const mean = mins.reduce((a, b) => a + b, 0) / mins.length;
+  const sd = Math.sqrt(mins.reduce((a, m) => a + (m - mean) ** 2, 0) / mins.length);
+  return { sd: Math.round(sd), mean: Math.round(mean) };
+}
+const SLEEP_QUALITY = ['', 'Rough', 'Poor', 'OK', 'Good', 'Great'];
+
 /* ---------- crypto (PIN) ---------- */
 async function sha(str) {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('compass::' + str));
@@ -357,15 +513,26 @@ function barChart(items, opts = {}) {   // items: [{label, v}]
   const h = opts.h || 110, n = items.length;
   if (!n) return `<div class="empty small">No data yet</div>`;
   const max = Math.max(...items.map(i => i.v), opts.min || 1);
+  // opts.base lifts the floor off zero so small differences are readable
+  // (sleep hours never go near 0, so a 0-based axis makes every night look identical)
+  const base = opts.base || 0;
+  const span = (max - base) || 1;
+  const frac = v => clamp((v - base) / span, 0, 1);
   const bw = 100 / n;
+  // opts.goal draws a dashed target line and dims any bar that falls short of it
+  const gy = opts.goal ? h - 18 - frac(opts.goal) * (h - 22) : null;
+  // with many bars, label every other one so the axis stays on one line
+  const every = n > 10 ? 2 : 1;
   return `<svg class="chart" viewBox="0 0 100 ${h}" height="${h}" preserveAspectRatio="none">
     ${items.map((it, i) => {
-      const bh = (it.v / max) * (h - 22);
+      const bh = frac(it.v) * (h - 22);
       const x = i * bw + bw * 0.18, ww = bw * 0.64;
-      return `<rect x="${x}" y="${h - 18 - bh}" width="${ww}" height="${Math.max(bh, 0.5)}" rx="1.5" fill="var(--blue-500)"/>`;
+      const short = opts.goal && it.v < opts.goal;
+      return `<rect x="${x}" y="${h - 18 - bh}" width="${ww}" height="${Math.max(bh, 0.5)}" rx="1.5" fill="var(--blue-500)"${short?' opacity=".45"':''}/>`;
     }).join('')}
+    ${gy !== null ? `<line x1="0" y1="${gy.toFixed(1)}" x2="100" y2="${gy.toFixed(1)}" stroke="var(--green)" stroke-width="0.6" stroke-dasharray="2 2" vector-effect="non-scaling-stroke"/>` : ''}
   </svg>
-  <div class="chart-legend" style="justify-content:space-between">${items.map(i => `<span class="small muted">${esc(i.label)}</span>`).join('')}</div>`;
+  <div class="chart-legend bars">${items.map((it, i) => `<span class="small muted">${i % every ? '' : esc(it.label)}</span>`).join('')}</div>`;
 }
 function ring(pct, opts = {}) {
   const size = opts.size || 74, sw = opts.sw || 9, r = (size - sw) / 2, c = 2 * Math.PI * r;
@@ -791,10 +958,10 @@ function calWeek() {
             ${tks.map(t=>`<button class="tchip ${taskDone(t,iso)?'done':''}" data-act="toggleTask" data-id="${t.id}" data-d="${iso}">
               <span class="tbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round"><path d="M5 12l4 4 10-11"/></svg></span>
               <span class="tt">${esc(t.text)}</span></button>`).join('')}
-            <span class="dadd">
-              <button class="devempty tap" data-act="addEventOn" data-d="${iso}">+ event</button>
-              <button class="devempty tap" data-act="addTask" data-scope="day" data-d="${iso}">+ task</button>
-            </span>
+          </div>
+          <div class="dadd">
+            <button class="devempty tap" data-act="addEventOn" data-d="${iso}">+ event</button>
+            <button class="devempty tap" data-act="addTask" data-scope="day" data-d="${iso}">+ task</button>
           </div>
         </div>`; }).join('')}
     </div>
@@ -880,24 +1047,99 @@ function renderHealth() {
         </div>`).join('') || '<div class="empty">No PBs yet</div>'}
     </div></div>` });
 
+  const sc = stravaCfg();
+  const runsAll = S.health.runs;
+  const wkAgo = todayISO(new Date(Date.now() - 7 * 86400000));
+  const runsWeek = runsAll.filter(r => r.date >= wkAgo);
+  const kmWeek = runsWeek.reduce((a, r) => a + (r.distanceKm || 0), 0);
+  const minWeek = runsWeek.reduce((a, r) => a + (r.timeMin || 0), 0);
+  const pace = (r) => r.timeMin && r.distanceKm ? r.timeMin / r.distanceKm : 0;
+  const paceStr = (p) => p ? `${Math.floor(p)}:${String(Math.round((p % 1) * 60)).padStart(2,'0')} /km` : '';
+
   B.push({ key:'runs', name:'Runs', html: `
-    <div class="section-head"><h3>Runs</h3><button class="link" data-act="addRun">+ Run</button></div>
+    <div class="section-head"><h3>Runs</h3>
+      <span style="display:inline-flex;gap:12px;align-items:center">
+        ${stravaLinked()
+          ? `<button class="link" data-act="stravaSync">↻ Sync</button>`
+          : `<button class="link" data-act="stravaConnect" style="color:#fc4c02">Connect Strava</button>`}
+        <button class="link" data-act="addRun">+ Run</button>
+      </span></div>
     <div class="card">
+      ${stravaLinked() ? `<div class="strava-bar">
+        <span class="strava-mark">STRAVA</span>
+        <span class="small muted" style="flex:1">${sc.athlete ? esc([sc.athlete.firstname, sc.athlete.lastname].filter(Boolean).join(' ')) : 'Connected'}${sc.lastSync ? ` · synced ${fmtAgo(sc.lastSync * 1000)}` : ''}</span>
+        <button class="link small" data-act="stravaDisconnect">Disconnect</button>
+      </div>` : ''}
+      <div class="stats-row" style="margin-bottom:12px">
+        <div class="stat"><div class="k">This week</div><div class="v">${kmWeek.toFixed(1)}<small> km</small></div>
+          <div class="sub">${runsWeek.length} run${runsWeek.length===1?'':'s'}${minWeek?` · ${Math.round(minWeek)} min`:''}</div></div>
+        <div class="stat"><div class="k">Avg pace</div><div class="v" style="font-size:19px">${paceStr(avgOf(runsWeek.filter(pace), pace)) || '—'}</div>
+          <div class="sub">last 7 days</div></div>
+      </div>
       ${runs.length ? barChart(runs.map(r => ({ label: r.date.slice(5), v: r.distanceKm })), { h: 90 }) : ''}
       <div class="list" style="margin-top:10px">
-        ${S.health.runs.slice().reverse().slice(0,5).map(r => `
+        ${runsAll.slice().reverse().slice(0,6).map(r => `
           <div class="item tap" data-act="editRun" data-id="${r.id}">
-            <div class="body"><div class="t">${r.distanceKm} km</div><div class="s">${esc(r.date)}${r.timeMin?` · ${r.timeMin} min`:''}</div></div>
-            <div class="trail">${r.timeMin && r.distanceKm ? (r.timeMin/r.distanceKm).toFixed(1)+' /km' : ''}</div>
-          </div>`).join('') || '<div class="empty">Log your first run</div>'}
+            <div class="body">
+              <div class="t">${esc(r.name || `${r.distanceKm} km`)}${r.source==='strava'?' <span class="chip strava-chip">Strava</span>':''}</div>
+              <div class="s">${[fmtDay(r.date), `${r.distanceKm} km`, r.timeMin?`${r.timeMin} min`:'', r.elevM?`↑${r.elevM} m`:'', r.avgHr?`♥ ${r.avgHr}`:''].filter(Boolean).map(esc).join(' · ')}</div>
+            </div>
+            <div class="trail">${paceStr(pace(r))}</div>
+          </div>`).join('') || '<div class="empty">Log a run, or connect Strava to pull them in</div>'}
       </div>
     </div>` });
 
+  const goal = sleepGoal();
+  const last = S.health.sleep[S.health.sleep.length - 1];
+  const debt = sleepDebt(7);
+  const spread = bedtimeSpread(7);
+  const avgQ = avgOf(sleep.filter(s => s.quality), s => s.quality);
+  const chart14 = S.health.sleep.slice(-14);
+
   B.push({ key:'sleep', name:'Sleep', html: `
-    <div class="section-head"><h3>Sleep</h3><button class="link" data-act="addSleep">+ Log</button></div>
+    <div class="section-head"><h3>Sleep</h3>
+      <span style="display:inline-flex;gap:12px;align-items:center">
+        <button class="link" data-act="editSleepGoal">Goal</button>
+        <button class="link" data-act="addSleep">+ Log</button>
+      </span></div>
     <div class="card">
-      ${sleep.length ? barChart(sleep.map(s => ({ label: s.date.slice(5), v: s.hours })), { h: 90, min: 8 }) : ''}
-      <div class="stat" style="margin-top:8px"><div class="k">7-night average</div><div class="v">${avgSleep.toFixed(1)} <small>hrs</small></div></div>
+      <div class="ring-wrap" style="margin-bottom:14px">
+        ${ring(clamp((last ? last.hours : 0) / goal, 0, 1), { size: 84 })}
+        <div style="flex:1">
+          <div class="stat">
+            <div class="k">Last night</div>
+            <div class="v">${last ? last.hours.toFixed(1) : '—'} <small>/ ${goal} hrs</small></div>
+            <div class="sub">${last
+              ? `${last.bed && last.wake ? `${esc(last.bed)} → ${esc(last.wake)} · ` : ''}${last.quality ? SLEEP_QUALITY[last.quality] : 'no rating'}`
+              : 'Log your first night'}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-row">
+        <div class="stat"><div class="k">7-night avg</div><div class="v">${avgSleep.toFixed(1)}<small> hrs</small></div>
+          <div class="sub ${avgSleep >= goal ? 'pos' : ''}">${avgSleep ? (avgSleep >= goal ? 'at goal' : `${(goal-avgSleep).toFixed(1)} under`) : '—'}</div></div>
+        <div class="stat"><div class="k">Sleep debt</div><div class="v ${debt < -2 ? 'neg' : ''}">${debt ? debt.toFixed(1) : '0'}<small> hrs</small></div>
+          <div class="sub">over 7 nights</div></div>
+        <div class="stat"><div class="k">Bedtime</div><div class="v" style="font-size:19px">${spread ? minToHHMM(spread.mean) : '—'}</div>
+          <div class="sub">${spread ? `±${spread.sd} min swing` : 'add bed times'}</div></div>
+        <div class="stat"><div class="k">Quality</div><div class="v" style="font-size:19px">${avgQ ? SLEEP_QUALITY[Math.round(avgQ)] : '—'}</div>
+          <div class="sub">${avgQ ? avgQ.toFixed(1) + ' / 5' : 'not rated'}</div></div>
+      </div>
+
+      <div class="card-label" style="margin:16px 0 8px">Last 14 nights · goal ${goal}h · scale from 4h</div>
+      ${chart14.length
+        ? barChart(chart14.map(s => ({ label: s.date.slice(8), v: s.hours })), { h: 96, min: Math.max(goal, 9), base: 4, goal })
+        : '<div class="empty">No nights logged yet</div>'}
+
+      <div class="list" style="margin-top:12px">
+        ${S.health.sleep.slice().reverse().slice(0,5).map(s => `
+          <div class="item tap" data-act="editSleep" data-d="${s.date}">
+            <div class="body"><div class="t">${s.hours.toFixed(1)} hrs${s.hours >= goal ? ' <span class="chip good" style="padding:1px 7px;font-size:10px">goal</span>' : ''}</div>
+              <div class="s">${[fmtDay(s.date), s.bed && s.wake ? `${s.bed}–${s.wake}` : '', s.quality ? SLEEP_QUALITY[s.quality] : ''].filter(Boolean).map(esc).join(' · ')}</div>
+              ${s.notes ? `<div class="s">${esc(s.notes)}</div>` : ''}</div>
+          </div>`).join('')}
+      </div>
     </div>` });
 
   $('#view-health').innerHTML =
@@ -1313,16 +1555,21 @@ const ACT = {
   /* ----- runs ----- */
   addRun() { ACT.editRun({ id:'' }); },
   editRun(d) {
-    const r = S.health.runs.find(x=>x.id===d.id) || { distanceKm:'', timeMin:'', date:todayISO(), notes:'' };
-    sheetForm(d.id?'Edit run':'New run','',
+    const r = S.health.runs.find(x=>x.id===d.id) || { name:'', distanceKm:'', timeMin:'', date:todayISO(), elevM:'', avgHr:'', notes:'' };
+    sheetForm(d.id?'Edit run':'New run',
+      r.source === 'strava' ? 'Imported from Strava. Edits stay local — they will not be pushed back.' : '',
+      field('Name','r_name',{val:r.name,ph:'e.g. Morning run'}) +
       `<div class="row">${field('Distance (km)','r_d',{type:'number',step:'0.1',val:r.distanceKm,inputmode:'decimal'})}${field('Time (min)','r_t',{type:'number',val:r.timeMin,inputmode:'decimal'})}</div>` +
+      `<div class="row">${field('Elevation (m)','r_e',{type:'number',val:r.elevM,inputmode:'numeric'})}${field('Avg HR','r_hr',{type:'number',val:r.avgHr,inputmode:'numeric'})}</div>` +
       field('Date','r_date',{type:'date',val:r.date}) +
       field('Notes','r_notes',{type:'textarea',val:r.notes,ph:'Optional'}),
       { save:'saveRun', id:d.id, del:d.id?'delRun':'' });
   },
   saveRun(d) {
     const dist = num(val('r_d')); if (!dist) return toast('Add distance');
-    const rec = { distanceKm: dist, timeMin: num(val('r_t')), date: val('r_date')||todayISO(), notes: val('r_notes') };
+    const rec = { name: val('r_name'), distanceKm: dist, timeMin: num(val('r_t')),
+      elevM: num(val('r_e')), avgHr: num(val('r_hr')),
+      date: val('r_date')||todayISO(), notes: val('r_notes') };
     if (d.id) Object.assign(S.health.runs.find(x=>x.id===d.id), rec);
     else S.health.runs.push({ id: uid(), ...rec });
     S.health.runs.sort((a,b)=>a.date.localeCompare(b.date));
@@ -1330,23 +1577,78 @@ const ACT = {
   },
   delRun(d) { S.health.runs = S.health.runs.filter(x=>x.id!==d.id); save(); closeSheet(); renderHealth(); },
 
-  /* ----- sleep ----- */
-  addSleep() {
-    const last = S.health.sleep[S.health.sleep.length-1];
-    sheetForm('Log sleep','',
-      field('Hours','sl_h',{type:'number',step:'0.25',val:last?'':7.5,inputmode:'decimal'}) +
-      field('Date','sl_date',{type:'date',val:todayISO()}) +
-      field('Quality (1-5)','sl_q',{type:'number',val:4,inputmode:'numeric'}),
-      { save:'saveSleep' });
+  /* ----- runs: Strava ----- */
+  stravaConnect() { stravaConnect(); },
+  stravaSync() { stravaImport(false); },
+  stravaDisconnect() {
+    sheetForm('Disconnect Strava?',
+      'Runs already imported stay in Compass. You can reconnect any time.',
+      '', { save:'stravaDisconnectConfirm', saveLabel:'Disconnect' });
   },
-  saveSleep() {
-    const h = num(val('sl_h')); if (!h) return toast('Add hours');
-    const date = val('sl_date')||todayISO();
-    const ex = S.health.sleep.find(s=>s.date===date);
-    if (ex) Object.assign(ex, { hours:h, quality:num(val('sl_q'),0) });
-    else S.health.sleep.push({ date, hours:h, quality:num(val('sl_q'),0) });
+  stravaDisconnectConfirm() {
+    S.health.strava = { refreshToken:'', accessToken:'', expiresAt:0, athlete:null, lastSync:0, auto:true };
+    save(); closeSheet(); renderHealth(); toast('Strava disconnected');
+  },
+
+  /* ----- sleep ----- */
+  editSleepGoal() {
+    sheetForm('Sleep goal','Hours a night you are aiming for.',
+      field('Goal (hours)','sg',{type:'number',step:'0.25',val:sleepGoal(),inputmode:'decimal'}),
+      { save:'saveSleepGoal' });
+  },
+  saveSleepGoal() {
+    const g = num(val('sg')); if (!g) return toast('Set a goal');
+    S.health.sleepGoal = clamp(g, 1, 14);
+    save(); closeSheet(); renderHealth();
+  },
+  addSleep() { ACT.editSleep({ d:'' }); },
+  editSleep(d) {
+    const prev = S.health.sleep[S.health.sleep.length-1] || {};
+    const s = S.health.sleep.find(x => x.date === d.d)
+      || { date: todayISO(), bed: prev.bed || '22:30', wake: prev.wake || '06:30', hours: 0, quality: 0, notes: '' };
+    const editing = !!S.health.sleep.find(x => x.date === d.d);
+    sheetForm(editing ? 'Edit night' : 'Log sleep',
+      'Hours are worked out from bed and wake times — or type them in directly.',
+      field('Date','sl_date',{type:'date',val:s.date}) +
+      `<div class="row">${field('Bed','sl_bed',{type:'time',val:s.bed||''})}${field('Wake','sl_wake',{type:'time',val:s.wake||''})}</div>` +
+      field('Hours','sl_h',{type:'number',step:'0.25',val:s.hours||'',inputmode:'decimal',ph:'auto'}) +
+      `<label class="field"><span>How did you sleep?</span>
+        <div class="daypick" id="sl_q">
+          ${[1,2,3,4,5].map(q=>`<button type="button" class="dp ${s.quality===q?'on':''}" data-act="pickQuality" data-q="${q}">${SLEEP_QUALITY[q]}</button>`).join('')}
+        </div>
+      </label>` +
+      field('Notes','sl_notes',{type:'textarea',val:s.notes,ph:'Optional — woke up at 3am, late coffee…'}),
+      { save:'saveSleep', id:s.date, del: editing ? 'delSleep' : '' });
+    // keep the hours box in step with the times, unless it has been typed into by hand
+    const hEl = $('#sl_h');
+    let manual = !!s.hours && sleepHoursFrom(s.bed, s.wake) !== s.hours;
+    const recalc = () => {
+      if (manual) return;
+      const h = sleepHoursFrom(val('sl_bed'), val('sl_wake'));
+      if (h !== null) hEl.value = h;
+    };
+    $('#sl_bed').addEventListener('change', recalc);
+    $('#sl_wake').addEventListener('change', recalc);
+    hEl.addEventListener('input', () => { manual = true; });
+    if (!s.hours) recalc();
+  },
+  pickQuality(d, el) { $$('#sl_q .dp').forEach(b => b.classList.remove('on')); el.classList.add('on'); },
+  saveSleep(d) {
+    const date = val('sl_date') || todayISO();
+    const bed = val('sl_bed'), wake = val('sl_wake');
+    const h = num(val('sl_h')) || sleepHoursFrom(bed, wake);
+    if (!h) return toast('Add hours, or bed and wake times');
+    const qEl = $('#sl_q .dp.on');
+    const rec = { date, hours: +h, bed, wake, quality: qEl ? num(qEl.dataset.q) : 0, notes: val('sl_notes') };
+    const ex = S.health.sleep.find(s => s.date === (d.id || date));
+    if (ex) Object.assign(ex, rec); else S.health.sleep.push(rec);
     S.health.sleep.sort((a,b)=>a.date.localeCompare(b.date));
-    save(); closeSheet(); renderHealth(); toast('Sleep logged');
+    save(); closeSheet(); renderHealth();
+    toast(h >= sleepGoal() ? 'Sleep logged — goal hit 😴' : 'Sleep logged');
+  },
+  delSleep(d) {
+    S.health.sleep = S.health.sleep.filter(s => s.date !== d.id);
+    save(); closeSheet(); renderHealth();
   },
 
   /* ----- money: holdings ----- */
@@ -2001,6 +2303,12 @@ function startApp() {
   checkReminders();
   refreshBadges();
   checkHabitReminders();
+  // finish a Strava connect, or top up runs if it's been a while since the last import
+  stravaHandleCallback().then(handled => {
+    if (handled || !stravaLinked()) return;
+    const c = stravaCfg();
+    if (c.auto !== false && Date.now() / 1000 - (c.lastSync || 0) > 3600) stravaImport(false);
+  });
   // periodic
   setInterval(refreshPrices, 5 * 60 * 1000);
   setInterval(pull, 60 * 1000);
