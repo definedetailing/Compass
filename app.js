@@ -449,7 +449,8 @@ function sleepHoursFrom(bed, wake) {
   if (b === null || w === null) return null;
   return +(((w - b + 1440) % 1440) / 60).toFixed(2);
 }
-const sleepNights = (n = 7) => S.health.sleep.slice(-n);
+const sleepNights = (n = 7) => n === Infinity ? S.health.sleep.slice() : S.health.sleep.slice(-n);
+const sleepWindow = () => (SLEEP_RANGES[sleepRange] || SLEEP_RANGES.week).nights;
 const avgOf = (arr, f) => arr.length ? arr.reduce((a, x) => a + f(x), 0) / arr.length : 0;
 // hours short of goal across the window — the number that actually motivates an earlier night
 function sleepDebt(n = 7) {
@@ -738,6 +739,9 @@ let calView = 'week', calCursor = new Date(), calSel = todayISO();
 let briefOpen = false;   // Morning brief card collapsed by default
 let billsOpen = false;   // Bills list clipped so it doesn't tower over its column
 const BILLS_SHOWN = 6;
+const PB_WINDOW = 5;     // PBs visible before the list starts scrolling
+let sleepRange = 'week'; // sleep stats window: 'week' | 'month' | 'all'
+const SLEEP_RANGES = { week: { label: 'Week', nights: 7 }, month: { label: 'Month', nights: 30 }, all: { label: 'All time', nights: Infinity } };
 let arranging = false;   // section-reorder mode
 
 /* ---------- section ordering ----------
@@ -754,7 +758,11 @@ function orderBlocks(tab, blocks) {
 function renderBlocks(tab, blocks) {
   const ordered = orderBlocks(tab, blocks);
   currentBlockKeys[tab] = ordered.map(b => b.key);
-  const one = (b) => `<div class="sec ${arranging?'arrangeable':''}" data-sec="${b.key}" data-tab="${tab}" ${arranging?'draggable="true"':''}>
+  // `fill` marks a pair that should stretch to a shared height rather than each
+  // taking its natural one — used where a scrollable list can absorb the slack
+  // `fill`  — stretch to the row and let the last list scroll inside it (caps growth)
+  // `grow`  — stretch to the row but never scroll; always contributes its full height
+  const one = (b) => `<div class="sec ${b.fill?'fill':''} ${b.grow?'grow':''} ${arranging?'arrangeable':''}" data-sec="${b.key}" data-tab="${tab}" ${arranging?'draggable="true"':''}>
     ${arranging ? `<div class="arrange-bar">
       <span class="grip">⠿</span><span class="an">${esc(b.name)}</span>
       <span class="small muted">drag to move</span></div>` : ''}
@@ -1044,7 +1052,9 @@ function renderHealth() {
   const B = [];
   // Water is short and PBs is short, so they share one column cell — together they
   // fill the row beside Runs instead of each leaving a gap
-  B.push({ key:'water', name:'Water & personal bests', html: `
+  // only take over the row once there are enough PBs to actually fill it —
+  // below that it sits at its natural height rather than padding itself out
+  B.push({ key:'water', name:'Water & personal bests', fill: S.health.pbs.length >= PB_WINDOW, html: `
     <div class="section-head"><h3>Water</h3><button class="link" data-act="editWaterGoal">Goal</button></div>
     <div class="card">
       <div class="tank-wrap">
@@ -1065,7 +1075,7 @@ function renderHealth() {
       </div>
     </div>
     <div class="section-head"><h3>Personal bests</h3><button class="link" data-act="addPB">+ PB</button></div>
-    <div class="card"><div class="list">
+    <div class="card"><div class="list pb-list">
       ${S.health.pbs.map(p => `
         <div class="item tap" data-act="editPB" data-id="${p.id}">
           <div class="body"><div class="t">${esc(p.lift)}</div><div class="s">${esc(p.date)}</div></div>
@@ -1101,7 +1111,7 @@ function renderHealth() {
   const pace = (r) => r.timeMin && r.distanceKm ? r.timeMin / r.distanceKm : 0;
   const paceStr = (p) => p ? `${Math.floor(p)}:${String(Math.round((p % 1) * 60)).padStart(2,'0')} /km` : '';
 
-  B.push({ key:'runs', name:'Runs', html: `
+  B.push({ key:'runs', name:'Runs', grow:true, html: `
     <div class="section-head"><h3>Runs</h3>
       <span style="display:inline-flex;gap:12px;align-items:center">
         ${stravaLinked()
@@ -1136,10 +1146,15 @@ function renderHealth() {
 
   const goal = sleepGoal();
   const last = S.health.sleep[S.health.sleep.length - 1];
-  const debt = sleepDebt(7);
-  const spread = bedtimeSpread(7);
-  const avgQ = avgOf(sleep.filter(s => s.quality), s => s.quality);
-  const chart14 = S.health.sleep.slice(-14);
+  const win = sleepWindow();                      // 7 / 30 / every night
+  const winNights = sleepNights(win);
+  const winAvg = avgOf(winNights, s => s.hours);
+  const debt = sleepDebt(win);
+  const spread = bedtimeSpread(win);
+  const avgQ = avgOf(winNights.filter(s => s.quality), s => s.quality);
+  const rangeLabel = sleepRange === 'all' ? `all ${winNights.length} nights` : `${winNights.length} nights`;
+  // the chart shows the window, but never so many bars that they turn into hairlines
+  const chartNights = winNights.slice(-Math.min(winNights.length, 30));
 
   B.push({ key:'sleep', name:'Sleep', html: `
     <div class="section-head"><h3>Sleep</h3>
@@ -1159,31 +1174,39 @@ function renderHealth() {
               : 'Log your first night'}</div>
           </div>
         </div>
+        ${last ? `<button class="btn sm ghost" data-act="editSleep" data-d="${last.date}" style="flex:0 0 auto;width:auto">Edit</button>` : ''}
       </div>
 
-      <div class="stats-row">
-        <div class="stat"><div class="k">7-night avg</div><div class="v">${avgSleep.toFixed(1)}<small> hrs</small></div>
-          <div class="sub ${avgSleep >= goal ? 'pos' : ''}">${avgSleep ? (avgSleep >= goal ? 'at goal' : `${(goal-avgSleep).toFixed(1)} under`) : '—'}</div></div>
+      <div class="seg full" id="sleepSeg">
+        ${Object.entries(SLEEP_RANGES).map(([k, r]) =>
+          `<button data-act="setSleepRange" data-r="${k}" class="${sleepRange===k?'on':''}">${r.label}</button>`).join('')}
+      </div>
+
+      <div class="stats-row" style="margin-top:12px">
+        <div class="stat"><div class="k">Average</div><div class="v">${winAvg.toFixed(1)}<small> hrs</small></div>
+          <div class="sub ${winAvg >= goal ? 'pos' : ''}">${winAvg ? (winAvg >= goal ? 'at goal' : `${(goal-winAvg).toFixed(1)} under`) : '—'}</div></div>
         <div class="stat"><div class="k">Sleep debt</div><div class="v ${debt < -2 ? 'neg' : ''}">${debt ? debt.toFixed(1) : '0'}<small> hrs</small></div>
-          <div class="sub">over 7 nights</div></div>
+          <div class="sub">over ${esc(rangeLabel)}</div></div>
         <div class="stat"><div class="k">Bedtime</div><div class="v" style="font-size:19px">${spread ? minToHHMM(spread.mean) : '—'}</div>
           <div class="sub">${spread ? `±${spread.sd} min swing` : 'add bed times'}</div></div>
         <div class="stat"><div class="k">Quality</div><div class="v" style="font-size:19px">${avgQ ? SLEEP_QUALITY[Math.round(avgQ)] : '—'}</div>
           <div class="sub">${avgQ ? avgQ.toFixed(1) + ' / 5' : 'not rated'}</div></div>
       </div>
 
-      <div class="card-label" style="margin:16px 0 8px">Last 14 nights · goal ${goal}h · scale from 4h</div>
-      ${chart14.length
-        ? barChart(chart14.map(s => ({ label: s.date.slice(8), v: s.hours })), { h: 96, min: Math.max(goal, 9), base: 4, goal })
+      <div class="card-label" style="margin:16px 0 8px">${chartNights.length} nights · goal ${goal}h · scale from 4h</div>
+      ${chartNights.length
+        ? barChart(chartNights.map(s => ({ label: s.date.slice(8), v: s.hours })), { h: 96, min: Math.max(goal, 9), base: 4, goal })
         : '<div class="empty">No nights logged yet</div>'}
 
-      <div class="list" style="margin-top:12px">
-        ${S.health.sleep.slice().reverse().slice(0,5).map(s => `
+      <div class="card-label" style="margin:16px 0 8px">Recent nights · tap to edit</div>
+      <div class="list sleep-list">
+        ${winNights.slice().reverse().map(s => `
           <div class="item tap" data-act="editSleep" data-d="${s.date}">
             <div class="body"><div class="t">${s.hours.toFixed(1)} hrs${s.hours >= goal ? ' <span class="chip good" style="padding:1px 7px;font-size:10px">goal</span>' : ''}</div>
               <div class="s">${[fmtDay(s.date), s.bed && s.wake ? `${s.bed}–${s.wake}` : '', s.quality ? SLEEP_QUALITY[s.quality] : ''].filter(Boolean).map(esc).join(' · ')}</div>
               ${s.notes ? `<div class="s">${esc(s.notes)}</div>` : ''}</div>
-          </div>`).join('')}
+            <span class="edit-hint">Edit</span>
+          </div>`).join('') || '<div class="empty">Nothing logged in this range</div>'}
       </div>
     </div>` });
 
@@ -1657,6 +1680,7 @@ const ACT = {
   },
 
   /* ----- sleep ----- */
+  setSleepRange(d) { sleepRange = d.r; renderHealth(); },
   editSleepGoal() {
     sheetForm('Sleep goal','Hours a night you are aiming for.',
       field('Goal (hours)','sg',{type:'number',step:'0.25',val:sleepGoal(),inputmode:'decimal'}),
