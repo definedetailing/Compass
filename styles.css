@@ -603,6 +603,26 @@ label.field > span { display: block; font-size: 12.5px; font-weight: 600; color:
 .pb-list::-webkit-scrollbar-track { background: transparent; }
 .pb-list > .item { flex: none; }
 
+/* ---------- Today's briefing ---------- */
+.brief-head { font-size: 16px; font-weight: 750; letter-spacing: -.01em; margin-bottom: 12px; }
+.brief-rows { display: flex; flex-direction: column; }
+.brief-row { display: flex; align-items: center; gap: 11px; padding: 10px 2px;
+  border-top: 1px solid var(--border); font-size: 13.5px; color: var(--text-2); }
+.brief-row:first-child { border-top: none; padding-top: 2px; }
+.brief-row .bi { flex: none; font-size: 15px; width: 20px; text-align: center; }
+.brief-row .bt { flex: 1; min-width: 0; }
+.brief-row .bt b { color: var(--text); font-weight: 700; }
+.brief-row:active { opacity: .6; }
+
+/* ---------- Rough day ---------- */
+.section-head .link.on { color: var(--amber); }
+.rough-card { border-left: 4px solid var(--amber); }
+.rough-lead { font-size: 15px; font-weight: 700; margin-bottom: 12px; }
+.check.rough { padding: 14px 12px; }
+.check.rough .box { width: 26px; height: 26px; border-radius: 9px; }
+.check.rough .txt { font-size: 15.5px; font-weight: 600; }
+.rough-done { margin-top: 14px; text-align: center; font-size: 13.5px; font-weight: 650; color: var(--green); }
+
 /* full-width segmented control (sleep range) */
 .seg.full { display: flex; width: 100%; }
 .seg.full button { flex: 1; }

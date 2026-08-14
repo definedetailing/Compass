@@ -176,6 +176,8 @@ function defaultState() {
         { id: uid(), text: 'Review finances', weeks: {} },
       ],
       habits: [],                    // {id, text, time:"HH:MM", days:[0-6] (empty = every day), doneDays:{}}
+      roughDays: {},                 // iso -> true; a day you called rough (streaks forgive it)
+      reviews: [],                   // {week, date, worked, change, stats}
     },
   };
 }
@@ -507,6 +509,132 @@ function updateWaterUI(ml, added) {
   return true;
 }
 
+/* ============================================================
+   Rough day — the bad-day minimums, made usable
+   ============================================================ */
+const roughDays = () => (S.systems.roughDays || (S.systems.roughDays = {}));
+const isRoughDay = (iso = todayISO()) => !!roughDays()[iso];
+// the minimums started life as plain strings; give them ids + per-day ticks once
+function badDayItems() {
+  const b = S.systems.badDay || [];
+  if (b.length && typeof b[0] === 'string') {
+    S.systems.badDay = b.map(t => ({ id: uid(), text: t, doneDays: {} }));
+    save(false);
+  }
+  return S.systems.badDay.map(x => (x.doneDays ? x : (x.doneDays = {}, x)));
+}
+const badDayDone = (m, iso = todayISO()) => !!(m.doneDays || {})[iso];
+function roughProgress(iso = todayISO()) {
+  const items = badDayItems();
+  const done = items.filter(m => badDayDone(m, iso)).length;
+  return { done, total: items.length, pct: items.length ? done / items.length : 0 };
+}
+
+/* ============================================================
+   Weekly review — every number here already exists somewhere else
+   ============================================================ */
+function weekReviewStats() {
+  const end = todayISO(), start = weekStartISO();
+  const inWeek = iso => iso >= start && iso <= end;
+  const days = [];
+  for (let d = parseISO(start); todayISO(d) <= end; d.setDate(d.getDate() + 1)) days.push(todayISO(d));
+
+  // habits: how many scheduled slots were ticked
+  let hDue = 0, hDone = 0;
+  (S.systems.habits || []).forEach(h => days.forEach(iso => {
+    if (!habitRunsOn(h, parseISO(iso))) return;
+    hDue++; if (h.doneDays && h.doneDays[iso]) hDone++;
+  }));
+
+  // tasks landing on those days, plus this week's week-scope tasks
+  let tDue = 0, tDone = 0;
+  days.forEach(iso => tasksForDate(iso).forEach(t => { tDue++; if (taskDone(t, iso)) tDone++; }));
+  tasksForWeek(weekKey()).forEach(t => { tDue++; if (taskDone(t)) tDone++; });
+
+  const wk = weekKey();
+  const must = S.systems.weekly || [];
+  const mustDone = must.filter(m => m.weeks[wk]).length;
+
+  const nights = S.health.sleep.filter(s => inWeek(s.date));
+  const runs = S.health.runs.filter(r => inWeek(r.date));
+  const spent = S.money.transactions
+    .filter(t => t.dir === 'out' && inWeek(t.date)).reduce((a, t) => a + t.amount, 0);
+  const rough = days.filter(iso => roughDays()[iso]).length;
+
+  return {
+    start, end, days: days.length,
+    habits: { done: hDone, due: hDue },
+    tasks: { done: tDone, due: tDue },
+    must: { done: mustDone, due: must.length },
+    sleepAvg: avgOf(nights, s => s.hours), nights: nights.length,
+    spread: (() => { const b = bedtimeSpread(nights.length || 1); return b ? b.sd : null; })(),
+    km: runs.reduce((a, r) => a + (r.distanceKm || 0), 0), runs: runs.length,
+    spent, rough,
+  };
+}
+const pctText = (d, t) => t ? `${Math.round(d / t * 100)}%` : '—';
+
+/* ============================================================
+   Daily briefing — composed from what the app already knows, so it
+   always has something to say (the emailed brief is a bonus on top)
+   ============================================================ */
+function briefingRows() {
+  const iso = todayISO(), now = new Date();
+  const rows = [];
+  const push = (icon, text, tab) => rows.push({ icon, text, tab });
+
+  const evs = eventsForDate(iso);
+  const later = evs.filter(e => (e.start || e.time || '') >= `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`)
+    .sort((a, b) => (a.start || '').localeCompare(b.start || ''));
+  const nextEv = later[0];
+  if (evs.length) push('📅', nextEv
+      ? `${evs.length} on today — next is <b>${esc(nextEv.title)}</b>${nextEv.start ? ` at ${esc(nextEv.start)}` : ''}`
+      : `${evs.length} on today — all done`, 'calendar');
+  else push('📅', 'Nothing scheduled today', 'calendar');
+
+  const tks = tasksForDate(iso), tLeft = tks.filter(t => !taskDone(t, iso));
+  if (tks.length) push('✅', tLeft.length
+      ? `${tLeft.length} task${tLeft.length > 1 ? 's' : ''} to tick off — <b>${esc(tLeft[0].text)}</b>${tLeft.length > 1 ? ' first' : ''}`
+      : 'All today\'s tasks are done 🎉', 'calendar');
+
+  const hb = habitsToday().filter(h => !(h.doneDays && h.doneDays[iso]));
+  if (hb.length) push('🔁', `${hb.length} habit${hb.length > 1 ? 's' : ''} left — <b>${esc(hb[0].text)}</b> at ${esc(hb[0].time || '')}`, 'systems');
+
+  const lastNight = S.health.sleep[S.health.sleep.length - 1];
+  if (lastNight && lastNight.date === iso) {
+    const d = lastNight.hours - sleepGoal();
+    push('😴', d >= 0 ? `Slept <b>${lastNight.hours.toFixed(1)}h</b> — at goal`
+      : `Slept <b>${lastNight.hours.toFixed(1)}h</b>, ${Math.abs(d).toFixed(1)}h under goal`, 'health');
+  }
+
+  const w = S.health.water.log[iso] || 0, wg = S.health.water.goalMl;
+  if (w < wg) push('💧', `Water <b>${(w/1000).toFixed(2)}</b> of ${(wg/1000).toFixed(1)} L`, 'health');
+
+  const due = upcomingBills().filter(b => b.status !== 'ok')[0];
+  if (due) push('🧾', `<b>${esc(due.name)}</b> ${due.dd < 0 ? `${-due.dd}d overdue` : due.dd === 0 ? 'due today' : `due in ${due.dd}d`} · ${AUD(due.amount)}`, 'money');
+
+  const over = S.money.budgets.find(bd => {
+    const lim = periodIsWeekly() ? bd.limit / (52/12) : bd.limit;
+    const sp = periodIsWeekly() ? spentThisWeek(bd.category) : spentThisMonth(bd.category);
+    return lim && sp > lim;
+  });
+  if (over) push('⚠️', `<b>${esc(over.category)}</b> is over budget`, 'money');
+
+  if (S.systems.focus) push('🎯', `Focus: <b>${esc(S.systems.focus)}</b>`, 'systems');
+  return rows;
+}
+function briefingHeadline() {
+  const iso = todayISO();
+  if (isRoughDay(iso)) return 'Take it easy today.';
+  const hr = new Date().getHours();
+  const open = hr < 12 ? 'Here\'s your day' : hr < 17 ? 'Rest of your day' : 'How today finished';
+  const dp = dayProgress();
+  if (dp && dp.pct >= 1) return `${open} — everything's ticked off 🎉`;
+  const evs = eventsForDate(iso).length, left = dp ? dp.total - dp.done : 0;
+  if (!evs && !left) return `${open} — completely clear`;
+  return `${open} — ${evs ? `${evs} on` : 'nothing scheduled'}${left ? `, ${left} to tick off` : ''}`;
+}
+
 /* ---------- crypto (PIN) ---------- */
 async function sha(str) {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('compass::' + str));
@@ -816,6 +944,7 @@ function renderHome() {
   const wk = weekKey();
   const mustDo = S.systems.weekly.filter(m => !m.weeks[wk]);
 
+  const rough = isRoughDay();
   const waterToday = S.health.water.log[todayISO()] || 0;
   const waterPct = clamp(waterToday / S.health.water.goalMl, 0, 1);
   const bills = upcomingBills();
@@ -841,12 +970,40 @@ function renderHome() {
       </div>` : ''}
     </div>
 
+    <div class="section-head"><h3>Today's briefing</h3>
+      <button class="link ${rough ? 'on' : ''}" data-act="toggleRoughDay">${rough ? '✓ Rough day' : 'Rough day?'}</button></div>
+    ${rough ? (() => {
+      const items = badDayItems(), p = roughProgress();
+      return `<div class="card rough-card">
+        <div class="rough-lead">Just these ${items.length} today. Nothing else counts.</div>
+        <div class="bar slim" style="margin-bottom:14px"><i style="width:${p.pct*100}%"></i></div>
+        <div class="list">
+          ${items.map(m => `
+            <div class="check rough ${badDayDone(m) ? 'done' : ''}">
+              <span class="box tap" data-act="toggleBadDay" data-id="${m.id}">${TICK}</span>
+              <span class="txt">${esc(m.text)}</span>
+            </div>`).join('') || '<div class="empty">Add minimums in Systems</div>'}
+        </div>
+        ${p.pct >= 1 ? '<div class="rough-done">That\'s the whole list. Well done. 💙</div>' : ''}
+      </div>`;
+    })() : `
+    <div class="card brief-card">
+      <div class="brief-head">${briefingHeadline()}</div>
+      <div class="brief-rows">
+        ${briefingRows().map(r => `
+          <div class="brief-row tap" data-tab-go="${r.tab}">
+            <span class="bi">${r.icon}</span><span class="bt">${r.text}</span>
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--text-3)" stroke-width="2.5" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg>
+          </div>`).join('')}
+      </div>
+    </div>`}
+
     ${(() => {
       const b = S.brief;
       if (!b || !b.text) return '';
       const fresh = b.date === todayISO();
       const long = b.text.split('\n').length > 7 || b.text.length > 340;
-      return `<div class="section-head"><h3>Morning brief</h3>
+      return `<div class="section-head"><h3>From your inbox</h3>
         <span class="small muted">${fresh ? 'today' : esc(b.date || '')}</span></div>
         <div class="card brief-card ${fresh ? '' : 'stale'} ${long && !briefOpen ? 'clipped' : ''}">
           <pre class="brief-text">${esc(b.text)}</pre>
@@ -1391,14 +1548,58 @@ function renderSystems() {
         </div>`).join('') || `<div class="empty">e.g. Smoothie — 8:00 am daily, Run — Tuesdays</div>`}
     </div></div>` });
 
+  const roughOn = isRoughDay();
+  const rp = roughProgress();
   B.push({ key:'badday', name:'Bad-day minimums', html: `
-    <div class="section-head"><h3>Bad-day minimums</h3><button class="link" data-act="addBadDay">+ Add</button></div>
-    <div class="card"><div class="small muted" style="margin-bottom:10px">The bare minimum on a hard day.</div><div class="list">
-      ${S.systems.badDay.map((t, i) => `
-        <div class="item"><span class="dot" style="background:var(--amber)"></span>
-          <div class="body"><div class="t">${esc(t)}</div></div>
-          <button class="del" data-act="delBadDay" data-i="${i}">✕</button></div>`).join('') || `<div class="empty">Add a minimum</div>`}
+    <div class="section-head"><h3>Bad-day minimums</h3>
+      <span style="display:inline-flex;gap:12px;align-items:center">
+        <button class="link ${roughOn?'on':''}" data-act="toggleRoughDay">${roughOn ? '✓ Rough day on' : 'Start a rough day'}</button>
+        <button class="link" data-act="addBadDay">+ Add</button>
+      </span></div>
+    <div class="card">
+      <div class="small muted" style="margin-bottom:10px">${roughOn
+        ? `Rough day on — Home shows only these. ${rp.done} of ${rp.total} done. Streaks are safe.`
+        : 'The bare minimum on a hard day. Turn it on and Home clears down to just this.'}</div>
+      <div class="list">
+      ${badDayItems().map(m => `
+        <div class="check ${badDayDone(m) ? 'done' : ''}">
+          <span class="box tap" data-act="toggleBadDay" data-id="${m.id}">${TICK}</span>
+          <span class="txt tap" data-act="editBadDay" data-id="${m.id}">${esc(m.text)}</span>
+          <button class="del" data-act="delBadDay" data-id="${m.id}">✕</button>
+        </div>`).join('') || `<div class="empty">Add a minimum</div>`}
     </div></div>` });
+
+  const rv = weekReviewStats();
+  const lastRv = (S.systems.reviews || []).slice().sort((a,b)=>b.week.localeCompare(a.week))[0];
+  const doneThisWeek = lastRv && lastRv.week === weekKey();
+  B.push({ key:'review', name:'Weekly review', html: `
+    <div class="section-head"><h3>Weekly review</h3>
+      <span class="small muted">${fmtDay(rv.start)} – ${fmtDay(rv.end)}</span></div>
+    <div class="card">
+      <div class="stats-row" style="margin-bottom:12px">
+        <div class="stat"><div class="k">Habits</div><div class="v">${pctText(rv.habits.done, rv.habits.due)}</div>
+          <div class="sub">${rv.habits.done} of ${rv.habits.due} slots</div></div>
+        <div class="stat"><div class="k">Tasks</div><div class="v">${pctText(rv.tasks.done, rv.tasks.due)}</div>
+          <div class="sub">${rv.tasks.done} of ${rv.tasks.due} done</div></div>
+        <div class="stat"><div class="k">Must-dos</div><div class="v">${rv.must.done}<small> / ${rv.must.due}</small></div>
+          <div class="sub">${rv.must.due && rv.must.done === rv.must.due ? 'all hit' : 'this week'}</div></div>
+        <div class="stat"><div class="k">Sleep</div><div class="v">${rv.sleepAvg ? rv.sleepAvg.toFixed(1) : '—'}<small> hrs</small></div>
+          <div class="sub">${rv.nights} night${rv.nights===1?'':'s'}${rv.spread!==null?` · ±${rv.spread}m`:''}</div></div>
+        <div class="stat"><div class="k">Running</div><div class="v">${rv.km.toFixed(1)}<small> km</small></div>
+          <div class="sub">${rv.runs} run${rv.runs===1?'':'s'}</div></div>
+        <div class="stat"><div class="k">Spent</div><div class="v">${AUD(rv.spent, 0)}</div>
+          <div class="sub">${rv.rough ? `${rv.rough} rough day${rv.rough>1?'s':''}` : 'this week'}</div></div>
+      </div>
+      <button class="btn ${doneThisWeek?'':'primary'}" data-act="writeReview">${doneThisWeek ? 'Edit this week\'s review' : 'Write this week\'s review'}</button>
+      ${(S.systems.reviews||[]).length ? `<div class="list" style="margin-top:12px">
+        ${(S.systems.reviews||[]).slice().sort((a,b)=>b.week.localeCompare(a.week)).slice(0,4).map(r => `
+          <div class="item tap" data-act="writeReview" data-w="${r.week}">
+            <div class="body"><div class="t">${esc(r.week)}</div>
+              <div class="s">${esc((r.worked||'').slice(0,70) || 'No notes')}</div></div>
+            <span class="edit-hint">Edit</span>
+          </div>`).join('')}
+      </div>` : ''}
+    </div>` });
 
   B.push({ key:'notes', name:'Notes', html: `
     <div class="section-head"><h3>Notes</h3><button class="link" data-act="addNote">+ Note</button></div>
@@ -1862,10 +2063,71 @@ const ACT = {
   toggleWeekly(d) { const w = S.systems.weekly.find(x=>x.id===d.id); const k = weekKey(); w.weeks[k]=!w.weeks[k]; save(); render(currentTab); },
   delWeekly(d) { S.systems.weekly = S.systems.weekly.filter(x=>x.id!==d.id); save(); closeSheet(); renderSystems(); },
 
-  /* ----- systems: bad day ----- */
-  addBadDay() { sheetForm('Bad-day minimum','', field('Minimum','bad_text',{ph:'e.g. Drink water'}), { save:'saveBadDay' }); },
-  saveBadDay() { const t = val('bad_text'); if (!t) return toast('Type something'); S.systems.badDay.push(t); save(); closeSheet(); renderSystems(); },
-  delBadDay(d) { S.systems.badDay.splice(num(d.i), 1); save(); renderSystems(); },
+  /* ----- systems: bad day / rough-day mode ----- */
+  addBadDay() { ACT.editBadDay({ id:'' }); },
+  editBadDay(d) {
+    const m = badDayItems().find(x => x.id === d.id) || { text:'' };
+    sheetForm(d.id ? 'Edit minimum' : 'Bad-day minimum',
+      'The bare minimum on a hard day — keep it genuinely small.',
+      field('Minimum','bad_text',{ val:m.text, ph:'e.g. Drink water' }),
+      { save:'saveBadDay', id:d.id, del: d.id ? 'delBadDay' : '' });
+  },
+  saveBadDay(d) {
+    const t = val('bad_text'); if (!t) return toast('Type something');
+    const items = badDayItems();
+    if (d.id) items.find(x => x.id === d.id).text = t;
+    else items.push({ id: uid(), text: t, doneDays: {} });
+    save(); closeSheet(); renderSystems();
+  },
+  delBadDay(d) {
+    S.systems.badDay = badDayItems().filter(x => x.id !== d.id);
+    save(); closeSheet(); render(currentTab);
+  },
+  toggleBadDay(d, el) {
+    const m = badDayItems().find(x => x.id === d.id); if (!m) return;
+    const iso = todayISO();
+    const nowDone = !badDayDone(m, iso);
+    m.doneDays[iso] = nowDone;
+    save();
+    const row = el && el.closest('.check');
+    if (nowDone && row) {
+      if (navigator.vibrate) navigator.vibrate(12);
+      row.classList.add('done', 'ticking');
+      setTimeout(() => render(currentTab), 420);
+    } else render(currentTab);
+  },
+  toggleRoughDay() {
+    const iso = todayISO(), r = roughDays();
+    if (r[iso]) { delete r[iso]; save(); render(currentTab); toast('Back to your normal day'); return; }
+    r[iso] = true; save(); render(currentTab);
+    toast('Rough day on — just the minimums. Streaks are safe.');
+  },
+
+  /* ----- systems: weekly review ----- */
+  writeReview(d) {
+    const week = d.w || weekKey();
+    const list = S.systems.reviews || (S.systems.reviews = []);
+    const r = list.find(x => x.week === week) || { week, worked:'', change:'' };
+    const s = weekReviewStats();
+    sheetForm(`Review · ${week}`,
+      `${s.habits.done}/${s.habits.due} habit slots · ${s.tasks.done}/${s.tasks.due} tasks · ${s.sleepAvg ? s.sleepAvg.toFixed(1)+'h sleep' : 'no sleep logged'} · ${s.km.toFixed(1)} km`,
+      field('What worked?','rv_worked',{type:'textarea',val:r.worked,ph:'The thing you want to keep doing'}) +
+      field('What to change?','rv_change',{type:'textarea',val:r.change,ph:'One change for next week — just one'}),
+      { save:'saveReview', id:week, del: list.some(x=>x.week===week) ? 'delReview' : '' });
+  },
+  saveReview(d) {
+    const week = d.id || weekKey();
+    const list = S.systems.reviews || (S.systems.reviews = []);
+    const rec = { week, date: todayISO(), worked: val('rv_worked'), change: val('rv_change'), stats: weekReviewStats() };
+    if (!rec.worked && !rec.change) return toast('Write a line in either box');
+    const ex = list.find(x => x.week === week);
+    if (ex) Object.assign(ex, rec); else list.push(rec);
+    save(); closeSheet(); renderSystems(); toast('Review saved');
+  },
+  delReview(d) {
+    S.systems.reviews = (S.systems.reviews || []).filter(x => x.week !== d.id);
+    save(); closeSheet(); renderSystems();
+  },
 
   /* ----- systems: notes ----- */
   addNote() { const n = { id: uid(), title:'', body:'', updatedAt: Date.now() }; S.systems.notes.push(n); save(); ACT.openNote({ id: n.id }); },
@@ -2024,6 +2286,7 @@ function habitStreak(h) {
   if (habitRunsOn(h, d) && !done[todayISO(d)]) d.setDate(d.getDate() - 1);  // today still pending
   while (guard++ < 400) {
     if (!habitRunsOn(h, d)) { d.setDate(d.getDate() - 1); continue; }        // not due — doesn't break it
+    if (isRoughDay(todayISO(d))) { d.setDate(d.getDate() - 1); continue; }   // a rough day is forgiven
     if (!done[todayISO(d)]) break;
     n++; d.setDate(d.getDate() - 1);
   }
