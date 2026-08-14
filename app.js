@@ -2737,8 +2737,19 @@ function boot() {
   if (S.settings.pinHash) showLock('unlock');
   else if (!localStorage.getItem('compass_seen')) { localStorage.setItem('compass_seen','1'); showLock('setup1'); }
   else startApp();
-  // register SW
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
+  // Register the SW and actively check for a newer one. Without this an installed
+  // home-screen app can sit on a stale shell indefinitely; when a new worker takes
+  // over we reload once (guarded, so it can never loop) to pick up fresh assets.
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js').then(reg => {
+      reg.update().catch(()=>{});
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (sessionStorage.getItem('compass_sw_reloaded')) return;
+        sessionStorage.setItem('compass_sw_reloaded', '1');
+        location.reload();
+      });
+    }).catch(()=>{});
+  }
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { pull(); checkReminders(); checkHabitReminders(); } });
 boot();
