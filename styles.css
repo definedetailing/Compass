@@ -614,6 +614,19 @@ label.field > span { display: block; font-size: 12.5px; font-weight: 600; color:
 .brief-row .bt b { color: var(--text); font-weight: 700; }
 .brief-row:active { opacity: .6; }
 
+/* ---------- Auto-imported from email ---------- */
+.import-strip { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--border); }
+.import-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+  font-size: 12px; color: var(--text-3); font-weight: 600; }
+.auto-badge { flex: none; font-size: 9.5px; font-weight: 800; letter-spacing: .08em;
+  padding: 2px 6px; border-radius: 5px; background: var(--amber-soft); color: var(--amber); }
+.import-row { display: flex; align-items: center; gap: 10px; padding: 7px 2px; font-size: 13px; }
+.import-row .bi { flex: none; width: 20px; text-align: center; }
+.import-row .bt { flex: 1; min-width: 0; }
+.import-row .bt b { display: block; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.import-row .bt .s { font-size: 11.5px; color: var(--text-3); }
+.chip.src { background: var(--amber-soft); color: var(--amber); border-color: transparent; }
+
 /* ---------- Rough day ---------- */
 .section-head .link.on { color: var(--amber); }
 .rough-card { border-left: 4px solid var(--amber); }

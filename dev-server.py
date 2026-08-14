@@ -226,7 +226,7 @@ class H(http.server.SimpleHTTPRequestHandler):
                     "weekday": datetime.date.fromisoformat(e["date"]).isoweekday() % 7,
                     "start": e.get("start", ""), "end": e.get("end", ""),
                     "category": e.get("category", "Other"), "recurring": False,
-                    "cost": 0, "notes": e.get("notes", ""), "source": "email"})
+                    "cost": 0, "notes": e.get("notes", ""), "source": "email", "importedAt": int(time.time()*1000)})
                 added["events"] += 1
             for t in body.get("transactions") or []:
                 if not t.get("desc") or not (t.get("amount", 0) > 0):
@@ -238,7 +238,7 @@ class H(http.server.SimpleHTTPRequestHandler):
                 state["money"]["transactions"].append({
                     "id": uid(), "desc": t["desc"], "amount": float(t["amount"]),
                     "category": t.get("category", "Other"), "date": t.get("date", ""),
-                    "dir": "in" if t.get("dir") == "in" else "out", "source": "email"})
+                    "dir": "in" if t.get("dir") == "in" else "out", "source": "email", "importedAt": int(time.time()*1000)})
                 added["transactions"] += 1
             for b in body.get("bills") or []:
                 if not b.get("name") or not (b.get("amount", 0) > 0):
@@ -250,7 +250,7 @@ class H(http.server.SimpleHTTPRequestHandler):
                     "freq": b.get("freq", "monthly"),
                     "dueDay": min(max(int(b.get("dueDay", 1)), 1), 28),
                     "due": b.get("due", ""), "remindDays": 3, "lastPaidMonth": "",
-                    "paidUntil": "", "done": False, "source": "email"})
+                    "paidUntil": "", "done": False, "source": "email", "importedAt": int(time.time()*1000)})
                 added["bills"] += 1
             if isinstance(body.get("brief"), str) and body["brief"].strip():
                 state["brief"] = {"text": body["brief"].strip(),

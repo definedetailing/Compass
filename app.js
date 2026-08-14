@@ -623,6 +623,34 @@ function briefingRows() {
   if (S.systems.focus) push('🎯', `Focus: <b>${esc(S.systems.focus)}</b>`, 'systems');
   return rows;
 }
+// Anything the email importer added recently, so it is never a silent change.
+// Email is untrusted input — these land flagged and one tap removes them.
+function recentImports(days = 3) {
+  const cut = Date.now() - days * 86400000;
+  const fresh = x => x.source === 'email' && x.importedAt >= cut;
+  return [
+    ...S.calendar.events.filter(fresh).map(e => ({ kind:'event', icon:'📅', id:e.id,
+      label:e.title, sub:[fmtDay(e.date || todayISO()), e.start].filter(Boolean).join(' · ') })),
+    ...S.money.bills.filter(fresh).map(b => ({ kind:'bill', icon:'🧾', id:b.id,
+      label:b.name, sub:`${AUD(b.amount)} · ${FREQ_LABEL[b.freq||'monthly']}` })),
+    ...S.money.transactions.filter(fresh).map(t => ({ kind:'txn', icon:'💳', id:t.id,
+      label:t.desc, sub:`${t.dir==='in'?'+':'−'}${AUD(t.amount)} · ${t.date}` })),
+  ].sort((a, b) => a.kind.localeCompare(b.kind));
+}
+function importStrip() {
+  const items = recentImports();
+  if (!items.length) return '';
+  return `<div class="import-strip">
+    <div class="import-head"><span class="auto-badge">AUTO</span>
+      <span>Added from your email — check these are right</span></div>
+    ${items.map(i => `
+      <div class="import-row">
+        <span class="bi">${i.icon}</span>
+        <span class="bt"><b>${esc(i.label)}</b><span class="s">${esc(i.sub)}</span></span>
+        <button class="del" data-act="dropImport" data-kind="${i.kind}" data-id="${i.id}" title="Remove">✕</button>
+      </div>`).join('')}
+  </div>`;
+}
 function briefingHeadline() {
   const iso = todayISO();
   if (isRoughDay(iso)) return 'Take it easy today.';
@@ -996,6 +1024,7 @@ function renderHome() {
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--text-3)" stroke-width="2.5" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg>
           </div>`).join('')}
       </div>
+      ${importStrip()}
     </div>`}
 
     ${(() => {
@@ -1645,6 +1674,15 @@ const ACT = {
   /* nav-ish */
   editFocus() { render('systems'); setTimeout(()=>{ const f=$('#focusInput'); if(f){f.focus();} }, 80); },
   toggleBrief() { briefOpen = !briefOpen; renderHome(); },
+  dropImport(d) {
+    if (d.kind === 'event') {
+      S.calendar.events = S.calendar.events.filter(x => x.id !== d.id);
+      S.money.transactions = S.money.transactions.filter(t => t.eventId !== d.id);
+    }
+    if (d.kind === 'bill') S.money.bills = S.money.bills.filter(x => x.id !== d.id);
+    if (d.kind === 'txn')  S.money.transactions = S.money.transactions.filter(x => x.id !== d.id);
+    save(); renderHome(); refreshBadges(); toast('Removed — it won\'t come back');
+  },
   toggleBills() { billsOpen = !billsOpen; renderMoney(); },
   toggleArrange(d) { arranging = !arranging; render(d.tab); if (arranging) toast('Drag sections to reorder, then Done'); },
 

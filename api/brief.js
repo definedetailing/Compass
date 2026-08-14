@@ -65,7 +65,7 @@ module.exports = async (req, res) => {
       state.calendar.events.push({
         id: uid(), title: String(e.title), date: e.date, weekday: new Date(e.date + 'T00:00:00').getDay(),
         start: e.start || '', end: e.end || '', category: e.category || 'Other',
-        recurring: false, cost: 0, notes: e.notes || '', source: 'email',
+        recurring: false, cost: 0, notes: e.notes || '', source: 'email', importedAt: Date.now(),
       });
       added.events++;
     }
@@ -78,7 +78,7 @@ module.exports = async (req, res) => {
       if (dupe) continue;
       state.money.transactions.push({
         id: uid(), desc: String(t.desc), amount: Number(t.amount),
-        category: t.category || 'Other', date: t.date, dir: t.dir === 'in' ? 'in' : 'out', source: 'email',
+        category: t.category || 'Other', date: t.date, dir: t.dir === 'in' ? 'in' : 'out', source: 'email', importedAt: Date.now(),
       });
       added.transactions++;
     }
@@ -90,7 +90,7 @@ module.exports = async (req, res) => {
       state.money.bills.push({
         id: uid(), name: String(b.name), amount: Number(b.amount),
         freq: b.freq || 'monthly', dueDay: Math.min(Math.max(Number(b.dueDay) || 1, 1), 28),
-        due: b.due || '', remindDays: 3, lastPaidMonth: '', paidUntil: '', done: false, source: 'email',
+        due: b.due || '', remindDays: 3, lastPaidMonth: '', paidUntil: '', done: false, source: 'email', importedAt: Date.now(),
       });
       added.bills++;
     }
