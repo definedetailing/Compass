@@ -403,11 +403,11 @@ label.field > span { display: block; font-size: 12.5px; font-weight: 600; color:
 
 /* Checkboxes (goals / mustdo) */
 .check { display: flex; align-items: center; gap: 11px; padding: 11px; border-radius: var(--radius-sm); background: var(--surface-2); border: 1px solid var(--border); }
-.check .box { width: 22px; height: 22px; border-radius: 7px; border: 2px solid var(--border); flex: none; display: grid; place-items: center; color: #fff; transition: .15s; }
-.check.done .box { background: var(--primary); border-color: var(--primary); }
-.check.done .box svg { width: 14px; height: 14px; }
-.check .box svg { opacity: 0; }
-.check.done .box svg { opacity: 1; }
+/* one checkbox definition shared by the stacked lists and the Home agenda rows */
+.box { width: 22px; height: 22px; border-radius: 7px; border: 2px solid var(--border); flex: none;
+  display: grid; place-items: center; color: #fff; transition: background .18s, border-color .18s; }
+.box svg { width: 14px; height: 14px; }
+.done .box { background: var(--primary); border-color: var(--primary); }
 .check .txt { flex: 1; font-size: 14.5px; }
 .check.done .txt { text-decoration: line-through; color: var(--text-3); }
 .del { color: var(--text-3); background: none; border: none; padding: 4px 6px; opacity: .6; font-size: 15px; line-height: 1; }
@@ -549,25 +549,18 @@ label.field > span { display: block; font-size: 12.5px; font-weight: 600; color:
    exactly. Row rhythm comes from row-gap, never from the first heading's
    margin — that margin is what used to let the two columns drift apart. */
 .cols { display: grid; grid-template-columns: 1fr; gap: 22px; }
-.cols > .sec { min-width: 0; display: flex; flex-direction: column; }
+.cols > .sec { min-width: 0; }
 .cols > .sec > .section-head:first-child { margin-top: 0; }
-/* the section's card fills its row, so both cards in a row finish level */
-.cols > .sec > .card:last-child,
-.cols > .sec > .list:last-child { flex: 1; }
-/* …and short content centres in that stretched card rather than clinging to the
-   top, so a short section reads as deliberate instead of unfinished. Cards with
-   a list are unaffected — the list absorbs the slack instead. */
-.cols > .sec > .card { display: flex; flex-direction: column; justify-content: center; }
-.cols > .sec > .card > .list { flex: 1; }
-.list > .empty:only-child { margin: auto 0; }
 @media (min-width: 900px) {
   :root { --maxw: 1080px; }
   .topbar { padding-left: 4px; padding-right: 4px; }
   /* fixed row count + column flow = fill the left column top-to-bottom and then
-     the right, while both columns still share the same grid rows */
+     the right, while both columns still share the same grid rows. `start` keeps
+     each card at its natural height — stretching a short section to match a tall
+     neighbour just strands its content in a big empty box. */
   .cols { grid-template-columns: 1fr 1fr;
     grid-auto-flow: column; grid-template-rows: repeat(var(--rows, 1), auto);
-    align-items: stretch; }
+    align-items: start; }
   /* Home: KPI row of 4, then agenda + must-dos side by side */
   .stats-row { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .home-cols { grid-template-columns: 1.3fr 1fr; }
@@ -583,6 +576,62 @@ label.field > span { display: block; font-size: 12.5px; font-weight: 600; color:
 .right { text-align: right; }
 .nowrap { white-space: nowrap; }
 .badge-count { background: var(--red); color: #fff; border-radius: 999px; font-size: 10px; font-weight: 700; padding: 1px 6px; position: absolute; top: 4px; right: 50%; margin-right: -22px; }
+
+/* "Show all …" under a clipped list */
+.more-link { display: block; width: 100%; margin-top: 10px; padding: 8px 0; border: none;
+  background: none; color: var(--primary); font-weight: 650; font-size: 12.5px; }
+
+/* ---------- Water tank ---------- */
+.tank-wrap { display: flex; align-items: stretch; gap: 16px; }
+.tank-side { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: space-between; gap: 14px; }
+.water-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.water-btns .btn { width: 100%; }
+
+.tank { position: relative; flex: none; width: 128px; min-height: 232px; align-self: stretch;
+  border: 2px solid var(--border); border-radius: 22px; background: var(--surface-2);
+  overflow: hidden; isolation: isolate; }
+/* faint level marks so the fill reads as a measurement, not just a colour */
+.tank::before { content: ""; position: absolute; inset: 0; z-index: 2; pointer-events: none;
+  background: repeating-linear-gradient(to top, transparent 0 24.5%, var(--border) 24.5% calc(24.5% + 1px)); opacity: .5; }
+.tank-water { position: absolute; left: 0; right: 0; bottom: 0; height: var(--fill, 0%);
+  background: linear-gradient(180deg, var(--blue-400), var(--blue-600));
+  transition: height .95s cubic-bezier(.22, 1, .36, 1); }
+.tank-wave { position: absolute; left: 0; width: 200%; height: 26px; fill: var(--blue-400); }
+.tank-wave.a { top: -12px; }
+.tank-wave.b { top: -8px; opacity: .45; fill: var(--blue-300); }
+.tank.full { border-color: var(--blue-500); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .tank-wave.a { animation: tankWave 3.6s linear infinite; }
+  .tank-wave.b { animation: tankWave 5.6s linear infinite reverse; }
+  /* a quick swell as the level moves, so topping up feels like pouring */
+  .tank.pour .tank-water { animation: tankPour .95s cubic-bezier(.22, 1, .36, 1); }
+  .tank.drain .tank-water { animation: tankDrain .7s ease; }
+}
+@keyframes tankWave { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+@keyframes tankPour  { 30% { filter: brightness(1.22); } 60% { filter: brightness(1.08); } }
+@keyframes tankDrain { 40% { filter: brightness(.85) saturate(.7); } }
+
+/* ---------- Satisfying tick ---------- */
+/* the check draws itself on rather than blinking into place */
+.check .box svg path, .item .box svg path { stroke-dasharray: 24; stroke-dashoffset: 24; }
+.check.done .box svg path, .item.done .box svg path { stroke-dashoffset: 0; transition: stroke-dashoffset .3s ease .04s; }
+.check.done .box, .item.done .box { animation: boxPop .38s cubic-bezier(.34, 1.56, .64, 1); }
+@keyframes boxPop { 0% { transform: scale(.82); } 55% { transform: scale(1.16); } 100% { transform: scale(1); } }
+/* …and the row gives one green pulse before it settles */
+.ticking { animation: tickFlash .5s ease; }
+@keyframes tickFlash {
+  0%   { background: color-mix(in srgb, var(--green) 26%, var(--surface-2)); transform: scale(1); }
+  35%  { background: color-mix(in srgb, var(--green) 18%, var(--surface-2)); transform: scale(1.015); }
+  100% { background: var(--surface-2); transform: scale(1); }
+}
+/* completed rows glide out before the list re-sorts */
+.check.task { transition: opacity .32s ease, transform .32s ease; }
+.check.task.leaving { opacity: 0; transform: translateY(-8px) scale(.98); }
+@media (prefers-reduced-motion: reduce) {
+  .ticking, .check.done .box, .item.done .box { animation: none; }
+  .check.task { transition: none; }
+}
 
 /* ---------- Gym split: one card, six sessions in a 2×3 grid ---------- */
 .split-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }

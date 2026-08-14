@@ -468,6 +468,44 @@ function bedtimeSpread(n = 7) {
 }
 const SLEEP_QUALITY = ['', 'Rough', 'Poor', 'OK', 'Good', 'Great'];
 
+// the one checkmark used by every checkbox — its stroke draws on when ticked
+const TICK = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l4 4 10-11"/></svg>`;
+
+/* ---------- water tank ----------
+   The wave path holds exactly two periods across the viewBox and the <svg> is
+   200% wide, so one period equals the tank's width — sliding it -50% loops
+   seamlessly. The level is a plain height transition, so topping up animates. */
+const TANK_WAVE = 'M0,13 C15,5 45,5 60,13 C75,21 105,21 120,13 C135,5 165,5 180,13 C195,21 225,21 240,13 L240,28 L0,28 Z';
+const waterPctOf = ml => clamp(ml / (S.health.water.goalMl || 1), 0, 1);
+function waterSubText(ml) {
+  const g = S.health.water.goalMl || 0;
+  return ml >= g ? 'Goal reached 🎉' : `${((g - ml) / 1000).toFixed(2)} L to go`;
+}
+function waterTank(ml) {
+  const pct = waterPctOf(ml);
+  return `<div class="tank ${pct >= 1 ? 'full' : ''}" id="waterTank" style="--fill:${(pct * 100).toFixed(2)}%">
+    <div class="tank-water">
+      <svg class="tank-wave a" viewBox="0 0 240 28" preserveAspectRatio="none"><path d="${TANK_WAVE}"/></svg>
+      <svg class="tank-wave b" viewBox="0 0 240 28" preserveAspectRatio="none"><path d="${TANK_WAVE}"/></svg>
+    </div>
+  </div>`;
+}
+// update in place so the CSS height transition actually runs (a re-render would jump)
+function updateWaterUI(ml, added) {
+  const tank = $('#waterTank');
+  if (!tank) return false;
+  const g = S.health.water.goalMl || 1, pct = waterPctOf(ml);
+  tank.style.setProperty('--fill', (pct * 100).toFixed(2) + '%');
+  tank.classList.toggle('full', pct >= 1);
+  const p = $('#waterPct'); if (p) p.textContent = Math.round(pct * 100) + '%';
+  const a = $('#waterAmt'); if (a) a.innerHTML = `${(ml / 1000).toFixed(2)} <small>/ ${(g / 1000).toFixed(1)} L</small>`;
+  const s = $('#waterSub'); if (s) s.textContent = waterSubText(ml);
+  tank.classList.remove('pour', 'drain');
+  void tank.offsetWidth;                        // restart the animation
+  tank.classList.add(added >= 0 ? 'pour' : 'drain');
+  return true;
+}
+
 /* ---------- crypto (PIN) ---------- */
 async function sha(str) {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('compass::' + str));
@@ -698,6 +736,8 @@ function upcomingBills() {
 let currentTab = 'home';
 let calView = 'week', calCursor = new Date(), calSel = todayISO();
 let briefOpen = false;   // Morning brief card collapsed by default
+let billsOpen = false;   // Bills list clipped so it doesn't tower over its column
+const BILLS_SHOWN = 6;
 let arranging = false;   // section-reorder mode
 
 /* ---------- section ordering ----------
@@ -851,15 +891,15 @@ function renderHome() {
                   ${e.cost>0?`<div class="trail">${AUD(e.cost,0)}</div>`:''}
                 </div>` })),
               ...habitsToday().map(h => ({ time: h.time || '', html: `
-                <div class="item ${h.doneDays && h.doneDays[iso] ? 'hab-done' : ''}" style="border-left:4px dashed var(--blue-300)">
+                <div class="item ${h.doneDays && h.doneDays[iso] ? 'done hab-done' : ''}" style="border-left:4px dashed var(--blue-300)">
                   <div class="body"><div class="t">${esc(h.text)}</div><div class="s">${esc(h.time)} · habit</div></div>
-                  <span class="box tap ${h.doneDays && h.doneDays[iso] ? 'on' : ''}" data-act="toggleHabit" data-id="${h.id}" style="width:22px;height:22px;border-radius:7px;border:2px solid ${h.doneDays && h.doneDays[iso] ? 'var(--primary)' : 'var(--border)'};background:${h.doneDays && h.doneDays[iso] ? 'var(--primary)' : 'transparent'};display:grid;place-items:center;color:#fff;flex:none">${h.doneDays && h.doneDays[iso] ? '✓' : ''}</span>
+                  <span class="box tap" data-act="toggleHabit" data-id="${h.id}">${TICK}</span>
                 </div>` })),
               // tasks have no time, so they sit under everything that's scheduled
               ...tasksForDate(iso).map(t => ({ time: '~', html: `
-                <div class="item ${taskDone(t, iso) ? 'hab-done' : ''}" style="border-left:4px dashed var(--amber)">
+                <div class="item ${taskDone(t, iso) ? 'done hab-done' : ''}" style="border-left:4px dashed var(--amber)">
                   <div class="body"><div class="t">${esc(t.text)}</div><div class="s">task${taskRepeatLabel(t) ? ' · ↻ ' + esc(taskRepeatLabel(t)) : ''}</div></div>
-                  <span class="box tap" data-act="toggleTask" data-id="${t.id}" data-d="${iso}" style="width:22px;height:22px;border-radius:7px;border:2px solid ${taskDone(t, iso) ? 'var(--primary)' : 'var(--border)'};background:${taskDone(t, iso) ? 'var(--primary)' : 'transparent'};display:grid;place-items:center;color:#fff;flex:none">${taskDone(t, iso) ? '✓' : ''}</span>
+                  <span class="box tap" data-act="toggleTask" data-id="${t.id}" data-d="${iso}">${TICK}</span>
                 </div>` })),
             ].sort((a,b)=>a.time.localeCompare(b.time));
             return rows.length ? rows.map(r=>r.html).join('') : `<div class="empty">Nothing scheduled today</div>`;
@@ -1002,23 +1042,36 @@ function renderHealth() {
   const runs = S.health.runs.slice(-8);
 
   const B = [];
-  B.push({ key:'water', name:'Water', html: `
+  // Water is short and PBs is short, so they share one column cell — together they
+  // fill the row beside Runs instead of each leaving a gap
+  B.push({ key:'water', name:'Water & personal bests', html: `
     <div class="section-head"><h3>Water</h3><button class="link" data-act="editWaterGoal">Goal</button></div>
     <div class="card">
-      <div class="ring-wrap">
-        ${ring(wp, { size: 84 })}
-        <div style="flex:1">
-          <div class="stat"><div class="v">${(water/1000).toFixed(2)} <small>/ ${(S.health.water.goalMl/1000).toFixed(1)} L</small></div>
-          <div class="sub">${water >= S.health.water.goalMl ? 'Goal reached 🎉' : `${((S.health.water.goalMl-water)/1000).toFixed(2)} L to go`}</div></div>
+      <div class="tank-wrap">
+        ${waterTank(water)}
+        <div class="tank-side">
+          <div class="stat">
+            <div class="k">Today · <span id="waterPct">${Math.round(wp*100)}%</span> of goal</div>
+            <div class="v" id="waterAmt">${(water/1000).toFixed(2)} <small>/ ${(S.health.water.goalMl/1000).toFixed(1)} L</small></div>
+            <div class="sub" id="waterSub">${waterSubText(water)}</div>
+          </div>
+          <div class="water-btns">
+            <button class="btn sm" data-act="water" data-ml="250">+250</button>
+            <button class="btn sm" data-act="water" data-ml="500">+500</button>
+            <button class="btn sm" data-act="water" data-ml="750">+750</button>
+            <button class="btn sm ghost" data-act="water" data-ml="-250">−250</button>
+          </div>
         </div>
       </div>
-      <div class="row" style="margin-top:14px">
-        <button class="btn sm" data-act="water" data-ml="250">+250</button>
-        <button class="btn sm" data-act="water" data-ml="500">+500</button>
-        <button class="btn sm" data-act="water" data-ml="750">+750</button>
-        <button class="btn sm ghost" data-act="water" data-ml="-250">−250</button>
-      </div>
-    </div>` });
+    </div>
+    <div class="section-head"><h3>Personal bests</h3><button class="link" data-act="addPB">+ PB</button></div>
+    <div class="card"><div class="list">
+      ${S.health.pbs.map(p => `
+        <div class="item tap" data-act="editPB" data-id="${p.id}">
+          <div class="body"><div class="t">${esc(p.lift)}</div><div class="s">${esc(p.date)}</div></div>
+          <div class="trail">${p.weight} kg${p.reps>1?` ×${p.reps}`:''}</div>
+        </div>`).join('') || '<div class="empty">No PBs yet</div>'}
+    </div></div>` });
 
   // one card holding six sessions in a 2×3 grid; any spare slot invites a new day
   const SPLIT_SLOTS = 6;
@@ -1038,16 +1091,6 @@ function renderHealth() {
   B.push({ key:'split', name:'Gym split', html: `
     <div class="section-head"><h3>Gym split</h3><button class="link" data-act="addSplit">+ Day</button></div>
     <div class="card"><div class="split-grid">${splitCells.join('')}</div></div>` });
-
-  B.push({ key:'pbs', name:'Personal bests', html: `
-    <div class="section-head"><h3>Personal bests</h3><button class="link" data-act="addPB">+ PB</button></div>
-    <div class="card"><div class="list">
-      ${S.health.pbs.map(p => `
-        <div class="item tap" data-act="editPB" data-id="${p.id}">
-          <div class="body"><div class="t">${esc(p.lift)}</div><div class="s">${esc(p.date)}</div></div>
-          <div class="trail">${p.weight} kg${p.reps>1?` ×${p.reps}`:''}</div>
-        </div>`).join('') || '<div class="empty">No PBs yet</div>'}
-    </div></div>` });
 
   const sc = stravaCfg();
   const runsAll = S.health.runs;
@@ -1174,13 +1217,14 @@ function renderMoney() {
     `;
 
   const B = [];
-  B.push({ key:'chart', name:'Portfolio chart', html: `
+  // Portfolio, holdings and goals are each short; together they fill the column
+  // beside Bills instead of each leaving a gap under its heading.
+  B.push({ key:'chart', name:'Portfolio, holdings & goals', html: `
     <div class="section-head"><h3>Portfolio — last month</h3></div>
     <div class="card">
       ${hist.length>1 ? areaChart(hist, { h: 120, color: 'var(--blue-500)' }) + `<div class="chart-legend"><span class="small muted">${series ? 'Live daily closes · last month' : `Last ${hist.length} snapshots`}</span></div>` : `<div class="empty">Add a holding to see your live graph</div>`}
-    </div>` });
-
-  B.push({ key:'holdings', name:'Holdings', html: `
+    </div>`
+    + `
     <div class="section-head"><h3>Holdings</h3><div class="pill-row"><button class="link" data-act="refreshPrices">↻ Prices</button><button class="link" data-act="addHolding">+ Add</button></div></div>
     <div class="card"><div class="list">
       ${S.money.holdings.map(h => {
@@ -1195,9 +1239,8 @@ function renderMoney() {
           <div class="right" style="min-width:86px"><div class="trail">${AUD(val,2)}</div>
             <div class="s ${dc>=0?'pos':'neg'}">${q?`${dc>=0?'+':''}${pctc.toFixed(2)}%`:'…'}</div></div>
         </div>`; }).join('') || `<div class="empty">Add stocks/ETFs (e.g. VAS.AX, VOO)</div>`}
-    </div></div>` });
-
-  B.push({ key:'goals', name:'Money goals', html: `
+    </div></div>`
+    + `
     <div class="section-head"><h3>Money goals</h3><button class="link" data-act="addMoneyGoal">+ Goal</button></div>
     <div class="card"><div class="list">
       ${(S.money.goals||[]).map(g => { const p = clamp((g.saved||0)/(g.target||1), 0, 1);
@@ -1221,27 +1264,6 @@ function renderMoney() {
         </div>`; }).join('') || `<div class="empty">Saving for something? Add a goal (e.g. Car — $20,000)</div>`}
     </div></div>` });
 
-  B.push({ key:'bills', name:'Bills', html: `
-    <div class="section-head"><h3>Bills</h3>
-      <div class="pill-row">
-        <div class="seg sm">
-          ${['weekly','monthly'].map(p=>`<button data-act="setPeriod" data-p="${p}" class="${(S.money.period||'monthly')===p?'on':''}">${p[0].toUpperCase()+p.slice(1)}</button>`).join('')}
-        </div>
-        <button class="link" data-act="addBill">+ Bill</button>
-      </div></div>
-    <div class="card">
-      ${bills.length ? `<div class="stat" style="margin-bottom:12px"><div class="k">Total ${wk?'per week':'per month'}</div>
-        <div class="v">${AUD(bills.reduce((a,b)=>a+billPer(b, wk?'weekly':'monthly'),0), 2)}</div></div>` : ''}
-      <div class="list">
-      ${bills.map(b => `
-        <div class="item">
-          <span class="dot" style="background:${b.status==='over'?'var(--red)':b.status==='soon'?'var(--amber)':'var(--primary)'}"></span>
-          <div class="body tap" data-act="editBill" data-id="${b.id}"><div class="t">${esc(b.name)} <span class="muted small">· ${FREQ_LABEL[b.freq||'monthly']}</span></div>
-            <div class="s">${AUD(b.amount)}${(b.freq||'monthly')!==(wk?'weekly':'monthly') && b.freq!=='once' ? ` <span class="muted">(${AUD(billPer(b, wk?'weekly':'monthly'),2)}/${wk?'wk':'mo'})</span>` : ''} · ${b.dd<0?`${-b.dd}d overdue`:b.dd===0?'due today':`in ${b.dd}d`} (${b.due.getDate()} ${MON[b.due.getMonth()].slice(0,3)})</div></div>
-          <button class="btn sm ${b.status==='ok'?'ghost':'primary'}" data-act="payBill" data-id="${b.id}">Paid</button>
-        </div>`).join('') || `<div class="empty">Add a bill to get reminders</div>`}
-    </div></div>` });
-
   B.push({ key:'budgets', name:'Budgets', html: `
     <div class="section-head"><h3>Budgets — ${wk ? 'this week' : MON[new Date().getMonth()]}</h3><button class="link" data-act="addBudget">+ Budget</button></div>
     <div class="card"><div class="list">
@@ -1255,6 +1277,29 @@ function renderMoney() {
           <div class="bar"><i style="width:${p*100}%;background:${sp>lim?'var(--red)':''}"></i></div>
         </div>`; }).join('') || `<div class="empty">No budgets set</div>`}
     </div></div>` });
+
+  B.push({ key:'bills', name:'Bills', html: `
+    <div class="section-head"><h3>Bills</h3>
+      <div class="pill-row">
+        <div class="seg sm">
+          ${['weekly','monthly'].map(p=>`<button data-act="setPeriod" data-p="${p}" class="${(S.money.period||'monthly')===p?'on':''}">${p[0].toUpperCase()+p.slice(1)}</button>`).join('')}
+        </div>
+        <button class="link" data-act="addBill">+ Bill</button>
+      </div></div>
+    <div class="card">
+      ${bills.length ? `<div class="stat" style="margin-bottom:12px"><div class="k">Total ${wk?'per week':'per month'}</div>
+        <div class="v">${AUD(bills.reduce((a,b)=>a+billPer(b, wk?'weekly':'monthly'),0), 2)}</div></div>` : ''}
+      <div class="list">
+      ${(billsOpen ? bills : bills.slice(0, BILLS_SHOWN)).map(b => `
+        <div class="item">
+          <span class="dot" style="background:${b.status==='over'?'var(--red)':b.status==='soon'?'var(--amber)':'var(--primary)'}"></span>
+          <div class="body tap" data-act="editBill" data-id="${b.id}"><div class="t">${esc(b.name)} <span class="muted small">· ${FREQ_LABEL[b.freq||'monthly']}</span></div>
+            <div class="s">${AUD(b.amount)}${(b.freq||'monthly')!==(wk?'weekly':'monthly') && b.freq!=='once' ? ` <span class="muted">(${AUD(billPer(b, wk?'weekly':'monthly'),2)}/${wk?'wk':'mo'})</span>` : ''} · ${b.dd<0?`${-b.dd}d overdue`:b.dd===0?'due today':`in ${b.dd}d`} (${b.due.getDate()} ${MON[b.due.getMonth()].slice(0,3)})</div></div>
+          <button class="btn sm ${b.status==='ok'?'ghost':'primary'}" data-act="payBill" data-id="${b.id}">Paid</button>
+        </div>`).join('') || `<div class="empty">Add a bill to get reminders</div>`}
+      </div>
+      ${bills.length > BILLS_SHOWN ? `<button class="more-link" data-act="toggleBills">${billsOpen ? 'Show less' : `Show all ${bills.length} bills`}</button>` : ''}
+    </div>` });
 
   B.push({ key:'tracker', name:'Money tracker', html: `
     <div class="section-head"><h3>Money tracker</h3><div class="pill-row"><span class="chip ${bal>=0?'good':'bad'}">Balance ${AUD(bal,2)}</span><button class="link" data-act="addTxn">+ Entry</button></div></div>
@@ -1376,6 +1421,7 @@ const ACT = {
   /* nav-ish */
   editFocus() { render('systems'); setTimeout(()=>{ const f=$('#focusInput'); if(f){f.focus();} }, 80); },
   toggleBrief() { briefOpen = !briefOpen; renderHome(); },
+  toggleBills() { billsOpen = !billsOpen; renderMoney(); },
   toggleArrange(d) { arranging = !arranging; render(d.tab); if (arranging) toast('Drag sections to reorder, then Done'); },
 
   /* ----- calendar ----- */
@@ -1486,14 +1532,26 @@ const ACT = {
     render(currentTab);
     toast(d.id ? 'Saved' : repeat === 'none' ? 'Task added' : 'Repeating task added');
   },
-  toggleTask(d) {
+  toggleTask(d, el) {
     const t = TASKS().find(x => x.id === d.id); if (!t) return;
+    const iso = d.d || todayISO();
+    const nowDone = !taskDone(t, iso);
     if (repeats(t)) {
-      const iso = d.d || todayISO();
       if (!t.doneDays) t.doneDays = {};
-      t.doneDays[iso] = !t.doneDays[iso];
-    } else t.done = !t.done;
-    save(); render(currentTab);
+      t.doneDays[iso] = nowDone;
+    } else t.done = nowDone;
+    save();
+    // tick it in place first so the check draws and the row pulses, then let the
+    // list re-sort once the animation has been seen
+    const row = el && el.closest('.check.task, .tchip, .item');
+    if (!row || !nowDone) { render(currentTab); return; }
+    if (navigator.vibrate) navigator.vibrate(12);
+    row.classList.add('done', 'ticking');
+    const sinks = row.classList.contains('check');    // only the stacked lists re-sort
+    setTimeout(() => {
+      if (sinks) row.classList.add('leaving');
+      setTimeout(() => render(currentTab), sinks ? 300 : 60);
+    }, 420);
   },
   delTask(d) {
     S.calendar.tasks = TASKS().filter(x => x.id !== d.id);
@@ -1502,9 +1560,15 @@ const ACT = {
 
   /* ----- water ----- */
   water(d) {
-    const iso = todayISO(); const cur = S.health.water.log[iso] || 0;
-    S.health.water.log[iso] = Math.max(0, cur + num(d.ml));
-    save(); renderHealth();
+    const iso = todayISO(), cur = S.health.water.log[iso] || 0, add = num(d.ml);
+    const next = Math.max(0, cur + add);
+    if (next === cur) return;
+    const wasShort = cur < S.health.water.goalMl;
+    S.health.water.log[iso] = next;
+    save();
+    if (navigator.vibrate) navigator.vibrate(add >= 0 ? 10 : 6);
+    if (!updateWaterUI(next, add)) renderHealth();
+    if (wasShort && next >= S.health.water.goalMl) toast('Water goal reached 🎉');
   },
   editWaterGoal() {
     sheetForm('Water goal','Daily target in litres.',
