@@ -720,12 +720,12 @@ function renderBlocks(tab, blocks) {
       <span class="small muted">drag to move</span></div>` : ''}
     ${b.html}
   </div>`;
-  // split into two balanced columns — on mobile .cols collapses to one, so this
-  // is simply sequential order there
-  const half = Math.ceil(ordered.length / 2);
-  const colA = ordered.slice(0, half).map(one).join('');
-  const colB = ordered.slice(half).map(one).join('');
-  return `<div class="cols ${arranging?'arranging':''}"><div class="col">${colA}</div><div class="col">${colB}</div></div>`;
+  // One real grid rather than two independent stacks: on desktop `grid-auto-flow:
+  // column` with --rows fixed rows fills down the left column then the right, so the
+  // sections pair up into shared grid rows and every row lines up exactly. DOM order
+  // stays sequential, so mobile (one column) still reads top to bottom.
+  const rows = Math.ceil(ordered.length / 2);
+  return `<div class="cols ${arranging?'arranging':''}" style="--rows:${rows}">${ordered.map(one).join('')}</div>`;
 }
 // drop `key` immediately before `beforeKey` (or at the end when null)
 function reorderSection(tab, key, beforeKey) {
@@ -1020,22 +1020,24 @@ function renderHealth() {
       </div>
     </div>` });
 
+  // one card holding six sessions in a 2×3 grid; any spare slot invites a new day
+  const SPLIT_SLOTS = 6;
+  const splitCells = S.health.splits.slice(0, SPLIT_SLOTS).map(sp => `
+    <div class="split-cell">
+      <div class="split-head">
+        <h4>${esc(sp.name)}</h4>
+        <button class="link" data-act="editSplit" data-id="${sp.id}">Edit</button>
+      </div>
+      <div class="split-ex">${sp.ex.map(x => `
+        <div class="split-row"><span class="n">${esc(x.n)}</span><span class="sr">${esc(x.s)}×${esc(x.r)}</span></div>`).join('')
+        || '<div class="empty small" style="padding:10px 0">No exercises</div>'}</div>
+    </div>`);
+  while (splitCells.length < SPLIT_SLOTS) {
+    splitCells.push(`<button class="split-cell add tap" data-act="addSplit">+ Add a session</button>`);
+  }
   B.push({ key:'split', name:'Gym split', html: `
     <div class="section-head"><h3>Gym split</h3><button class="link" data-act="addSplit">+ Day</button></div>
-    <div class="list">
-      ${S.health.splits.map(sp => `
-        <div class="card">
-          <div class="section-head" style="margin:0 0 8px">
-            <h3>${esc(sp.name)}</h3>
-            <div class="pill-row">
-              <button class="link" data-act="editSplit" data-id="${sp.id}">Edit</button>
-            </div>
-          </div>
-          <div class="list">${sp.ex.map(x => `
-            <div class="item"><div class="body"><div class="t">${esc(x.n)}</div></div>
-              <div class="trail">${esc(x.s)}×${esc(x.r)}</div></div>`).join('') || '<div class="empty small">No exercises</div>'}</div>
-        </div>`).join('')}
-    </div>` });
+    <div class="card"><div class="split-grid">${splitCells.join('')}</div></div>` });
 
   B.push({ key:'pbs', name:'Personal bests', html: `
     <div class="section-head"><h3>Personal bests</h3><button class="link" data-act="addPB">+ PB</button></div>

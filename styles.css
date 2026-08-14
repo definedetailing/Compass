@@ -177,7 +177,9 @@ label.field > span { display: block; font-size: 12.5px; font-weight: 600; color:
 .view-title { font-size: 26px; font-weight: 800; letter-spacing: -.03em; margin: 6px 2px 4px; }
 .view-sub { color: var(--text-3); font-size: 13.5px; margin: 0 2px 14px; }
 
-.section-head { display: flex; align-items: center; justify-content: space-between; margin: 22px 2px 10px; }
+/* min-height keeps a plain heading the same height as one carrying a segmented
+   control or a button, so headings sit on the same baseline across columns */
+.section-head { display: flex; align-items: center; justify-content: space-between; margin: 22px 2px 10px; min-height: 36px; }
 .section-head h3 { margin: 0; font-size: 15px; font-weight: 750; letter-spacing: -.01em; }
 .section-head .link { color: var(--primary); font-weight: 650; font-size: 13px; background: none; border: none; padding: 4px; }
 
@@ -196,7 +198,7 @@ label.field > span { display: block; font-size: 12.5px; font-weight: 600; color:
 .stats-row > .card + .card,
 .home-cols > .card + .card,
 .list > .card + .card,
-.cols > .col > .card + .card { margin-top: 0; }
+.cols > .sec > .card + .card { margin-top: 0; }
 .grid { display: grid; gap: var(--gap); }
 .grid.g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .grid.g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -392,8 +394,11 @@ label.field > span { display: block; font-size: 12.5px; font-weight: 600; color:
 .ring-wrap { display: flex; align-items: center; gap: 14px; }
 
 /* Segmented control */
-.seg { display: inline-flex; background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 3px; gap: 2px; }
-.seg button { border: none; background: transparent; color: var(--text-2); padding: 7px 14px; border-radius: 9px; font-weight: 650; font-size: 13px; }
+/* fixed 36px so a header carrying a seg is exactly as tall as a plain one —
+   an odd height here offset the centred h3 by half a pixel between columns */
+.seg { display: inline-flex; align-items: center; box-sizing: border-box; height: 36px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 3px; gap: 2px; }
+.seg button { border: none; background: transparent; color: var(--text-2); height: 100%; padding: 0 14px; border-radius: 9px; font-weight: 650; font-size: 13px; }
 .seg button.on { background: var(--surface); color: var(--text); box-shadow: var(--shadow-sm); }
 
 /* Checkboxes (goals / mustdo) */
@@ -538,15 +543,31 @@ label.field > span { display: block; font-size: 12.5px; font-weight: 600; color:
 .dayrow.drop-ok { outline: 1px dashed var(--border); outline-offset: -3px; border-radius: 12px; }
 .dayrow.drop-over { background: color-mix(in srgb, var(--primary) 16%, transparent); outline-color: var(--primary); }
 
-/* ---------- Two-column layout (explicit, always level) ---------- */
-.cols { display: grid; grid-template-columns: 1fr; gap: 0 22px; }
-.cols .col { min-width: 0; }
+/* ---------- Two-column layout (explicit, always level) ----------
+   Sections are direct children of ONE grid, not two independent stacks, so a
+   left/right pair shares a real grid row and their top and bottom edges match
+   exactly. Row rhythm comes from row-gap, never from the first heading's
+   margin — that margin is what used to let the two columns drift apart. */
+.cols { display: grid; grid-template-columns: 1fr; gap: 22px; }
+.cols > .sec { min-width: 0; display: flex; flex-direction: column; }
+.cols > .sec > .section-head:first-child { margin-top: 0; }
+/* the section's card fills its row, so both cards in a row finish level */
+.cols > .sec > .card:last-child,
+.cols > .sec > .list:last-child { flex: 1; }
+/* …and short content centres in that stretched card rather than clinging to the
+   top, so a short section reads as deliberate instead of unfinished. Cards with
+   a list are unaffected — the list absorbs the slack instead. */
+.cols > .sec > .card { display: flex; flex-direction: column; justify-content: center; }
+.cols > .sec > .card > .list { flex: 1; }
+.list > .empty:only-child { margin: auto 0; }
 @media (min-width: 900px) {
   :root { --maxw: 1080px; }
   .topbar { padding-left: 4px; padding-right: 4px; }
-  .cols { grid-template-columns: 1fr 1fr; align-items: start; }
-  /* lock both columns to the same top edge */
-  .cols .col > .section-head:first-child { margin-top: 10px; }
+  /* fixed row count + column flow = fill the left column top-to-bottom and then
+     the right, while both columns still share the same grid rows */
+  .cols { grid-template-columns: 1fr 1fr;
+    grid-auto-flow: column; grid-template-rows: repeat(var(--rows, 1), auto);
+    align-items: stretch; }
   /* Home: KPI row of 4, then agenda + must-dos side by side */
   .stats-row { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .home-cols { grid-template-columns: 1.3fr 1fr; }
@@ -562,6 +583,22 @@ label.field > span { display: block; font-size: 12.5px; font-weight: 600; color:
 .right { text-align: right; }
 .nowrap { white-space: nowrap; }
 .badge-count { background: var(--red); color: #fff; border-radius: 999px; font-size: 10px; font-weight: 700; padding: 1px 6px; position: absolute; top: 4px; right: 50%; margin-right: -22px; }
+
+/* ---------- Gym split: one card, six sessions in a 2×3 grid ---------- */
+.split-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.split-cell { display: flex; flex-direction: column; min-width: 0; padding: 11px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
+.split-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.split-head h4 { margin: 0; font-size: 13.5px; font-weight: 750; letter-spacing: -.01em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.split-head .link { background: none; border: none; padding: 2px; color: var(--primary);
+  font-size: 11.5px; font-weight: 650; flex: none; }
+.split-ex { display: flex; flex-direction: column; gap: 4px; }
+.split-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 12.5px; }
+.split-row .n { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.split-row .sr { color: var(--text-3); font-weight: 650; flex: none; font-variant-numeric: tabular-nums; }
+.split-cell.add { align-items: center; justify-content: center; min-height: 92px;
+  border-style: dashed; background: transparent; color: var(--text-3); font-size: 12.5px; font-weight: 650; }
 
 /* ---------- Strava ---------- */
 .strava-bar { display: flex; align-items: center; gap: 10px; padding: 8px 10px; margin-bottom: 12px;
