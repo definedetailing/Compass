@@ -109,19 +109,69 @@ function taskRepeatLabel(t) {
   if (s.join() === '0,6') return 'Weekends';
   return s.map(i => DOW[i]).join(' ');
 }
+/* Task categories. Deliberately a different palette to CATS (events), which uses
+   blue/amber/green/cyan/pink/purple/slate — these sit in the gaps on the hue
+   wheel so a task is never mistaken for an event of the same colour. */
+const TASK_CATS = {
+  School:    '#4f46e5',   // indigo
+  Health:    '#65a30d',   // lime
+  Business:  '#ea580c',   // orange
+  Important: '#dc2626',   // red
+  Random:    '#78716c',   // stone
+};
+const taskColor = c => TASK_CATS[c] || TASK_CATS.Random;
+
+// Same-title tasks pile up when they repeat at different times on different days,
+// so collapse them into one row per title and let it expand on demand.
+const titleKey = t => (t.text || '').trim().toLowerCase();
+let openTaskGroups = new Set();
+function groupTasks(list) {
+  const out = [], byTitle = new Map();
+  list.forEach(t => {
+    const k = titleKey(t);
+    if (!byTitle.has(k)) { const g = { key: k, title: t.text, items: [] }; byTitle.set(k, g); out.push(g); }
+    byTitle.get(k).items.push(t);
+  });
+  return out;
+}
+
 // A task can optionally claim a time slot. Untimed stays the default — these
 // sort after anything timed rather than pretending to sit at midnight.
 const taskTime = t => t.start || '';
 const taskSlot = t => t.start ? (t.end ? `${t.start}–${t.end}` : t.start) : '';
 const bySlot = (a, b) => timeKey(taskTime(a)).localeCompare(timeKey(taskTime(b)));
 // one checkable row. `iso` is the day being ticked off (repeating tasks tick per-day)
-function taskRow(t, iso) {
+// `showDate` adds the day, for lists that span more than one.
+function taskRow(t, iso, showDate) {
   const done = taskDone(t, iso), rep = taskRepeatLabel(t), slot = taskSlot(t);
-  const sub = [slot ? `🕘 ${slot}` : '', rep ? `↻ ${rep}` : ''].filter(Boolean).join(' · ');
-  return `<div class="check task ${done ? 'done' : ''}">
+  const sub = [showDate && t.scope === 'day' ? fmtDay(t.date) : '', slot ? `🕘 ${slot}` : '',
+               rep ? `↻ ${rep}` : '', t.cat || ''].filter(Boolean).join(' · ');
+  return `<div class="check task ${done ? 'done' : ''}" style="border-left:4px solid ${taskColor(t.cat)}">
     <span class="box tap" data-act="toggleTask" data-id="${t.id}" data-d="${iso || ''}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 12l4 4 10-11"/></svg></span>
     <span class="txt tap" data-act="editTask" data-id="${t.id}">${esc(t.text)}${sub ? `<span class="s muted">${esc(sub)}</span>` : ''}</span>
     <button class="del" data-act="delTask" data-id="${t.id}">✕</button>
+  </div>`;
+}
+// A set of same-title tasks shown as one row, expandable to the individual ones.
+function taskGroupRow(g, iso, showDate) {
+  if (g.items.length === 1) return taskRow(g.items[0], iso, showDate);
+  const open = openTaskGroups.has(g.key);
+  const doneN = g.items.filter(t => taskDone(t, iso)).length;
+  const cats = [...new Set(g.items.map(t => t.cat).filter(Boolean))];
+  const times = [...new Set(g.items.map(t => taskSlot(t)).filter(Boolean))].sort();
+  return `<div class="tgroup ${open ? 'open' : ''}">
+    <div class="check task tgroup-head ${doneN === g.items.length ? 'done' : ''}"
+         style="border-left:4px solid ${taskColor(cats[0])}">
+      <span class="tg-count">${g.items.length}</span>
+      <span class="txt tap" data-act="toggleTaskGroup" data-k="${esc(g.key)}">${esc(g.title)}
+        <span class="s muted">${esc([`${doneN}/${g.items.length} done`,
+          times.length ? times.slice(0,3).join(', ') + (times.length>3?'…':'') : '',
+          cats.join(' · ')].filter(Boolean).join(' · '))}</span></span>
+      <button class="tg-toggle" data-act="toggleTaskGroup" data-k="${esc(g.key)}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+    </div>
+    ${open ? `<div class="tgroup-items">${g.items.map(t => taskRow(t, iso, true)).join('')}</div>` : ''}
   </div>`;
 }
 // the tasks card that sits under each Calendar view
@@ -137,7 +187,7 @@ function tasksCard(scope, key, empty) {
       <button class="link" data-act="addTask" data-scope="${scope}" data-d="${scope === 'day' ? key : ''}">+ Task</button></div>
     <div class="card">
       ${list.length ? `<div class="small muted" style="margin-bottom:10px">${left ? `${left} of ${list.length} to go` : 'All done ✓'}</div>` : ''}
-      <div class="list">${sorted.map(t => taskRow(t, iso)).join('') || `<div class="empty">${empty}</div>`}</div>
+      <div class="list">${groupTasks(sorted).map(g => taskGroupRow(g, iso)).join('') || `<div class="empty">${empty}</div>`}</div>
     </div>`;
 }
 
@@ -1037,15 +1087,7 @@ function calEditPanel() {
 
     ${showTasks() ? section('Tasks', tks.length,
       `<button class="link" data-act="addTask" data-scope="day" data-d="${calSel}">+ Task</button>`,
-      tks.map(t => `
-        <div class="item tap" data-act="editTask" data-id="${t.id}" style="border-left:4px dashed var(--amber)">
-          <div class="body"><div class="t">${esc(t.text)}</div>
-            <div class="s">${[
-              t.scope==='day' ? fmtDay(t.date) : t.scope==='week' ? 'This week' : 'This month',
-              taskSlot(t), taskRepeatLabel(t) ? '↻ '+taskRepeatLabel(t) : ''
-            ].filter(Boolean).map(esc).join(' · ')}</div></div>
-          <button class="del" data-act="delTask" data-id="${t.id}">✕</button>
-        </div>`).join(''), 'No tasks in this period') : ''}
+      groupTasks(tks).map(g => taskGroupRow(g, todayISO(), true)).join(''), 'No tasks in this period') : ''}
 
     ${showHabits() ? section('Habits', hbs.length,
       `<button class="link" data-act="addHabit">+ Habit</button>`,
@@ -1428,7 +1470,7 @@ function calWeek() {
                   <span class="tbox">${TICK}</span>
                   <span class="tt">${esc(h.text)}${h.time?`<span class="ts">${esc(h.time)}</span>`:''}</span></button>` })),
               ...tks.map(t => ({ k: timeKey(taskTime(t)), html:
-                `<button class="tchip ${taskDone(t,iso)?'done':''}" draggable="true" data-task="${t.id}" data-act="toggleTask" data-id="${t.id}" data-d="${iso}">
+                `<button class="tchip ${taskDone(t,iso)?'done':''}" draggable="true" data-task="${t.id}" data-act="toggleTask" data-id="${t.id}" data-d="${iso}" style="border-left:3px solid ${taskColor(t.cat)}">
                   <span class="tbox">${TICK}</span>
                   <span class="tt">${esc(t.text)}${taskSlot(t)?`<span class="ts">${esc(taskSlot(t))}</span>`:''}</span></button>` })),
             ].sort((a,b) => a.k.localeCompare(b.k)).map(x => x.html).join('')}
@@ -2109,6 +2151,7 @@ const ACT = {
     sheetForm(d.id ? 'Edit task' : 'New task',
       'Something to tick off. Give it a time slot if you want one — leave the times blank and it just sits on the day.',
       field('Task','tk_text',{val:t.text,ph:'e.g. Order microfibres, Call the accountant'}) +
+      field('Category','tk_cat',{type:'select',val:t.cat||'Random',options:Object.keys(TASK_CATS)}) +
       field('Belongs to','tk_scope',{type:'select',val:SCOPES[t.scope]||SCOPES.day,options:Object.values(SCOPES)}) +
       field('Date','tk_date',{type:'date',val:t.date||calSel}) +
       `<div id="tk_timewrap">
@@ -2144,6 +2187,10 @@ const ACT = {
     sync();
   },
   clearTaskTime() { $('#tk_start').value = ''; $('#tk_end').value = ''; },
+  toggleTaskGroup(d) {
+    if (openTaskGroups.has(d.k)) openTaskGroups.delete(d.k); else openTaskGroups.add(d.k);
+    render(currentTab);
+  },
   toggleTaskDay(d, el) { el.classList.toggle('on'); },
   saveTask(d) {
     const SCOPES = { 'Just this day':'day', 'This week':'week', 'This month':'month' };
@@ -2174,7 +2221,8 @@ const ACT = {
       while (!days.includes(d0.getDay()) && guard++ < 7) d0.setDate(d0.getDate() + 1);
       date = todayISO(d0);
     }
-    const rec = { text, scope, date, week: weekKey(parseISO(date)), month: date.slice(0,7), repeat, days, start, end };
+    const rec = { text, cat: val('tk_cat') || 'Random', scope, date,
+      week: weekKey(parseISO(date)), month: date.slice(0,7), repeat, days, start, end };
     if (d.id) {
       const t = TASKS().find(x => x.id === d.id);
       Object.assign(t, rec);
