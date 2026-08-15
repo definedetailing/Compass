@@ -800,9 +800,16 @@ label.field > span { display: block; font-size: 12.5px; font-weight: 600; color:
 .tchip.done .tt { text-decoration: line-through; }
 .tchip:active { transform: scale(.97); }
 
-/* month-grid task marker — a hollow ring so it reads apart from the solid event dots */
+/* month-grid markers — hollow rings so they read apart from the solid event dots */
 .cal-cell .evs i.tk { background: transparent; border: 1.5px solid var(--amber); width: 6px; height: 6px; }
 .cal-cell .evs i.tk.off { opacity: .35; }
+.cal-cell .evs i.hb { background: transparent; border: 1.5px solid var(--blue-400); width: 6px; height: 6px; }
+.cal-cell .evs i.hb.off { opacity: .35; }
+
+/* habit chips in the week view sit apart from task chips */
+.tchip.habit { border-style: solid; border-color: var(--blue-300); }
+.tchip.habit .tbox { border-color: var(--blue-300); }
+.tchip.habit.done .tbox { background: var(--blue-500); border-color: var(--blue-500); }
 
 .sync-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-3); }
 .sync-dot.ok { background: var(--green); }

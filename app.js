@@ -922,6 +922,18 @@ let briefOpen = false;   // Morning brief card collapsed by default
 let billsOpen = false;   // Bills list clipped so it doesn't tower over its column
 const BILLS_SHOWN = 6;
 const PB_WINDOW = 5;     // PBs visible before the list starts scrolling
+// Calendar filter: which kinds of thing the Calendar tab shows
+let calFilter = 'all';        // all | events | tasks | habits
+const CAL_FILTERS = { all:'All', events:'Events', tasks:'Tasks', habits:'Habits' };
+const showEvents = () => calFilter === 'all' || calFilter === 'events';
+const showTasks  = () => calFilter === 'all' || calFilter === 'tasks';
+const showHabits = () => calFilter === 'all' || calFilter === 'habits';
+// habits scheduled on a date, earliest first
+const habitsOnDate = (iso) => (S.systems.habits || [])
+  .filter(h => habitRunsOn(h, parseISO(iso)))
+  .sort((a, b) => (a.time||'').localeCompare(b.time||''));
+const habitDoneOn = (h, iso) => !!(h.doneDays && h.doneDays[iso]);
+
 let habitWeekOffset = 0;      // 0 = this week, -1 = last week, …
 let habitGridMode = 'track';  // 'track' ticks days off · 'plan' edits which weekdays a habit runs
 let sleepRange = 'week'; // sleep stats window: 'week' | 'month' | 'all'
@@ -1151,9 +1163,13 @@ function renderCalendar() {
       </div>
       <button class="btn primary sm" data-act="addEvent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Event</button>
     </div>
-    <div class="pill-row" style="margin:12px 2px 4px">
-      ${Object.entries(CATS).map(([k,c])=>`<span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--text-2)"><i style="width:9px;height:9px;border-radius:3px;background:${c}"></i>${k}</span>`).join('')}
+    <div class="seg full" style="margin-top:10px">
+      ${Object.entries(CAL_FILTERS).map(([k,label]) =>
+        `<button data-act="setCalFilter" data-f="${k}" class="${calFilter===k?'on':''}">${label}</button>`).join('')}
     </div>
+    ${showEvents() ? `<div class="pill-row" style="margin:12px 2px 4px">
+      ${Object.entries(CATS).map(([k,c])=>`<span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--text-2)"><i style="width:9px;height:9px;border-radius:3px;background:${c}"></i>${k}</span>`).join('')}
+    </div>` : '<div style="height:8px"></div>'}
     <div id="calBody"></div>`;
   renderCalBody();
 }
@@ -1181,21 +1197,26 @@ function calMonth() {
       <div class="cal-grid">
         ${DOW.map(d => `<div class="dow">${d[0]}</div>`).join('')}
         ${cells.map(d => {
-          const iso = todayISO(d), evs = eventsForDate(iso), tks = tasksForDate(iso);
+          const iso = todayISO(d);
+          const evs = showEvents() ? eventsForDate(iso) : [];
+          const tks = showTasks() ? tasksForDate(iso) : [];
+          const hbs = showHabits() ? habitsOnDate(iso) : [];
           const cls = [d.getMonth()!==m?'mute':'', iso===todayISO()?'today':'', iso===calSel?'sel':''].filter(Boolean).join(' ');
           const dots = [
             ...evs.slice(0,3).map(e=>`<i style="background:${catColor(e.category)}"></i>`),
             ...(tks.length ? [`<i class="tk ${tks.every(t=>taskDone(t,iso))?'off':''}"></i>`] : []),
+            ...(hbs.length ? [`<i class="hb ${hbs.every(h=>habitDoneOn(h,iso))?'off':''}"></i>`] : []),
           ];
           return `<button class="cal-cell ${cls}" data-act="calPick" data-d="${iso}">${d.getDate()}
             ${dots.length?`<span class="evs">${dots.join('')}</span>`:''}</button>`;
         }).join('')}
       </div>
     </div>
-    ${tasksCard('month', `${y}-${String(m+1).padStart(2,'0')}`, "What's the plan for the month?")}
+    ${showTasks() ? tasksCard('month', `${y}-${String(m+1).padStart(2,'0')}`, "What's the plan for the month?") : ''}
     <div class="section-head"><h3>${fmtDay(calSel)}</h3></div>
-    ${dayList(selEvents)}
-    ${tasksCard('day', calSel, 'No tasks on this day')}`;
+    ${showEvents() ? dayList(selEvents) : ''}
+    ${showHabits() ? habitsCard(calSel) : ''}
+    ${showTasks() ? tasksCard('day', calSel, 'No tasks on this day') : ''}`;
 }
 function calWeek() {
   const base = parseISO(calSel);
@@ -1210,20 +1231,26 @@ function calWeek() {
       <button class="iconbtn" data-act="weekNext"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></button>
     </div>
     <div class="dayrows">
-      ${days.map(d => { const iso = todayISO(d); const evs = eventsForDate(iso); const isToday = iso===todayISO();
-        const tks = tasksForDate(iso).sort((a,b)=>(taskDone(a,iso)?1:0)-(taskDone(b,iso)?1:0));
+      ${days.map(d => { const iso = todayISO(d); const isToday = iso===todayISO();
+        const evs = showEvents() ? eventsForDate(iso) : [];
+        const tks = showTasks() ? tasksForDate(iso).sort((a,b)=>(taskDone(a,iso)?1:0)-(taskDone(b,iso)?1:0)) : [];
+        const hbs = showHabits() ? habitsOnDate(iso) : [];
         return `<div class="dayrow ${isToday?'today':''}" data-day="${iso}">
           <button class="dlabel tap" data-act="addEventOn" data-d="${iso}"><span class="dn">${DOW[d.getDay()]}</span><span class="dd">${d.getDate()}</span></button>
           <div class="devents">
             ${evs.map(e=>`<div class="evchip tap" draggable="true" data-ev="${e.id}" data-act="editEvent" data-id="${e.id}" style="border-left-color:${catColor(e.category)}">
               <span class="et">${esc(e.title)}</span>${evTime(e)?`<span class="es">${esc(evTime(e))}</span>`:''}</div>`).join('')}
+            ${hbs.map(h=>`<button class="tchip habit ${habitDoneOn(h,iso)?'done':''}" data-act="calToggleHabit" data-id="${h.id}" data-d="${iso}">
+              <span class="tbox">${TICK}</span>
+              <span class="tt">${esc(h.text)}</span></button>`).join('')}
             ${tks.map(t=>`<button class="tchip ${taskDone(t,iso)?'done':''}" data-act="toggleTask" data-id="${t.id}" data-d="${iso}">
-              <span class="tbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round"><path d="M5 12l4 4 10-11"/></svg></span>
+              <span class="tbox">${TICK}</span>
               <span class="tt">${esc(t.text)}</span></button>`).join('')}
           </div>
           <div class="dadd">
-            <button class="devempty tap" data-act="addEventOn" data-d="${iso}">+ event</button>
-            <button class="devempty tap" data-act="addTask" data-scope="day" data-d="${iso}">+ task</button>
+            ${showEvents()?`<button class="devempty tap" data-act="addEventOn" data-d="${iso}">+ event</button>`:''}
+            ${showTasks()?`<button class="devempty tap" data-act="addTask" data-scope="day" data-d="${iso}">+ task</button>`:''}
+            ${calFilter==='habits'?`<button class="devempty tap" data-act="addHabit">+ habit</button>`:''}
           </div>
         </div>`; }).join('')}
     </div>
@@ -1240,9 +1267,31 @@ function calDay() {
         <button class="iconbtn" data-act="dayNext"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></button>
       </div>
     </div>
-    <div class="section-head"><h3>Events</h3></div>
-    ${dayList(evs)}
-    ${tasksCard('day', calSel, 'Nothing to tick off — add a task')}`;
+    ${showEvents() ? `<div class="section-head"><h3>Events</h3></div>${dayList(evs)}` : ''}
+    ${showHabits() ? habitsCard(calSel) : ''}
+    ${showTasks() ? tasksCard('day', calSel, 'Nothing to tick off — add a task') : ''}`;
+}
+// habits due on a date, tickable straight from the Calendar
+function habitsCard(iso) {
+  const list = habitsOnDate(iso);
+  const left = list.filter(h => !habitDoneOn(h, iso)).length;
+  const future = iso > todayISO();
+  return `<div class="section-head"><h3>Habits</h3>
+      <button class="link" data-act="addHabit">+ Habit</button></div>
+    <div class="card">
+      ${list.length ? `<div class="small muted" style="margin-bottom:10px">${
+        future ? `${list.length} scheduled` : left ? `${left} of ${list.length} to go` : 'All done ✓'}</div>` : ''}
+      <div class="list">
+        ${list.map(h => `
+          <div class="check habit ${habitDoneOn(h, iso) ? 'done' : ''}">
+            <span class="box tap" data-act="calToggleHabit" data-id="${h.id}" data-d="${iso}">${TICK}</span>
+            <span class="txt tap" data-act="editHabit" data-id="${h.id}">${esc(h.text)}
+              <span class="s muted">${esc(habitDaysLabel(h))}</span></span>
+            ${habitStreak(h) > 1 ? `<span class="chip good nowrap">🔥 ${habitStreak(h)}</span>` : ''}
+            <span class="chip nowrap">${esc(h.time||'')}</span>
+          </div>`).join('') || `<div class="empty">No habits on this day</div>`}
+      </div>
+    </div>`;
 }
 function dayList(evs) {
   if (!evs.length) return `<div class="card"><div class="empty">No events. Tap “Event” to add one.</div></div>`;
@@ -1769,6 +1818,22 @@ const ACT = {
   dayNext() { const x = parseISO(calSel); x.setDate(x.getDate()+1); calSel = todayISO(x); renderCalBody(); },
   weekPrev() { const x = parseISO(calSel); x.setDate(x.getDate()-7); calSel = todayISO(x); renderCalBody(); },
   weekNext() { const x = parseISO(calSel); x.setDate(x.getDate()+7); calSel = todayISO(x); renderCalBody(); },
+  setCalFilter(d) { calFilter = d.f; renderCalendar(); },
+  // tick a habit off for a specific date from the Calendar
+  calToggleHabit(d, el) {
+    const h = (S.systems.habits||[]).find(x => x.id === d.id); if (!h) return;
+    if (d.d > todayISO()) return toast("Can't tick off a day that hasn't happened");
+    if (!h.doneDays) h.doneDays = {};
+    const nowDone = !h.doneDays[d.d];
+    h.doneDays[d.d] = nowDone;
+    save();
+    const row = el && el.closest('.check, .tchip');
+    if (nowDone && row) {
+      row.classList.add('done', 'ticking');
+      if (navigator.vibrate) navigator.vibrate(12);
+      setTimeout(() => renderCalBody(), 380);
+    } else renderCalBody();
+  },
   addEvent() { ACT.editEvent({ id: '' }); },
   addEventOn(d) { calSel = d.d; ACT.editEvent({ id: '' }); },
   editEvent(d) {
