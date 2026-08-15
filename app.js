@@ -1597,15 +1597,48 @@ function renderSystems() {
   });
   const hLeft = hSorted.filter(h => habitRunsOn(h) && !(h.doneDays && h.doneDays[iso])).length;
 
+  // Weekly grid: habits down the side, the week across the top. Track mode ticks a
+  // day off; Plan mode adds/removes that weekday from the habit's schedule, so the
+  // week can be laid out visually instead of through the edit sheet.
+  const wkDays = habitWeekDays();
+  const planning = habitGridMode === 'plan';
   const gridRows = hSorted.slice().sort((a,b) => (a.time||'').localeCompare(b.time||''));
+  const habitGrid = `
+    <div class="hg-head">
+      <button class="iconbtn sm" data-act="habitWeekPrev">‹</button>
+      <span class="hg-range">${habitWeekLabel()}</span>
+      <button class="iconbtn sm" data-act="habitWeekNext">›</button>
+      <span style="flex:1"></span>
+      <div class="seg sm">
+        <button data-act="setHabitGridMode" data-m="track" class="${planning?'':'on'}">Track</button>
+        <button data-act="setHabitGridMode" data-m="plan" class="${planning?'on':''}">Plan</button>
+      </div>
+    </div>
+    <div class="hg-scroll"><div class="hg" style="--cols:${wkDays.length}">
+      <div class="hg-cell hg-corner"></div>
+      ${wkDays.map(d => `<div class="hg-cell hg-day ${d.iso===iso?'today':''}">
+        <span class="dn">${DOW[d.dow][0]}</span><span class="dd">${d.day}</span></div>`).join('')}
+      ${gridRows.map(h => `
+        <div class="hg-cell hg-name tap" data-act="editHabit" data-id="${h.id}">
+          <span class="n">${esc(h.text)}</span>
+          ${h.time?`<span class="t">${esc(h.time)}</span>`:''}
+        </div>
+        ${wkDays.map(d => {
+          const due = habitRunsOn(h, parseISO(d.iso));
+          const done = !!(h.doneDays && h.doneDays[d.iso]);
+          const future = d.iso > iso;
+          const cls = [due?'due':'off', done?'done':'', future?'future':'', d.iso===iso?'today':''].filter(Boolean).join(' ');
+          return `<button class="hg-cell hg-box ${cls}" data-act="habitCell" data-id="${h.id}" data-d="${d.iso}" data-dow="${d.dow}"
+            title="${esc(h.text)} · ${fmtDay(d.iso)}">${done?TICK:''}</button>`;
+        }).join('')}`).join('')}
+    </div></div>
+    <div class="small muted" style="margin-top:10px">${planning
+      ? 'Tap any square to add or remove that weekday from the habit.'
+      : 'Tap a square to tick that day off. Switch to Plan to change which days a habit runs.'}</div>`;
 
   B.push({ key:'habits', name:'Habit reminders', html: `
-    <div class="section-head"><h3>Habit reminders</h3>
-      <span style="display:inline-flex;gap:12px;align-items:center">
-        ${gridRows.length ? `<button class="link" data-act="openHabitFull" title="Full screen">⤢ Full screen</button>` : ''}
-        <button class="link" data-act="addHabit">+ Habit</button>
-      </span></div>
-    ${gridRows.length ? `<div class="card">${habitGridHTML()}</div>` : ''}
+    <div class="section-head"><h3>Habit reminders</h3><button class="link" data-act="addHabit">+ Habit</button></div>
+    ${gridRows.length ? `<div class="card">${habitGrid}</div>` : ''}
     <div class="card"><div class="small muted" style="margin-bottom:10px">${hSorted.length ? (hLeft ? `${hLeft} left today` : 'All done today 🎉') : "Habits with a time — you'll get a reminder."}</div><div class="list habit-list">
       ${hSorted.map(h => `
         <div class="check habit ${h.doneDays && h.doneDays[iso] ? 'done' : ''} ${habitRunsOn(h)?'':'offday'}" data-habit="${h.id}">
@@ -2279,7 +2312,7 @@ const ACT = {
     if (!S.systems.habits) S.systems.habits = [];
     if (d.id) Object.assign(S.systems.habits.find(x=>x.id===d.id), { text, time, days });
     else S.systems.habits.push({ id: uid(), text, time, days, doneDays: {} });
-    save(); closeSheet(); refreshHabits();
+    save(); closeSheet(); renderSystems();
     // make sure reminders can actually fire
     if ('Notification' in window && Notification.permission === 'default') {
       const p = await Notification.requestPermission();
@@ -2287,13 +2320,11 @@ const ACT = {
     }
     toast(S.settings.notify || Notification.permission === 'granted' ? 'Habit saved — reminder set' : 'Saved (enable notifications in Settings for alerts)');
   },
-  delHabit(d) { S.systems.habits = (S.systems.habits||[]).filter(x=>x.id!==d.id); save(); closeSheet(); refreshHabits(); },
+  delHabit(d) { S.systems.habits = (S.systems.habits||[]).filter(x=>x.id!==d.id); save(); closeSheet(); renderSystems(); },
   /* ----- habit week grid ----- */
-  habitWeekPrev() { habitWeekOffset--; refreshHabits(); },
-  habitWeekNext() { if (habitWeekOffset < 0) habitWeekOffset++; refreshHabits(); },
-  setHabitGridMode(d) { habitGridMode = d.m; refreshHabits(); },
-  openHabitFull() { habitFullOpen = true; renderHabitFull(); },
-  closeHabitFull() { habitFullOpen = false; renderHabitFull(); },
+  habitWeekPrev() { habitWeekOffset--; renderSystems(); },
+  habitWeekNext() { if (habitWeekOffset < 0) habitWeekOffset++; renderSystems(); },
+  setHabitGridMode(d) { habitGridMode = d.m; renderSystems(); },
   habitCell(d, el) {
     const h = (S.systems.habits||[]).find(x => x.id === d.id); if (!h) return;
     const dow = num(d.dow);
@@ -2304,7 +2335,7 @@ const ACT = {
       days = days.includes(dow) ? days.filter(x => x !== dow) : days.concat(dow).sort();
       if (!days.length) return toast('A habit needs at least one day');
       h.days = days.length === 7 ? [] : days;
-      save(); refreshHabits();
+      save(); renderSystems();
       return;
     }
     if (d.d > todayISO()) return toast("Can't tick off a day that hasn't happened");
@@ -2314,7 +2345,7 @@ const ACT = {
     h.doneDays[d.d] = nowDone;
     save();
     if (nowDone && el) { el.classList.add('done','ticking'); if (navigator.vibrate) navigator.vibrate(10); }
-    setTimeout(refreshHabits, nowDone ? 260 : 0);
+    setTimeout(() => renderSystems(), nowDone ? 260 : 0);
   },
   toggleHabit(d) {
     const h = (S.systems.habits||[]).find(x=>x.id===d.id); if (!h) return;
@@ -2414,82 +2445,6 @@ function habitWeekDays() {
     return { iso: todayISO(d), dow: d.getDay(), day: d.getDate() };
   });
 }
-// Weekly grid: habits down the side, the week across the top. Track mode ticks a
-// day off; Plan mode adds/removes that weekday from the habit's schedule, so the
-// week can be laid out visually instead of through the edit sheet.
-// Shared by the Systems card and the full-screen view.
-function habitGridHTML() {
-  const iso = todayISO();
-  const wkDays = habitWeekDays();
-  const planning = habitGridMode === 'plan';
-  const rows = (S.systems.habits || []).slice().sort((a,b) => (a.time||'').localeCompare(b.time||''));
-  return `
-    <div class="hg-head">
-      <button class="iconbtn sm" data-act="habitWeekPrev">‹</button>
-      <span class="hg-range">${habitWeekLabel()}</span>
-      <button class="iconbtn sm" data-act="habitWeekNext">›</button>
-      <span style="flex:1"></span>
-      <div class="seg sm">
-        <button data-act="setHabitGridMode" data-m="track" class="${planning?'':'on'}">Track</button>
-        <button data-act="setHabitGridMode" data-m="plan" class="${planning?'on':''}">Plan</button>
-      </div>
-    </div>
-    <div class="hg-scroll"><div class="hg" style="--cols:${wkDays.length}">
-      <div class="hg-cell hg-corner"></div>
-      ${wkDays.map(d => `<div class="hg-cell hg-day ${d.iso===iso?'today':''}">
-        <span class="dn">${DOW[d.dow][0]}</span><span class="dd">${d.day}</span></div>`).join('')}
-      ${rows.map(h => `
-        <div class="hg-cell hg-name tap" data-act="editHabit" data-id="${h.id}">
-          <span class="n">${esc(h.text)}</span>
-          ${h.time?`<span class="t">${esc(h.time)}</span>`:''}
-        </div>
-        ${wkDays.map(d => {
-          const due = habitRunsOn(h, parseISO(d.iso));
-          const done = !!(h.doneDays && h.doneDays[d.iso]);
-          const future = d.iso > iso;
-          const cls = [due?'due':'off', done?'done':'', future?'future':'', d.iso===iso?'today':''].filter(Boolean).join(' ');
-          return `<button class="hg-cell hg-box ${cls}" data-act="habitCell" data-id="${h.id}" data-d="${d.iso}" data-dow="${d.dow}"
-            title="${esc(h.text)} · ${fmtDay(d.iso)}">${done?TICK:''}</button>`;
-        }).join('')}`).join('')}
-    </div></div>
-    <div class="small muted" style="margin-top:10px">${planning
-      ? 'Tap any square to add or remove that weekday from the habit.'
-      : 'Tap a square to tick that day off. Switch to Plan to change which days a habit runs.'}</div>`;
-}
-
-// full-screen habit grid — same grid, all the room
-let habitFullOpen = false;
-function renderHabitFull() {
-  const el = $('#habitFull');
-  if (!habitFullOpen) { el.hidden = true; document.body.classList.remove('fs-open'); return; }
-  const iso = todayISO();
-  const rows = (S.systems.habits || []);
-  const left = rows.filter(h => habitRunsOn(h) && !(h.doneDays && h.doneDays[iso])).length;
-  el.innerHTML = `
-    <div class="fs-head">
-      <div>
-        <div class="fs-title">Habits</div>
-        <div class="small muted">${rows.length ? (left ? `${left} left today` : 'All done today 🎉') : 'No habits yet'}</div>
-      </div>
-      <button class="iconbtn" data-act="closeHabitFull" title="Close">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
-      </button>
-    </div>
-    <div class="card">${habitGridHTML()}</div>
-    <div class="fs-streaks">
-      ${rows.slice().sort((a,b)=>habitStreak(b)-habitStreak(a)).map(h => `
-        <div class="fs-streak">
-          <span class="n">${esc(h.text)}</span>
-          <span class="d">${esc(habitDaysLabel(h))}${h.time?` · ${esc(h.time)}`:''}</span>
-          <span class="chip ${habitStreak(h)>1?'good':''} nowrap">🔥 ${habitStreak(h)}</span>
-        </div>`).join('')}
-    </div>`;
-  el.hidden = false;
-  document.body.classList.add('fs-open');
-}
-// habit edits need to refresh whichever view is showing
-function refreshHabits() { renderSystems(); if (habitFullOpen) renderHabitFull(); }
-
 function habitWeekLabel() {
   if (habitWeekOffset === 0) return 'This week';
   if (habitWeekOffset === -1) return 'Last week';
@@ -2934,11 +2889,5 @@ function boot() {
     }).catch(()=>{});
   }
 }
-// Esc closes the full-screen habit grid (but let an open sheet close first)
-document.addEventListener('keydown', e => {
-  if (e.key !== 'Escape') return;
-  if ($('#scrim').classList.contains('open')) { closeSheet(); return; }
-  if (habitFullOpen) { habitFullOpen = false; renderHabitFull(); }
-});
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { pull(); checkReminders(); checkHabitReminders(); } });
 boot();
