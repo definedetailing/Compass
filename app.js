@@ -84,12 +84,22 @@ function taskRepeatLabel(t) {
   if (s.join() === '0,6') return 'Weekends';
   return s.map(i => DOW[i]).join(' ');
 }
+// A task can optionally claim a time slot. Untimed stays the default — these
+// sort after anything timed rather than pretending to sit at midnight.
+const taskTime = t => t.start || '';
+const taskSlot = t => t.start ? (t.end ? `${t.start}–${t.end}` : t.start) : '';
+const bySlot = (a, b) => {
+  const ta = taskTime(a), tb = taskTime(b);
+  if (!!ta !== !!tb) return ta ? -1 : 1;      // timed first
+  return ta.localeCompare(tb);
+};
 // one checkable row. `iso` is the day being ticked off (repeating tasks tick per-day)
 function taskRow(t, iso) {
-  const done = taskDone(t, iso), rep = taskRepeatLabel(t);
+  const done = taskDone(t, iso), rep = taskRepeatLabel(t), slot = taskSlot(t);
+  const sub = [slot ? `🕘 ${slot}` : '', rep ? `↻ ${rep}` : ''].filter(Boolean).join(' · ');
   return `<div class="check task ${done ? 'done' : ''}">
     <span class="box tap" data-act="toggleTask" data-id="${t.id}" data-d="${iso || ''}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 12l4 4 10-11"/></svg></span>
-    <span class="txt tap" data-act="editTask" data-id="${t.id}">${esc(t.text)}${rep ? `<span class="s muted">↻ ${esc(rep)}</span>` : ''}</span>
+    <span class="txt tap" data-act="editTask" data-id="${t.id}">${esc(t.text)}${sub ? `<span class="s muted">${esc(sub)}</span>` : ''}</span>
     <button class="del" data-act="delTask" data-id="${t.id}">✕</button>
   </div>`;
 }
@@ -99,8 +109,9 @@ function tasksCard(scope, key, empty) {
   const list  = scope === 'day' ? tasksForDate(key) : scope === 'week' ? tasksForWeek(key) : tasksForMonth(key);
   const left  = list.filter(t => !taskDone(t, iso)).length;
   const title = { day: 'Tasks', week: "This week's tasks", month: "This month's tasks" }[scope];
-  // done ones sink to the bottom so what's left is always at eye level
-  const sorted = list.slice().sort((a, b) => (taskDone(a, iso) ? 1 : 0) - (taskDone(b, iso) ? 1 : 0));
+  // done ones sink to the bottom; above that, timed tasks run in clock order
+  const sorted = list.slice().sort((a, b) =>
+    ((taskDone(a, iso) ? 1 : 0) - (taskDone(b, iso) ? 1 : 0)) || bySlot(a, b));
   return `<div class="section-head"><h3>${title}</h3>
       <button class="link" data-act="addTask" data-scope="${scope}" data-d="${scope === 'day' ? key : ''}">+ Task</button></div>
     <div class="card">
@@ -618,7 +629,7 @@ function briefingRows() {
       : `${evs.length} on today — all done`, 'calendar');
   else push('📅', 'Nothing scheduled today', 'calendar');
 
-  const tks = tasksForDate(iso), tLeft = tks.filter(t => !taskDone(t, iso));
+  const tks = tasksForDate(iso), tLeft = tks.filter(t => !taskDone(t, iso)).sort(bySlot);
   if (tks.length) push('✅', tLeft.length
       ? `${tLeft.length} task${tLeft.length > 1 ? 's' : ''} to tick off — <b>${esc(tLeft[0].text)}</b>${tLeft.length > 1 ? ' first' : ''}`
       : 'All today\'s tasks are done 🎉', 'calendar');
@@ -933,6 +944,14 @@ const habitsOnDate = (iso) => (S.systems.habits || [])
   .filter(h => habitRunsOn(h, parseISO(iso)))
   .sort((a, b) => (a.time||'').localeCompare(b.time||''));
 const habitDoneOn = (h, iso) => !!(h.doneDays && h.doneDays[iso]);
+// is the calendar already looking at today? (drives whether "Today" is offered)
+function atToday() {
+  const t = todayISO();
+  if (calView === 'month') return calCursor.getFullYear() === new Date().getFullYear()
+    && calCursor.getMonth() === new Date().getMonth();
+  if (calView === 'week') return weekStartISO(parseISO(calSel)) === weekStartISO();
+  return calSel === t;
+}
 
 let habitWeekOffset = 0;      // 0 = this week, -1 = last week, …
 let habitGridMode = 'track';  // 'track' ticks days off · 'plan' edits which weekdays a habit runs
@@ -1129,10 +1148,12 @@ function renderHome() {
                   <div class="body"><div class="t">${esc(h.text)}</div><div class="s">${esc(h.time)} · habit</div></div>
                   <span class="box tap" data-act="toggleHabit" data-id="${h.id}">${TICK}</span>
                 </div>` })),
-              // tasks have no time, so they sit under everything that's scheduled
-              ...tasksForDate(iso).map(t => ({ time: '~', html: `
+              // a timed task slots in with everything else; untimed ones sort last.
+              // The sentinel must be digits — localeCompare treats punctuation like
+              // '~' as ignorable, which sorted untimed tasks to the TOP.
+              ...tasksForDate(iso).map(t => ({ time: taskTime(t) || '99:99', html: `
                 <div class="item ${taskDone(t, iso) ? 'done hab-done' : ''}" style="border-left:4px dashed var(--amber)">
-                  <div class="body"><div class="t">${esc(t.text)}</div><div class="s">task${taskRepeatLabel(t) ? ' · ↻ ' + esc(taskRepeatLabel(t)) : ''}</div></div>
+                  <div class="body"><div class="t">${esc(t.text)}</div><div class="s">${[taskSlot(t), 'task', taskRepeatLabel(t) ? '↻ ' + taskRepeatLabel(t) : ''].filter(Boolean).map(esc).join(' · ')}</div></div>
                   <span class="box tap" data-act="toggleTask" data-id="${t.id}" data-d="${iso}">${TICK}</span>
                 </div>` })),
             ].sort((a,b)=>a.time.localeCompare(b.time));
@@ -1161,7 +1182,12 @@ function renderCalendar() {
       <div class="seg" id="calSeg">
         ${['day','week','month'].map(k => `<button data-cal="${k}" class="${calView===k?'on':''}">${k[0].toUpperCase()+k.slice(1)}</button>`).join('')}
       </div>
-      <button class="btn primary sm" data-act="addEvent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Event</button>
+      <button class="link" data-act="calToday" ${atToday() ? 'hidden' : ''}>Today</button>
+    </div>
+    <div class="add-row">
+      <button class="btn sm" data-act="addEventOn" data-d="${calSel}">+ Event</button>
+      <button class="btn sm" data-act="addTask" data-scope="day" data-d="${calSel}">+ Task</button>
+      <button class="btn sm" data-act="addHabit">+ Habit</button>
     </div>
     <div class="seg full" style="margin-top:10px">
       ${Object.entries(CAL_FILTERS).map(([k,label]) =>
@@ -1243,9 +1269,9 @@ function calWeek() {
             ${hbs.map(h=>`<button class="tchip habit ${habitDoneOn(h,iso)?'done':''}" data-act="calToggleHabit" data-id="${h.id}" data-d="${iso}">
               <span class="tbox">${TICK}</span>
               <span class="tt">${esc(h.text)}</span></button>`).join('')}
-            ${tks.map(t=>`<button class="tchip ${taskDone(t,iso)?'done':''}" data-act="toggleTask" data-id="${t.id}" data-d="${iso}">
+            ${tks.map(t=>`<button class="tchip ${taskDone(t,iso)?'done':''}" draggable="true" data-task="${t.id}" data-act="toggleTask" data-id="${t.id}" data-d="${iso}">
               <span class="tbox">${TICK}</span>
-              <span class="tt">${esc(t.text)}</span></button>`).join('')}
+              <span class="tt">${esc(t.text)}${taskSlot(t)?`<span class="ts">${esc(taskSlot(t))}</span>`:''}</span></button>`).join('')}
           </div>
           <div class="dadd">
             ${showEvents()?`<button class="devempty tap" data-act="addEventOn" data-d="${iso}">+ event</button>`:''}
@@ -1819,6 +1845,7 @@ const ACT = {
   weekPrev() { const x = parseISO(calSel); x.setDate(x.getDate()-7); calSel = todayISO(x); renderCalBody(); },
   weekNext() { const x = parseISO(calSel); x.setDate(x.getDate()+7); calSel = todayISO(x); renderCalBody(); },
   setCalFilter(d) { calFilter = d.f; renderCalendar(); },
+  calToday() { calSel = todayISO(); calCursor = new Date(); renderCalendar(); },
   // tick a habit off for a specific date from the Calendar
   calToggleHabit(d, el) {
     const h = (S.systems.habits||[]).find(x => x.id === d.id); if (!h) return;
@@ -1879,11 +1906,15 @@ const ACT = {
       : ['Every day','Weekdays','Weekends'].includes(lbl) ? lbl : 'Certain days';
     const on = t.days && t.days.length ? t.days : [0,1,2,3,4,5,6];
     sheetForm(d.id ? 'Edit task' : 'New task',
-      'A task is just something to tick off — no time slot, no reminder. Pick the day, week or month it belongs to.',
+      'Something to tick off. Give it a time slot if you want one — leave the times blank and it just sits on the day.',
       field('Task','tk_text',{val:t.text,ph:'e.g. Order microfibres, Call the accountant'}) +
       field('Belongs to','tk_scope',{type:'select',val:SCOPES[t.scope]||SCOPES.day,options:Object.values(SCOPES)}) +
       field('Date','tk_date',{type:'date',val:t.date||calSel}) +
-      `<div id="tk_repwrap">
+      `<div id="tk_timewrap">
+        <div class="row">${field('Start (optional)','tk_start',{type:'time',val:t.start||''})}${field('End (optional)','tk_end',{type:'time',val:t.end||''})}</div>
+        <button type="button" class="btn sm ghost" data-act="clearTaskTime" style="width:auto;margin:-2px 0 10px">Clear times</button>
+      </div>
+      <div id="tk_repwrap">
         ${field('Repeat','tk_rep',{type:'select',val:repVal,options:['Does not repeat','Every day','Weekdays','Weekends','Certain days']})}
         <label class="field" id="tk_dayswrap" ${repVal==='Certain days'?'':'hidden'}><span>On these days</span>
           <div class="daypick" id="tk_days">
@@ -1893,17 +1924,25 @@ const ACT = {
       </div>`,
       { save:'saveTask', id:d.id, del:d.id?'delTask':'' });
     // repeat only makes sense day-by-day; week/month tasks live on their week or month
+    // repeat and a time slot only make sense day-by-day; a week/month task has no
+    // single day to sit on, so both are hidden for those scopes
     const sync = () => {
       const isDay = val('tk_scope') === SCOPES.day;
       $('#tk_repwrap').hidden = !isDay;
+      $('#tk_timewrap').hidden = !isDay;
       $('#tk_dayswrap').hidden = !isDay || val('tk_rep') !== 'Certain days';
       $('#tk_date').closest('.field').querySelector('span').textContent =
         isDay ? 'Date' : val('tk_scope') === SCOPES.week ? 'Any day in that week' : 'Any day in that month';
     };
     $('#tk_scope').addEventListener('change', sync);
     $('#tk_rep').addEventListener('change', sync);
+    // an end time on its own is meaningless — default it to an hour after the start
+    $('#tk_start').addEventListener('change', () => {
+      if (val('tk_start') && !val('tk_end')) $('#tk_end').value = addMinutes(val('tk_start'), 60);
+    });
     sync();
   },
+  clearTaskTime() { $('#tk_start').value = ''; $('#tk_end').value = ''; },
   toggleTaskDay(d, el) { el.classList.toggle('on'); },
   saveTask(d) {
     const SCOPES = { 'Just this day':'day', 'This week':'week', 'This month':'month' };
@@ -1921,7 +1960,12 @@ const ACT = {
       if (repSel === 'Certain days' && !days.length) return toast('Pick at least one day');
       if (days.length === 7) days = [];                     // all seven = every day
     }
-    const rec = { text, scope, date, week: weekKey(parseISO(date)), month: date.slice(0,7), repeat, days };
+    // times are day-scope only, and an end before the start is a typo not a plan
+    const start = scope === 'day' ? val('tk_start') : '';
+    let end = scope === 'day' ? val('tk_end') : '';
+    if (end && !start) end = '';
+    if (start && end && end <= start) end = addMinutes(start, 60);
+    const rec = { text, scope, date, week: weekKey(parseISO(date)), month: date.slice(0,7), repeat, days, start, end };
     if (d.id) {
       const t = TASKS().find(x => x.id === d.id);
       Object.assign(t, rec);
@@ -2693,7 +2737,9 @@ document.addEventListener('input', e => {
 /* ============================================================
    Moving events between days — mouse drag + touch long-press
    ============================================================ */
-let dragEventId = null;          // set while an event is being moved
+// Events AND tasks can be dragged between days — replanning a week should be
+// dragging, not reopening a form for each one.
+let dragItem = null;             // {kind:'event'|'task', id} while something is being moved
 function moveEventToDate(id, iso) {
   const e = S.calendar.events.find(x => x.id === id);
   if (!e || !iso) return false;
@@ -2704,13 +2750,33 @@ function moveEventToDate(id, iso) {
   toast(`${e.title} → ${fmtDay(iso)}`);
   return true;
 }
-function clearMoveMode() {
-  dragEventId = null;
-  $$('.dayrow.drop-ok, .dayrow.drop-over').forEach(r => r.classList.remove('drop-ok', 'drop-over'));
-  $$('.evchip.lifted').forEach(c => c.classList.remove('lifted'));
+function moveTaskToDate(id, iso) {
+  const t = TASKS().find(x => x.id === id);
+  if (!t || !iso || t.scope !== 'day' || t.date === iso) return false;
+  t.date = iso;
+  t.week = weekKey(parseISO(iso));
+  t.month = iso.slice(0, 7);
+  save();
+  toast(`${t.text} → ${fmtDay(iso)}${repeats(t) ? ' (repeat starts here)' : ''}`);
+  return true;
 }
-function enterMoveMode(id, chip) {
-  dragEventId = id;
+const moveItemToDate = (item, iso) => !item ? false
+  : item.kind === 'task' ? moveTaskToDate(item.id, iso) : moveEventToDate(item.id, iso);
+// what's under the pointer: an event chip or a task chip
+function dragTargetOf(el) {
+  const ev = el.closest && el.closest('.evchip[data-ev]');
+  if (ev) return { chip: ev, item: { kind: 'event', id: ev.dataset.ev } };
+  const tk = el.closest && el.closest('.tchip[data-task]');
+  if (tk) return { chip: tk, item: { kind: 'task', id: tk.dataset.task } };
+  return null;
+}
+function clearMoveMode() {
+  dragItem = null;
+  $$('.dayrow.drop-ok, .dayrow.drop-over').forEach(r => r.classList.remove('drop-ok', 'drop-over'));
+  $$('.lifted').forEach(c => c.classList.remove('lifted'));
+}
+function enterMoveMode(item, chip) {
+  dragItem = item;
   chip && chip.classList.add('lifted');
   $$('#view-calendar .dayrow').forEach(r => r.classList.add('drop-ok'));
   toast('Now tap the day to move it to');
@@ -2769,50 +2835,49 @@ document.addEventListener('touchend', e => {
   endSecDrag(secUnderPoint(t.clientX, t.clientY));
 });
 
-/* --- mouse drag (calendar events) --- */
+/* --- mouse drag (calendar events + tasks) --- */
 document.addEventListener('dragstart', e => {
-  const chip = e.target.closest('.evchip[data-ev]'); if (!chip) return;
-  dragEventId = chip.dataset.ev;
+  const hit = dragTargetOf(e.target); if (!hit) return;
+  dragItem = hit.item;
   e.dataTransfer.effectAllowed = 'move';
-  try { e.dataTransfer.setData('text/plain', dragEventId); } catch (_) {}
-  chip.classList.add('lifted');
+  try { e.dataTransfer.setData('text/plain', hit.item.id); } catch (_) {}
+  hit.chip.classList.add('lifted');
   $$('#view-calendar .dayrow').forEach(r => r.classList.add('drop-ok'));
 });
 document.addEventListener('dragend', clearMoveMode);
 document.addEventListener('dragover', e => {
-  const row = e.target.closest('.dayrow[data-day]'); if (!row || !dragEventId) return;
+  const row = e.target.closest('.dayrow[data-day]'); if (!row || !dragItem) return;
   e.preventDefault(); e.dataTransfer.dropEffect = 'move';
   $$('.dayrow.drop-over').forEach(r => r.classList.remove('drop-over'));
   row.classList.add('drop-over');
 });
 document.addEventListener('drop', e => {
-  const row = e.target.closest('.dayrow[data-day]'); if (!row || !dragEventId) return;
+  const row = e.target.closest('.dayrow[data-day]'); if (!row || !dragItem) return;
   e.preventDefault();
-  const id = dragEventId, iso = row.dataset.day;
+  const item = dragItem, iso = row.dataset.day;
   clearMoveMode();
-  if (moveEventToDate(id, iso)) renderCalBody();
+  if (moveItemToDate(item, iso)) renderCalBody();
 });
 /* --- touch: long-press to pick up, tap a day to place --- */
-let pressTimer = null, pressChip = null;
+let pressTimer = null;
 document.addEventListener('touchstart', e => {
-  const chip = e.target.closest('.evchip[data-ev]'); if (!chip) return;
-  pressChip = chip;
+  const hit = dragTargetOf(e.target); if (!hit) return;
   pressTimer = setTimeout(() => {
     pressTimer = null;
     if (navigator.vibrate) navigator.vibrate(15);
-    enterMoveMode(chip.dataset.ev, chip);
+    enterMoveMode(hit.item, hit.chip);
   }, 450);
 }, { passive: true });
 document.addEventListener('touchmove', () => { clearTimeout(pressTimer); pressTimer = null; }, { passive: true });
 document.addEventListener('touchend', () => { clearTimeout(pressTimer); pressTimer = null; }, { passive: true });
-// while in move mode, the next tap on a day row places the event (capture beats the edit handler)
+// while in move mode, the next tap on a day row places it (capture beats the edit handler)
 document.addEventListener('click', e => {
-  if (!dragEventId) return;
+  if (!dragItem) return;
   const row = e.target.closest('.dayrow[data-day]');
   e.preventDefault(); e.stopPropagation();
-  const id = dragEventId, iso = row ? row.dataset.day : null;
+  const item = dragItem, iso = row ? row.dataset.day : null;
   clearMoveMode();
-  if (row && moveEventToDate(id, iso)) renderCalBody();
+  if (row && moveItemToDate(item, iso)) renderCalBody();
   else if (!row) toast('Move cancelled');
 }, true);
 

@@ -794,6 +794,9 @@ label.field > span { display: block; font-size: 12.5px; font-weight: 600; color:
   flex: none; display: grid; place-items: center; color: #fff; transition: .15s; }
 .tchip .tbox svg { width: 11px; height: 11px; opacity: 0; }
 .tchip .tt { font-size: 12.5px; font-weight: 600; }
+.tchip .ts { display: block; font-size: 10.5px; font-weight: 600; color: var(--text-3); }
+.tchip[draggable="true"] { cursor: grab; -webkit-user-select: none; user-select: none; }
+.tchip.lifted { opacity: .5; transform: scale(.96); box-shadow: var(--shadow); }
 .tchip.done { opacity: .5; }
 .tchip.done .tbox { background: var(--primary); border-color: var(--primary); }
 .tchip.done .tbox svg { opacity: 1; }
@@ -805,6 +808,10 @@ label.field > span { display: block; font-size: 12.5px; font-weight: 600; color:
 .cal-cell .evs i.tk.off { opacity: .35; }
 .cal-cell .evs i.hb { background: transparent; border: 1.5px solid var(--blue-400); width: 6px; height: 6px; }
 .cal-cell .evs i.hb.off { opacity: .35; }
+
+/* one tap to add any of the three, always visible */
+.add-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 10px 0 2px; }
+.add-row .btn { width: 100%; }
 
 /* habit chips in the week view sit apart from task chips */
 .tchip.habit { border-style: solid; border-color: var(--blue-300); }
