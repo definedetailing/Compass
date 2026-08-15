@@ -296,6 +296,15 @@ async function pull() {
       lastSavedJSON = JSON.stringify(S);
       save(false);
       renderAll();
+    } else if (remote && remote.state && remote.state.brief && remote.state.brief.text) {
+      // Even when this device's state is newer overall, the brief is written by
+      // /api/brief rather than by the app — so take the cloud's if it's fresher.
+      const rb = remote.state.brief, lb = S.brief || {};
+      if ((rb.generated || 0) > (lb.generated || 0)) {
+        S.brief = rb;
+        save(false);
+        if (currentTab === 'home') renderHome();
+      }
     }
     setSyncDot('ok');
     pulledOnce = true;

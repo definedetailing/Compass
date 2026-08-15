@@ -50,7 +50,20 @@ module.exports = async (req, res) => {
     if (req.method === 'POST') {
       const body = await readBody(req);
       if (!body || !body.state) { res.status(400).json({ error: 'no state' }); return; }
-      await kv(['SET', KEY, JSON.stringify(body.state)]);
+      const state = body.state;
+      // The brief is written by /api/brief, never by the app. A device whose
+      // updatedAt is ahead of the cloud skips adopting the stored state on pull,
+      // then pushes its empty brief over the top — so keep whichever is newer here.
+      try {
+        const { result } = await kv(['GET', KEY]);
+        const prev = result ? (typeof result === 'string' ? JSON.parse(result) : result) : null;
+        const prevBrief = prev && prev.brief;
+        if (prevBrief && prevBrief.text) {
+          const inc = state.brief || {};
+          if (!(inc.text && (inc.generated || 0) >= (prevBrief.generated || 0))) state.brief = prevBrief;
+        }
+      } catch (_) { /* first write, or unreadable — just store what we were given */ }
+      await kv(['SET', KEY, JSON.stringify(state)]);
       res.status(200).json({ ok: true });
       return;
     }

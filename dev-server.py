@@ -270,8 +270,23 @@ class H(http.server.SimpleHTTPRequestHandler):
                 return self._json(400, {"error": "bad json"})
             if not body.get("state"):
                 return self._json(400, {"error": "no state"})
+            state = body["state"]
+            # Mirrors api/sync.js: the brief is written by /api/brief, so never let
+            # a client push an empty or older one over the stored copy.
+            try:
+                if os.path.exists(STORE):
+                    with open(STORE) as f:
+                        prev = json.load(f)
+                    pb = (prev or {}).get("brief") or {}
+                    if pb.get("text"):
+                        inc = state.get("brief") or {}
+                        if not (inc.get("text") and
+                                (inc.get("generated") or 0) >= (pb.get("generated") or 0)):
+                            state["brief"] = pb
+            except Exception:
+                pass
             with open(STORE, "w") as f:
-                json.dump(body["state"], f)
+                json.dump(state, f)
             return self._json(200, {"ok": True})
         self.send_response(405)
         self.end_headers()
