@@ -40,12 +40,17 @@ function weekKey(d = new Date()) {
 /* ---------- calendar categories & helpers ---------- */
 const CATS = { School:'#3b82f6', Work:'#f59e0b', Gym:'#10b981', Study:'#06b6d4', Personal:'#ec4899', Free:'#a855f7', Other:'#64748b' };
 const catColor = c => CATS[c] || CATS.Other;
+// Sort key for anything with an optional time. Untimed items get a digits-only
+// sentinel so they land last — an empty string would sort them to the top, and
+// localeCompare ignores punctuation, so '~' would too.
+const UNTIMED = '99:99';
+const timeKey = t => t || UNTIMED;
 // events for a given date = one-off events on that date + recurring events on that weekday
 function eventsForDate(iso) {
   const wd = parseISO(iso).getDay();
   return S.calendar.events
     .filter(e => e.recurring ? e.weekday === wd : e.date === iso)
-    .sort((a, b) => (a.start || a.time || '').localeCompare(b.start || b.time || ''));
+    .sort((a, b) => timeKey(a.start || a.time).localeCompare(timeKey(b.start || b.time)));
 }
 const evTime = e => { const s = e.start || e.time || '', en = e.end || ''; return s ? (en ? `${s}–${en}` : s) : ''; };
 // keep a one-off event's cost mirrored as a linked expense in the Money tab
@@ -88,11 +93,7 @@ function taskRepeatLabel(t) {
 // sort after anything timed rather than pretending to sit at midnight.
 const taskTime = t => t.start || '';
 const taskSlot = t => t.start ? (t.end ? `${t.start}–${t.end}` : t.start) : '';
-const bySlot = (a, b) => {
-  const ta = taskTime(a), tb = taskTime(b);
-  if (!!ta !== !!tb) return ta ? -1 : 1;      // timed first
-  return ta.localeCompare(tb);
-};
+const bySlot = (a, b) => timeKey(taskTime(a)).localeCompare(timeKey(taskTime(b)));
 // one checkable row. `iso` is the day being ticked off (repeating tasks tick per-day)
 function taskRow(t, iso) {
   const done = taskDone(t, iso), rep = taskRepeatLabel(t), slot = taskSlot(t);
@@ -929,6 +930,17 @@ function upcomingBills() {
    ============================================================ */
 let currentTab = 'home';
 let calView = 'week', calCursor = new Date(), calSel = todayISO();
+// Always move the selection through here. calCursor drives which month the grid
+// shows, so setting calSel alone left the grid on the old month and anything moved
+// into a different month looked like it had vanished.
+function setCalSel(iso) {
+  if (!iso) return;
+  calSel = iso;
+  const d = parseISO(iso);
+  if (calCursor.getFullYear() !== d.getFullYear() || calCursor.getMonth() !== d.getMonth()) {
+    calCursor = new Date(d.getFullYear(), d.getMonth(), 1);
+  }
+}
 let briefOpen = false;   // Morning brief card collapsed by default
 let billsOpen = false;   // Bills list clipped so it doesn't tower over its column
 const BILLS_SHOWN = 6;
@@ -970,7 +982,8 @@ const uniqById = (arr) => { const seen = new Set(); return arr.filter(x => !seen
 function calEditPanel() {
   const days = calRangeDays();
   const evs = uniqById(days.flatMap(eventsForDate))
-    .sort((a,b) => (a.date||'').localeCompare(b.date||'') || (a.start||'').localeCompare(b.start||''));
+    .sort((a,b) => (a.date||'').localeCompare(b.date||'')
+                || timeKey(a.start||a.time).localeCompare(timeKey(b.start||b.time)));
   const dayTasks = uniqById(days.flatMap(tasksForDate));
   const wkTasks  = uniqById(days.map(d => weekKey(parseISO(d))).filter((v,i,a)=>a.indexOf(v)===i).flatMap(tasksForWeek));
   const moTasks  = uniqById(days.map(d => d.slice(0,7)).filter((v,i,a)=>a.indexOf(v)===i).flatMap(tasksForMonth));
@@ -1343,14 +1356,19 @@ function calWeek() {
         return `<div class="dayrow ${isToday?'today':''}" data-day="${iso}">
           <button class="dlabel tap" data-act="addEventOn" data-d="${iso}"><span class="dn">${DOW[d.getDay()]}</span><span class="dd">${d.getDate()}</span></button>
           <div class="devents">
-            ${evs.map(e=>`<div class="evchip tap" draggable="true" data-ev="${e.id}" data-act="editEvent" data-id="${e.id}" style="border-left-color:${catColor(e.category)}">
-              <span class="et">${esc(e.title)}</span>${evTime(e)?`<span class="es">${esc(evTime(e))}</span>`:''}</div>`).join('')}
-            ${hbs.map(h=>`<button class="tchip habit ${habitDoneOn(h,iso)?'done':''}" data-act="calToggleHabit" data-id="${h.id}" data-d="${iso}">
-              <span class="tbox">${TICK}</span>
-              <span class="tt">${esc(h.text)}</span></button>`).join('')}
-            ${tks.map(t=>`<button class="tchip ${taskDone(t,iso)?'done':''}" draggable="true" data-task="${t.id}" data-act="toggleTask" data-id="${t.id}" data-d="${iso}">
-              <span class="tbox">${TICK}</span>
-              <span class="tt">${esc(t.text)}${taskSlot(t)?`<span class="ts">${esc(taskSlot(t))}</span>`:''}</span></button>`).join('')}
+            ${[
+              ...evs.map(e => ({ k: timeKey(e.start || e.time), html:
+                `<div class="evchip tap" draggable="true" data-ev="${e.id}" data-act="editEvent" data-id="${e.id}" style="border-left-color:${catColor(e.category)}">
+                  <span class="et">${esc(e.title)}</span>${evTime(e)?`<span class="es">${esc(evTime(e))}</span>`:''}</div>` })),
+              ...hbs.map(h => ({ k: timeKey(h.time), html:
+                `<button class="tchip habit ${habitDoneOn(h,iso)?'done':''}" data-act="calToggleHabit" data-id="${h.id}" data-d="${iso}">
+                  <span class="tbox">${TICK}</span>
+                  <span class="tt">${esc(h.text)}${h.time?`<span class="ts">${esc(h.time)}</span>`:''}</span></button>` })),
+              ...tks.map(t => ({ k: timeKey(taskTime(t)), html:
+                `<button class="tchip ${taskDone(t,iso)?'done':''}" draggable="true" data-task="${t.id}" data-act="toggleTask" data-id="${t.id}" data-d="${iso}">
+                  <span class="tbox">${TICK}</span>
+                  <span class="tt">${esc(t.text)}${taskSlot(t)?`<span class="ts">${esc(taskSlot(t))}</span>`:''}</span></button>` })),
+            ].sort((a,b) => a.k.localeCompare(b.k)).map(x => x.html).join('')}
           </div>
           <div class="dadd">
             ${showEvents()?`<button class="devempty tap" data-act="addEventOn" data-d="${iso}">+ event</button>`:''}
@@ -1918,13 +1936,13 @@ const ACT = {
   /* ----- calendar ----- */
   calPrev() { calCursor = new Date(calCursor.getFullYear(), calCursor.getMonth()-1, 1); renderCalBody(); },
   calNext() { calCursor = new Date(calCursor.getFullYear(), calCursor.getMonth()+1, 1); renderCalBody(); },
-  calPick(d) { calSel = d.d; renderCalBody(); },
-  dayPrev() { const x = parseISO(calSel); x.setDate(x.getDate()-1); calSel = todayISO(x); renderCalBody(); },
-  dayNext() { const x = parseISO(calSel); x.setDate(x.getDate()+1); calSel = todayISO(x); renderCalBody(); },
-  weekPrev() { const x = parseISO(calSel); x.setDate(x.getDate()-7); calSel = todayISO(x); renderCalBody(); },
-  weekNext() { const x = parseISO(calSel); x.setDate(x.getDate()+7); calSel = todayISO(x); renderCalBody(); },
+  calPick(d) { setCalSel(d.d); renderCalBody(); },
+  dayPrev() { const x = parseISO(calSel); x.setDate(x.getDate()-1); setCalSel(todayISO(x)); renderCalBody(); },
+  dayNext() { const x = parseISO(calSel); x.setDate(x.getDate()+1); setCalSel(todayISO(x)); renderCalBody(); },
+  weekPrev() { const x = parseISO(calSel); x.setDate(x.getDate()-7); setCalSel(todayISO(x)); renderCalBody(); },
+  weekNext() { const x = parseISO(calSel); x.setDate(x.getDate()+7); setCalSel(todayISO(x)); renderCalBody(); },
   setCalFilter(d) { calFilter = d.f; renderCalendar(); },
-  calToday() { calSel = todayISO(); calCursor = new Date(); renderCalendar(); },
+  calToday() { setCalSel(todayISO()); calCursor = new Date(); renderCalendar(); },
   toggleCalEdit() { calEditing = !calEditing; renderCalendar(); },
   calEditDone() { calEditing = false; renderCalendar(); },
   // tick a habit off for a specific date from the Calendar
@@ -1943,7 +1961,7 @@ const ACT = {
     } else renderCalBody();
   },
   addEvent() { ACT.editEvent({ id: '' }); },
-  addEventOn(d) { calSel = d.d; ACT.editEvent({ id: '' }); },
+  addEventOn(d) { setCalSel(d.d); ACT.editEvent({ id: '' }); },
   editEvent(d) {
     const e = S.calendar.events.find(x => x.id === d.id) || { date: calSel, category:'Personal', recurring:false };
     sheetForm(d.id?'Edit event':'New event', 'Weekly repeats on the weekday of the date you pick.',
@@ -1967,7 +1985,7 @@ const ACT = {
     if (d.id) { ev = S.calendar.events.find(x=>x.id===d.id); Object.assign(ev, rec); }
     else { ev = { id: uid(), ...rec }; S.calendar.events.push(ev); }
     syncEventCost(ev);
-    save(); closeSheet(); if (!recurring) calSel = date; render('calendar');
+    save(); closeSheet(); if (!recurring) setCalSel(date); render('calendar');
     toast(rec.cost>0 && !recurring ? 'Saved · logged to Money' : 'Saved');
   },
   delEvent(d) {
@@ -2029,7 +2047,7 @@ const ACT = {
     const SCOPES = { 'Just this day':'day', 'This week':'week', 'This month':'month' };
     const text = val('tk_text'); if (!text) return toast('Name the task');
     const scope = SCOPES[val('tk_scope')] || 'day';
-    const date = val('tk_date') || calSel || todayISO();
+    let date = val('tk_date') || calSel || todayISO();   // may roll forward for a repeat
     const repSel = scope === 'day' ? val('tk_rep') : 'Does not repeat';
     let repeat = 'none', days = [];
     if (repSel !== 'Does not repeat') {
@@ -2046,6 +2064,14 @@ const ACT = {
     let end = scope === 'day' ? val('tk_end') : '';
     if (end && !start) end = '';
     if (start && end && end <= start) end = addMinutes(start, 60);
+    // A repeat starts from `date`, so if that day isn't one of the chosen weekdays
+    // the task would silently disappear from the day you're looking at. Roll the
+    // start forward to the first day it actually runs.
+    if (repeat === 'days' && days.length) {
+      let d0 = parseISO(date), guard = 0;
+      while (!days.includes(d0.getDay()) && guard++ < 7) d0.setDate(d0.getDate() + 1);
+      date = todayISO(d0);
+    }
     const rec = { text, scope, date, week: weekKey(parseISO(date)), month: date.slice(0,7), repeat, days, start, end };
     if (d.id) {
       const t = TASKS().find(x => x.id === d.id);
@@ -2055,9 +2081,10 @@ const ACT = {
       TASKS().push({ id: uid(), ...rec, done:false, doneDays:{} });
     }
     save(); closeSheet();
-    if (scope === 'day') calSel = date;
+    if (scope === 'day') setCalSel(date);
     render(currentTab);
-    toast(d.id ? 'Saved' : repeat === 'none' ? 'Task added' : 'Repeating task added');
+    toast(repeat === 'none' ? (d.id ? 'Saved' : 'Task added')
+      : `Repeats ${taskRepeatLabel({ repeat, days })} — next on ${fmtDay(date)}`);
   },
   toggleTask(d, el) {
     const t = TASKS().find(x => x.id === d.id); if (!t) return;
