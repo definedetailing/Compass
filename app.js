@@ -514,20 +514,37 @@ function updateWaterUI(ml, added) {
    ============================================================ */
 const roughDays = () => (S.systems.roughDays || (S.systems.roughDays = {}));
 const isRoughDay = (iso = todayISO()) => !!roughDays()[iso];
-// the minimums started life as plain strings; give them ids + per-day ticks once
+// the minimums started life as plain strings; give them ids, per-day ticks and a
+// weekday schedule once. `days` empty means every day, same convention as habits.
 function badDayItems() {
   const b = S.systems.badDay || [];
   if (b.length && typeof b[0] === 'string') {
-    S.systems.badDay = b.map(t => ({ id: uid(), text: t, doneDays: {} }));
+    S.systems.badDay = b.map(t => ({ id: uid(), text: t, days: [], doneDays: {} }));
     save(false);
   }
-  return S.systems.badDay.map(x => (x.doneDays ? x : (x.doneDays = {}, x)));
+  return S.systems.badDay.map(x => {
+    if (!x.doneDays) x.doneDays = {};
+    if (!Array.isArray(x.days)) x.days = [];
+    return x;
+  });
 }
+const badDayRunsOn = (m, iso = todayISO()) =>
+  !m.days || !m.days.length || m.days.includes(parseISO(iso).getDay());
+// what a rough day on this date actually asks of you
+const badDayFor = (iso = todayISO()) => badDayItems().filter(m => badDayRunsOn(m, iso));
 const badDayDone = (m, iso = todayISO()) => !!(m.doneDays || {})[iso];
 function roughProgress(iso = todayISO()) {
-  const items = badDayItems();
+  const items = badDayFor(iso);
   const done = items.filter(m => badDayDone(m, iso)).length;
   return { done, total: items.length, pct: items.length ? done / items.length : 0 };
+}
+// shared weekday label: [] / all seven = every day, else the short day names
+function daysLabel(days) {
+  const s = [...(days || [])].sort();
+  if (!s.length || s.length === 7) return 'Every day';
+  if (s.join() === '1,2,3,4,5') return 'Weekdays';
+  if (s.join() === '0,6') return 'Weekends';
+  return s.map(i => DOW[i]).join(' ');
 }
 
 /* ============================================================
@@ -1001,7 +1018,7 @@ function renderHome() {
     <div class="section-head"><h3>Today's briefing</h3>
       <button class="link ${rough ? 'on' : ''}" data-act="toggleRoughDay">${rough ? '✓ Rough day' : 'Rough day?'}</button></div>
     ${rough ? (() => {
-      const items = badDayItems(), p = roughProgress();
+      const items = badDayFor(), p = roughProgress();
       return `<div class="card rough-card">
         <div class="rough-lead">Just these ${items.length} today. Nothing else counts.</div>
         <div class="bar slim" style="margin-bottom:14px"><i style="width:${p.pct*100}%"></i></div>
@@ -1428,12 +1445,16 @@ function renderMoney() {
   const B = [];
   // Portfolio, holdings and goals are each short; together they fill the column
   // beside Bills instead of each leaving a gap under its heading.
-  B.push({ key:'chart', name:'Portfolio, holdings & goals', html: `
+  // Six separate sections, so each heading on the left pairs with one on the right:
+  //   Portfolio | Bills · Holdings | Budgets · Money goals | Money tracker
+  // Every pair shares a grid row, which is what makes the headings line up exactly.
+  B.push({ key:'chart', name:'Portfolio chart', grow:true, html: `
     <div class="section-head"><h3>Portfolio — last month</h3></div>
     <div class="card">
       ${hist.length>1 ? areaChart(hist, { h: 120, color: 'var(--blue-500)' }) + `<div class="chart-legend"><span class="small muted">${series ? 'Live daily closes · last month' : `Last ${hist.length} snapshots`}</span></div>` : `<div class="empty">Add a holding to see your live graph</div>`}
-    </div>`
-    + `
+    </div>` });
+
+  B.push({ key:'holdings', name:'Holdings', grow:true, html: `
     <div class="section-head"><h3>Holdings</h3><div class="pill-row"><button class="link" data-act="refreshPrices">↻ Prices</button><button class="link" data-act="addHolding">+ Add</button></div></div>
     <div class="card"><div class="list">
       ${S.money.holdings.map(h => {
@@ -1448,8 +1469,9 @@ function renderMoney() {
           <div class="right" style="min-width:86px"><div class="trail">${AUD(val,2)}</div>
             <div class="s ${dc>=0?'pos':'neg'}">${q?`${dc>=0?'+':''}${pctc.toFixed(2)}%`:'…'}</div></div>
         </div>`; }).join('') || `<div class="empty">Add stocks/ETFs (e.g. VAS.AX, VOO)</div>`}
-    </div></div>`
-    + `
+    </div></div>` });
+
+  B.push({ key:'goals', name:'Money goals', grow:true, html: `
     <div class="section-head"><h3>Money goals</h3><button class="link" data-act="addMoneyGoal">+ Goal</button></div>
     <div class="card"><div class="list">
       ${(S.money.goals||[]).map(g => { const p = clamp((g.saved||0)/(g.target||1), 0, 1);
@@ -1473,7 +1495,7 @@ function renderMoney() {
         </div>`; }).join('') || `<div class="empty">Saving for something? Add a goal (e.g. Car — $20,000)</div>`}
     </div></div>` });
 
-  B.push({ key:'budgets', name:'Budgets', html: `
+  B.push({ key:'budgets', name:'Budgets', grow:true, html: `
     <div class="section-head"><h3>Budgets — ${wk ? 'this week' : MON[new Date().getMonth()]}</h3><button class="link" data-act="addBudget">+ Budget</button></div>
     <div class="card"><div class="list">
       ${S.money.budgets.map(bd => {
@@ -1487,7 +1509,7 @@ function renderMoney() {
         </div>`; }).join('') || `<div class="empty">No budgets set</div>`}
     </div></div>` });
 
-  B.push({ key:'bills', name:'Bills', html: `
+  B.push({ key:'bills', name:'Bills', grow:true, html: `
     <div class="section-head"><h3>Bills</h3>
       <div class="pill-row">
         <div class="seg sm">
@@ -1510,7 +1532,7 @@ function renderMoney() {
       ${bills.length > BILLS_SHOWN ? `<button class="more-link" data-act="toggleBills">${billsOpen ? 'Show less' : `Show all ${bills.length} bills`}</button>` : ''}
     </div>` });
 
-  B.push({ key:'tracker', name:'Money tracker', html: `
+  B.push({ key:'tracker', name:'Money tracker', grow:true, html: `
     <div class="section-head"><h3>Money tracker</h3><div class="pill-row"><span class="chip ${bal>=0?'good':'bad'}">Balance ${AUD(bal,2)}</span><button class="link" data-act="addTxn">+ Entry</button></div></div>
     <div class="card"><div class="list">
       ${S.money.transactions.slice().reverse().slice(0,12).map(t => `
@@ -1590,10 +1612,11 @@ function renderSystems() {
         ? `Rough day on — Home shows only these. ${rp.done} of ${rp.total} done. Streaks are safe.`
         : 'The bare minimum on a hard day. Turn it on and Home clears down to just this.'}</div>
       <div class="list">
-      ${badDayItems().map(m => `
-        <div class="check ${badDayDone(m) ? 'done' : ''}">
+      ${badDayItems().slice().sort((a,b) => (badDayRunsOn(a)?0:1) - (badDayRunsOn(b)?0:1)).map(m => `
+        <div class="check ${badDayDone(m) ? 'done' : ''} ${badDayRunsOn(m) ? '' : 'offday'}">
           <span class="box tap" data-act="toggleBadDay" data-id="${m.id}">${TICK}</span>
-          <span class="txt tap" data-act="editBadDay" data-id="${m.id}">${esc(m.text)}</span>
+          <span class="txt tap" data-act="editBadDay" data-id="${m.id}">${esc(m.text)}
+            <span class="s muted">${esc(daysLabel(m.days))}${badDayRunsOn(m) ? '' : ' · not today'}</span></span>
           <button class="del" data-act="delBadDay" data-id="${m.id}">✕</button>
         </div>`).join('') || `<div class="empty">Add a minimum</div>`}
     </div></div>` });
@@ -2104,18 +2127,37 @@ const ACT = {
   /* ----- systems: bad day / rough-day mode ----- */
   addBadDay() { ACT.editBadDay({ id:'' }); },
   editBadDay(d) {
-    const m = badDayItems().find(x => x.id === d.id) || { text:'' };
+    const m = badDayItems().find(x => x.id === d.id) || { text:'', days:[] };
+    const on = m.days && m.days.length ? m.days : [0,1,2,3,4,5,6];
     sheetForm(d.id ? 'Edit minimum' : 'Bad-day minimum',
-      'The bare minimum on a hard day — keep it genuinely small.',
-      field('Minimum','bad_text',{ val:m.text, ph:'e.g. Drink water' }),
+      'The bare minimum on a hard day — keep it genuinely small. Pick which days it applies to; a rough Tuesday can ask for different things than a rough Sunday.',
+      field('Minimum','bad_text',{ val:m.text, ph:'e.g. Drink water' }) +
+      `<label class="field"><span>Applies on</span>
+        <div class="daypick" id="bad_days">
+          ${DOW.map((n,i)=>`<button type="button" class="dp ${on.includes(i)?'on':''}" data-act="toggleBadDayDay" data-i="${i}">${n[0]}</button>`).join('')}
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button type="button" class="btn sm ghost" data-act="badDaysPreset" data-p="all">Every day</button>
+          <button type="button" class="btn sm ghost" data-act="badDaysPreset" data-p="weekdays">Weekdays</button>
+          <button type="button" class="btn sm ghost" data-act="badDaysPreset" data-p="weekends">Weekends</button>
+        </div>
+      </label>`,
       { save:'saveBadDay', id:d.id, del: d.id ? 'delBadDay' : '' });
+  },
+  toggleBadDayDay(d, el) { el.classList.toggle('on'); },
+  badDaysPreset(d) {
+    const want = d.p==='weekdays' ? [1,2,3,4,5] : d.p==='weekends' ? [0,6] : [0,1,2,3,4,5,6];
+    $$('#bad_days .dp').forEach((b,i)=>b.classList.toggle('on', want.includes(i)));
   },
   saveBadDay(d) {
     const t = val('bad_text'); if (!t) return toast('Type something');
+    let days = $$('#bad_days .dp').map((b,i)=>b.classList.contains('on')?i:-1).filter(i=>i>=0);
+    if (!days.length) return toast('Pick at least one day');
+    if (days.length === 7) days = [];                       // all seven = every day
     const items = badDayItems();
-    if (d.id) items.find(x => x.id === d.id).text = t;
-    else items.push({ id: uid(), text: t, doneDays: {} });
-    save(); closeSheet(); renderSystems();
+    if (d.id) Object.assign(items.find(x => x.id === d.id), { text: t, days });
+    else items.push({ id: uid(), text: t, days, doneDays: {} });
+    save(); closeSheet(); render(currentTab);
   },
   delBadDay(d) {
     S.systems.badDay = badDayItems().filter(x => x.id !== d.id);
