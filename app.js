@@ -944,6 +944,81 @@ const habitsOnDate = (iso) => (S.systems.habits || [])
   .filter(h => habitRunsOn(h, parseISO(iso)))
   .sort((a, b) => (a.time||'').localeCompare(b.time||''));
 const habitDoneOn = (h, iso) => !!(h.doneDays && h.doneDays[iso]);
+let calEditing = false;   // Calendar "Edit" mode: manage what's in view, grouped by kind
+// every date in the period currently on screen
+function calRangeDays() {
+  if (calView === 'day') return [calSel];
+  if (calView === 'week') {
+    const base = parseISO(calSel), sun = new Date(base);
+    sun.setDate(base.getDate() - base.getDay());
+    return [...Array(7)].map((_, i) => { const d = new Date(sun); d.setDate(sun.getDate() + i); return todayISO(d); });
+  }
+  const y = calCursor.getFullYear(), m = calCursor.getMonth();
+  return [...Array(new Date(y, m + 1, 0).getDate())].map((_, i) => todayISO(new Date(y, m, i + 1)));
+}
+function calRangeLabel() {
+  if (calView === 'day') return fmtDay(calSel);
+  if (calView === 'month') return `${MON[calCursor.getMonth()]} ${calCursor.getFullYear()}`;
+  const d = calRangeDays();
+  const a = parseISO(d[0]), b = parseISO(d[6]);
+  return `${a.getDate()} ${MON[a.getMonth()].slice(0,3)} – ${b.getDate()} ${MON[b.getMonth()].slice(0,3)}`;
+}
+// unique by id, keeping first occurrence (a recurring event spans several days)
+const uniqById = (arr) => { const seen = new Set(); return arr.filter(x => !seen.has(x.id) && seen.add(x.id)); };
+
+// The Edit panel: everything in the period on screen, split into its three kinds.
+function calEditPanel() {
+  const days = calRangeDays();
+  const evs = uniqById(days.flatMap(eventsForDate))
+    .sort((a,b) => (a.date||'').localeCompare(b.date||'') || (a.start||'').localeCompare(b.start||''));
+  const dayTasks = uniqById(days.flatMap(tasksForDate));
+  const wkTasks  = uniqById(days.map(d => weekKey(parseISO(d))).filter((v,i,a)=>a.indexOf(v)===i).flatMap(tasksForWeek));
+  const moTasks  = uniqById(days.map(d => d.slice(0,7)).filter((v,i,a)=>a.indexOf(v)===i).flatMap(tasksForMonth));
+  const tks = [...dayTasks.sort((a,b)=> (a.date||'').localeCompare(b.date||'') || bySlot(a,b)), ...wkTasks, ...moTasks];
+  const hbs = uniqById(days.flatMap(habitsOnDate));
+
+  const section = (title, count, addBtn, rowsHtml, empty) => `
+    <div class="section-head"><h3>${title} <span class="muted small">${count}</span></h3>${addBtn}</div>
+    <div class="card"><div class="list">${rowsHtml || `<div class="empty">${empty}</div>`}</div></div>`;
+
+  return `
+    <div class="edit-bar">
+      <span>Editing <b>${esc(calRangeLabel())}</b></span>
+      <button class="btn sm primary" data-act="calEditDone" style="width:auto">Done</button>
+    </div>
+
+    ${showEvents() ? section('Events', evs.length,
+      `<button class="link" data-act="addEventOn" data-d="${calSel}">+ Event</button>`,
+      evs.map(e => `
+        <div class="item tap" data-act="editEvent" data-id="${e.id}" style="border-left:4px solid ${catColor(e.category)}">
+          <div class="body"><div class="t">${esc(e.title)}${e.recurring?' <span class="chip" style="padding:1px 7px;font-size:10px">weekly</span>':''}${e.source==='email'?' <span class="chip src">✉︎</span>':''}</div>
+            <div class="s">${[e.recurring?`Every ${DOW[e.weekday]}`:fmtDay(e.date||calSel), evTime(e), e.category].filter(Boolean).map(esc).join(' · ')}</div></div>
+          <button class="del" data-act="delEvent" data-id="${e.id}">✕</button>
+        </div>`).join(''), 'No events in this period') : ''}
+
+    ${showTasks() ? section('Tasks', tks.length,
+      `<button class="link" data-act="addTask" data-scope="day" data-d="${calSel}">+ Task</button>`,
+      tks.map(t => `
+        <div class="item tap" data-act="editTask" data-id="${t.id}" style="border-left:4px dashed var(--amber)">
+          <div class="body"><div class="t">${esc(t.text)}</div>
+            <div class="s">${[
+              t.scope==='day' ? fmtDay(t.date) : t.scope==='week' ? 'This week' : 'This month',
+              taskSlot(t), taskRepeatLabel(t) ? '↻ '+taskRepeatLabel(t) : ''
+            ].filter(Boolean).map(esc).join(' · ')}</div></div>
+          <button class="del" data-act="delTask" data-id="${t.id}">✕</button>
+        </div>`).join(''), 'No tasks in this period') : ''}
+
+    ${showHabits() ? section('Habits', hbs.length,
+      `<button class="link" data-act="addHabit">+ Habit</button>`,
+      hbs.map(h => `
+        <div class="item tap" data-act="editHabit" data-id="${h.id}" style="border-left:4px dashed var(--blue-300)">
+          <div class="body"><div class="t">${esc(h.text)}</div>
+            <div class="s">${[habitDaysLabel(h), h.time].filter(Boolean).map(esc).join(' · ')}</div></div>
+          ${habitStreak(h)>1?`<span class="chip good nowrap">🔥 ${habitStreak(h)}</span>`:''}
+          <button class="del" data-act="delHabit" data-id="${h.id}">✕</button>
+        </div>`).join(''), 'No habits in this period') : ''}`;
+}
+
 // is the calendar already looking at today? (drives whether "Today" is offered)
 function atToday() {
   const t = todayISO();
@@ -1182,13 +1257,16 @@ function renderCalendar() {
       <div class="seg" id="calSeg">
         ${['day','week','month'].map(k => `<button data-cal="${k}" class="${calView===k?'on':''}">${k[0].toUpperCase()+k.slice(1)}</button>`).join('')}
       </div>
-      <button class="link" data-act="calToday" ${atToday() ? 'hidden' : ''}>Today</button>
+      <span style="display:inline-flex;gap:12px;align-items:center">
+        <button class="link" data-act="calToday" ${atToday() ? 'hidden' : ''}>Today</button>
+        <button class="link ${calEditing?'on':''}" data-act="toggleCalEdit">${calEditing ? 'Done' : 'Edit'}</button>
+      </span>
     </div>
-    <div class="add-row">
+    ${calEditing ? '' : `<div class="add-row">
       <button class="btn sm" data-act="addEventOn" data-d="${calSel}">+ Event</button>
       <button class="btn sm" data-act="addTask" data-scope="day" data-d="${calSel}">+ Task</button>
       <button class="btn sm" data-act="addHabit">+ Habit</button>
-    </div>
+    </div>`}
     <div class="seg full" style="margin-top:10px">
       ${Object.entries(CAL_FILTERS).map(([k,label]) =>
         `<button data-act="setCalFilter" data-f="${k}" class="${calFilter===k?'on':''}">${label}</button>`).join('')}
@@ -1201,7 +1279,8 @@ function renderCalendar() {
 }
 function renderCalBody() {
   const b = $('#calBody');
-  if (calView === 'month') b.innerHTML = calMonth();
+  if (calEditing) b.innerHTML = calEditPanel();
+  else if (calView === 'month') b.innerHTML = calMonth();
   else if (calView === 'week') b.innerHTML = calWeek();
   else b.innerHTML = calDay();
 }
@@ -1846,6 +1925,8 @@ const ACT = {
   weekNext() { const x = parseISO(calSel); x.setDate(x.getDate()+7); calSel = todayISO(x); renderCalBody(); },
   setCalFilter(d) { calFilter = d.f; renderCalendar(); },
   calToday() { calSel = todayISO(); calCursor = new Date(); renderCalendar(); },
+  toggleCalEdit() { calEditing = !calEditing; renderCalendar(); },
+  calEditDone() { calEditing = false; renderCalendar(); },
   // tick a habit off for a specific date from the Calendar
   calToggleHabit(d, el) {
     const h = (S.systems.habits||[]).find(x => x.id === d.id); if (!h) return;
@@ -2421,7 +2502,7 @@ const ACT = {
     if (!S.systems.habits) S.systems.habits = [];
     if (d.id) Object.assign(S.systems.habits.find(x=>x.id===d.id), { text, time, days });
     else S.systems.habits.push({ id: uid(), text, time, days, doneDays: {} });
-    save(); closeSheet(); renderSystems();
+    save(); closeSheet(); render(currentTab);   // habits are added from Systems and Calendar
     // make sure reminders can actually fire
     if ('Notification' in window && Notification.permission === 'default') {
       const p = await Notification.requestPermission();
@@ -2429,7 +2510,9 @@ const ACT = {
     }
     toast(S.settings.notify || Notification.permission === 'granted' ? 'Habit saved — reminder set' : 'Saved (enable notifications in Settings for alerts)');
   },
-  delHabit(d) { S.systems.habits = (S.systems.habits||[]).filter(x=>x.id!==d.id); save(); closeSheet(); renderSystems(); },
+  // habits are editable from Systems and from the Calendar's Edit panel, so
+  // re-render whichever tab is actually on screen
+  delHabit(d) { S.systems.habits = (S.systems.habits||[]).filter(x=>x.id!==d.id); save(); closeSheet(); render(currentTab); },
   /* ----- habit week grid ----- */
   habitWeekPrev() { habitWeekOffset--; renderSystems(); },
   habitWeekNext() { if (habitWeekOffset < 0) habitWeekOffset++; renderSystems(); },

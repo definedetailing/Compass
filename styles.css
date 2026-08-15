@@ -809,6 +809,15 @@ label.field > span { display: block; font-size: 12.5px; font-weight: 600; color:
 .cal-cell .evs i.hb { background: transparent; border: 1.5px solid var(--blue-400); width: 6px; height: 6px; }
 .cal-cell .evs i.hb.off { opacity: .35; }
 
+/* Calendar edit mode */
+.edit-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin: 12px 0 4px; padding: 10px 12px; border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--primary) 26%, transparent);
+  font-size: 13px; color: var(--text-2); }
+.edit-bar b { color: var(--text); }
+.section-head .link.on { color: var(--primary); font-weight: 750; }
+
 /* one tap to add any of the three, always visible */
 .add-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 10px 0 2px; }
 .add-row .btn { width: 100%; }
