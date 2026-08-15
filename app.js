@@ -54,14 +54,34 @@ function eventsForDate(iso) {
 }
 const evTime = e => { const s = e.start || e.time || '', en = e.end || ''; return s ? (en ? `${s}–${en}` : s) : ''; };
 // keep a one-off event's cost mirrored as a linked expense in the Money tab
+// How long an event runs. Needs both ends — a start with no finish has no
+// duration we can honestly claim, so it counts as zero and gets flagged.
+function eventHours(e) {
+  const s = hhmmToMin(e.start || e.time), en = hhmmToMin(e.end);
+  if (s === null || en === null) return 0;
+  return ((en - s + 1440) % 1440) / 60;      // wraps past midnight
+}
+// A Work event pays either a flat amount, or its hourly rate × hours.
+// The flat amount wins when both are set — it's the one you actually got.
+function eventPay(e) {
+  if (e.category !== 'Work') return 0;
+  const flat = num(e.earned);
+  if (flat > 0) return flat;
+  return num(e.rate) * eventHours(e);
+}
 function syncEventCost(ev) {
   const idx = S.money.transactions.findIndex(t => t.eventId === ev.id);
-  if (!ev.recurring && ev.cost > 0) {
+  const pay = eventPay(ev);
+  const spend = num(ev.cost);
+  // one linked transaction per event: earnings in, costs out
+  const amount = pay > 0 ? pay : spend;
+  const dir = pay > 0 ? 'in' : 'out';
+  if (!ev.recurring && amount > 0) {
     const txn = { id: idx >= 0 ? S.money.transactions[idx].id : uid(), eventId: ev.id,
-      desc: ev.title, amount: ev.cost, category: ev.category, date: ev.date || todayISO(), dir: 'out' };
+      desc: ev.title, amount, category: ev.category, date: ev.date || todayISO(), dir };
     if (idx >= 0) S.money.transactions[idx] = txn; else S.money.transactions.push(txn);
   } else if (idx >= 0) {
-    S.money.transactions.splice(idx, 1);   // recurring or cost cleared → drop the linked expense
+    S.money.transactions.splice(idx, 1);   // recurring, or cleared → drop the linked entry
   }
 }
 
@@ -464,7 +484,13 @@ async function stravaImport(full = false) {
    Sleep
    ============================================================ */
 const sleepGoal = () => num(S.health.sleepGoal, 8) || 8;
-const hhmmToMin = hm => { const [h, m] = String(hm || '').split(':').map(Number); return isNaN(h) ? null : h * 60 + (m || 0); };
+// Must be a real HH:MM. The old split/Number version returned 0 for '' — Number('')
+// is 0, not NaN — so a missing end time read as midnight and an 08:00 start with no
+// end came out as a 16-hour shift.
+const hhmmToMin = hm => {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hm == null ? '' : hm).trim());
+  return m ? (+m[1]) * 60 + (+m[2]) : null;
+};
 const minToHHMM = t => `${String(Math.floor(((t % 1440) + 1440) % 1440 / 60)).padStart(2,'0')}:${String(Math.round(t) % 60).padStart(2,'0')}`;
 // hours between bed and wake, wrapping past midnight (22:30 → 06:30 = 8h)
 function sleepHoursFrom(bed, wake) {
@@ -1032,6 +1058,43 @@ function calEditPanel() {
         </div>`).join(''), 'No habits in this period') : ''}`;
 }
 
+/* ---------- Calendar totals for the period on screen ----------
+   Counted per occurrence, not per event: a weekly event that falls three times
+   in the range is three sessions, so these are NOT de-duplicated by id. */
+function calSummary() {
+  const days = calRangeDays();
+  const occ = days.flatMap(eventsForDate);
+  let worked = 0, school = 0, business = 0, workouts = 0, earned = 0, noEnd = 0;
+  occ.forEach(e => {
+    const h = eventHours(e);
+    if ((e.start || e.time) && !e.end && e.category !== 'Gym') noEnd++;
+    if (e.category === 'Work')   { worked += h; earned += eventPay(e); }
+    else if (e.category === 'Gym') workouts++;
+    else if (e.category === 'School') school += h;
+    else if (e.category === 'Study') {
+      if (e.studyFor === 'Business') business += h; else school += h;
+    }
+  });
+  return { worked, school, business, workouts, earned, noEnd, label: calRangeLabel() };
+}
+const hrs = n => n >= 10 ? Math.round(n) : +n.toFixed(1);
+function calSummaryCard() {
+  const s = calSummary();
+  const nothing = !s.worked && !s.school && !s.business && !s.workouts && !s.earned;
+  return `<div class="section-head"><h3>${esc(s.label)}</h3>
+      ${s.noEnd ? `<span class="small muted">${s.noEnd} without an end time</span>` : ''}</div>
+    <div class="card">
+      ${nothing ? `<div class="empty">Nothing logged in this period yet. Add events with a start and end time and the totals fill in.</div>` : `
+      <div class="stats-row sum-row">
+        <div class="stat"><div class="k">💼 Worked</div><div class="v">${hrs(s.worked)}<small> hrs</small></div></div>
+        <div class="stat"><div class="k">🎓 School</div><div class="v">${hrs(s.school)}<small> hrs</small></div></div>
+        <div class="stat"><div class="k">📈 Business</div><div class="v">${hrs(s.business)}<small> hrs</small></div></div>
+        <div class="stat"><div class="k">🏋️ Workouts</div><div class="v">${s.workouts}</div></div>
+        <div class="stat"><div class="k">💰 Earned</div><div class="v ${s.earned?'pos':''}">${AUD(s.earned, 0)}</div></div>
+      </div>`}
+    </div>`;
+}
+
 // is the calendar already looking at today? (drives whether "Today" is offered)
 function atToday() {
   const t = todayISO();
@@ -1330,11 +1393,11 @@ function calMonth() {
         }).join('')}
       </div>
     </div>
-    ${showTasks() ? tasksCard('month', `${y}-${String(m+1).padStart(2,'0')}`, "What's the plan for the month?") : ''}
     <div class="section-head"><h3>${fmtDay(calSel)}</h3></div>
     ${showEvents() ? dayList(selEvents) : ''}
     ${showHabits() ? habitsCard(calSel) : ''}
-    ${showTasks() ? tasksCard('day', calSel, 'No tasks on this day') : ''}`;
+    ${showTasks() ? tasksCard('day', calSel, 'No tasks on this day') : ''}
+    ${calSummaryCard()}`;
 }
 function calWeek() {
   const base = parseISO(calSel);
@@ -1378,7 +1441,7 @@ function calWeek() {
         </div>`; }).join('')}
     </div>
   </div>
-  ${tasksCard('week', weekKey(base), 'What has to happen this week?')}`;
+  ${calSummaryCard()}`;
 }
 function calDay() {
   const evs = eventsForDate(calSel);
@@ -1392,7 +1455,8 @@ function calDay() {
     </div>
     ${showEvents() ? `<div class="section-head"><h3>Events</h3></div>${dayList(evs)}` : ''}
     ${showHabits() ? habitsCard(calSel) : ''}
-    ${showTasks() ? tasksCard('day', calSel, 'Nothing to tick off — add a task') : ''}`;
+    ${showTasks() ? tasksCard('day', calSel, 'Nothing to tick off — add a task') : ''}
+    ${calSummaryCard()}`;
 }
 // habits due on a date, tickable straight from the Calendar
 function habitsCard(iso) {
@@ -1970,23 +2034,61 @@ const ACT = {
       field('Repeat','ev_rep',{type:'select',val:e.recurring?'Every week':'Does not repeat',options:['Does not repeat','Every week']}) +
       field('Date','ev_date',{type:'date',val:e.date||calSel}) +
       `<div class="row">${field('Start','ev_start',{type:'time',val:e.start||e.time||''})}${field('End','ev_end',{type:'time',val:e.end||''})}</div>` +
+      // Work: pay by the hour, or just say what you took home when the rate isn't clean
+      `<div id="ev_paywrap" hidden>
+        <div class="pay-note">Paid by the hour? Put the rate in. If the rate isn't clear, just enter what you earned — that wins.</div>
+        <div class="row">${field('Rate ($/hr)','ev_rate',{type:'number',step:'any',val:e.rate||'',inputmode:'decimal'})}${field('Or earned ($)','ev_earned',{type:'number',step:'any',val:e.earned||'',inputmode:'decimal'})}</div>
+        <div class="pay-note" id="ev_payprev"></div>
+      </div>` +
+      // Study: which pot the hours land in
+      `<div id="ev_studywrap" hidden>
+        ${field('Studying for','ev_studyfor',{type:'select',val:e.studyFor||'School',options:['School','Business']})}
+      </div>` +
       field('Cost (optional)','ev_cost',{type:'number',step:'any',val:e.cost||'',inputmode:'decimal'}) +
       field('Notes','ev_notes',{type:'textarea',val:e.notes,ph:'Optional'}),
       { save:'saveEvent', id:d.id, del:d.id?'delEvent':'' });
+    // pay fields only for Work, study split only for Study
+    const syncCat = () => {
+      const cat = val('ev_cat');
+      $('#ev_paywrap').hidden = cat !== 'Work';
+      $('#ev_studywrap').hidden = cat !== 'Study';
+      previewPay();
+    };
+    const previewPay = () => {
+      const el = $('#ev_payprev'); if (!el || $('#ev_paywrap').hidden) return;
+      const h = eventHours({ start: val('ev_start'), end: val('ev_end') });
+      const flat = num(val('ev_earned')), rate = num(val('ev_rate'));
+      el.textContent = flat > 0 ? `Counts as ${AUD(flat)}`
+        : rate > 0 ? (h ? `${hrs(h)} hrs × ${AUD(rate)} = ${AUD(rate * h)}` : 'Add an end time to work out the hours')
+        : '';
+    };
+    ['ev_cat'].forEach(id => $('#' + id).addEventListener('change', syncCat));
+    ['ev_start','ev_end','ev_rate','ev_earned'].forEach(id => {
+      $('#' + id).addEventListener('input', previewPay);
+      $('#' + id).addEventListener('change', previewPay);
+    });
+    syncCat();
   },
   saveEvent(d) {
     const title = val('ev_title'); if (!title) return toast('Add a title');
     const recurring = val('ev_rep') === 'Every week';
     const date = val('ev_date') || calSel;
-    const rec = { title, category: val('ev_cat')||'Personal', recurring,
+    const category = val('ev_cat') || 'Personal';
+    const rec = { title, category, recurring,
       date: recurring ? null : date, weekday: parseISO(date).getDay(),
-      start: val('ev_start'), end: val('ev_end'), cost: num(val('ev_cost')), notes: val('ev_notes') };
+      start: val('ev_start'), end: val('ev_end'), cost: num(val('ev_cost')), notes: val('ev_notes'),
+      rate:    category === 'Work'  ? num(val('ev_rate'))   : 0,
+      earned:  category === 'Work'  ? num(val('ev_earned')) : 0,
+      studyFor: category === 'Study' ? (val('ev_studyfor') || 'School') : '' };
     let ev;
     if (d.id) { ev = S.calendar.events.find(x=>x.id===d.id); Object.assign(ev, rec); }
     else { ev = { id: uid(), ...rec }; S.calendar.events.push(ev); }
     syncEventCost(ev);
     save(); closeSheet(); if (!recurring) setCalSel(date); render('calendar');
-    toast(rec.cost>0 && !recurring ? 'Saved · logged to Money' : 'Saved');
+    const pay = eventPay(rec);
+    toast(recurring ? 'Saved'
+      : pay > 0 ? `Saved · ${AUD(pay)} logged to Money`
+      : rec.cost > 0 ? 'Saved · logged to Money' : 'Saved');
   },
   delEvent(d) {
     S.calendar.events = S.calendar.events.filter(x=>x.id!==d.id);
