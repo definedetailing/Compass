@@ -617,6 +617,48 @@ label.field > span { display: block; font-size: 12.5px; font-weight: 600; color:
 .brief-row .bt b { color: var(--text); font-weight: 700; }
 .brief-row:active { opacity: .6; }
 
+/* ---------- Habit week grid ---------- */
+.hg-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.hg-range { font-size: 13px; font-weight: 700; white-space: nowrap; }
+.hg-head .seg.sm { height: 30px; }
+.hg-head .seg.sm button { font-size: 11.5px; padding: 0 10px; }
+.iconbtn.sm { width: 26px; height: 26px; border-radius: 8px; font-size: 15px; line-height: 1; }
+
+/* one name column + one column per day; scrolls sideways if it ever gets tight */
+.hg-scroll { overflow-x: auto; margin: 0 -2px; }
+.hg { display: grid; grid-template-columns: minmax(104px, 1.4fr) repeat(var(--cols, 7), minmax(30px, 1fr));
+  gap: 4px; min-width: 300px; }
+.hg-cell { display: grid; place-items: center; min-width: 0; }
+.hg-day { padding: 2px 0 6px; line-height: 1.1; }
+.hg-day .dn { display: block; font-size: 10px; font-weight: 700; color: var(--text-3); text-transform: uppercase; }
+.hg-day .dd { display: block; font-size: 12.5px; font-weight: 700; margin-top: 2px; }
+.hg-day.today .dn, .hg-day.today .dd { color: var(--primary); }
+.hg-name { justify-items: start; text-align: left; padding-right: 8px; overflow: hidden; }
+.hg-name .n { font-size: 12.5px; font-weight: 650; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; max-width: 100%; }
+.hg-name .t { font-size: 10.5px; color: var(--text-3); }
+
+.hg-box { aspect-ratio: 1; width: 100%; border-radius: 8px; border: 1.5px solid var(--border);
+  background: var(--surface-2); color: #fff; padding: 0; display: grid; place-items: center;
+  transition: background .16s, border-color .16s, transform .16s; }
+.hg-box svg { width: 13px; height: 13px; }
+.hg-box.off { border-style: dashed; opacity: .4; background: transparent; }
+.hg-box.due { border-color: var(--blue-300); }
+.hg-box.done { background: var(--primary); border-color: var(--primary); }
+.hg-box.future { opacity: .55; }
+.hg-box.today { box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 35%, transparent); }
+.hg-box:active { transform: scale(.9); }
+
+/* on a phone, tighten the name column and squares so all seven days fit without
+   sideways scrolling — a week you have to scroll isn't a week you can read */
+@media (max-width: 520px) {
+  .hg { grid-template-columns: minmax(62px, 1fr) repeat(var(--cols, 7), minmax(26px, 1fr)); gap: 3px; }
+  .hg-name .n { font-size: 11.5px; }
+  .hg-name .t { font-size: 9.5px; }
+  .hg-box { border-radius: 7px; }
+  .hg-box svg { width: 11px; height: 11px; }
+}
+
 /* ---------- Auto-imported from email ---------- */
 .import-strip { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--border); }
 .import-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px;

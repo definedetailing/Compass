@@ -922,6 +922,8 @@ let briefOpen = false;   // Morning brief card collapsed by default
 let billsOpen = false;   // Bills list clipped so it doesn't tower over its column
 const BILLS_SHOWN = 6;
 const PB_WINDOW = 5;     // PBs visible before the list starts scrolling
+let habitWeekOffset = 0;      // 0 = this week, -1 = last week, …
+let habitGridMode = 'track';  // 'track' ticks days off · 'plan' edits which weekdays a habit runs
 let sleepRange = 'week'; // sleep stats window: 'week' | 'month' | 'all'
 const SLEEP_RANGES = { week: { label: 'Week', nights: 7 }, month: { label: 'Month', nights: 30 }, all: { label: 'All time', nights: Infinity } };
 let arranging = false;   // section-reorder mode
@@ -1594,8 +1596,49 @@ function renderSystems() {
     return (a.time||'').localeCompare(b.time||'');
   });
   const hLeft = hSorted.filter(h => habitRunsOn(h) && !(h.doneDays && h.doneDays[iso])).length;
+
+  // Weekly grid: habits down the side, the week across the top. Track mode ticks a
+  // day off; Plan mode adds/removes that weekday from the habit's schedule, so the
+  // week can be laid out visually instead of through the edit sheet.
+  const wkDays = habitWeekDays();
+  const planning = habitGridMode === 'plan';
+  const gridRows = hSorted.slice().sort((a,b) => (a.time||'').localeCompare(b.time||''));
+  const habitGrid = `
+    <div class="hg-head">
+      <button class="iconbtn sm" data-act="habitWeekPrev">‹</button>
+      <span class="hg-range">${habitWeekLabel()}</span>
+      <button class="iconbtn sm" data-act="habitWeekNext">›</button>
+      <span style="flex:1"></span>
+      <div class="seg sm">
+        <button data-act="setHabitGridMode" data-m="track" class="${planning?'':'on'}">Track</button>
+        <button data-act="setHabitGridMode" data-m="plan" class="${planning?'on':''}">Plan</button>
+      </div>
+    </div>
+    <div class="hg-scroll"><div class="hg" style="--cols:${wkDays.length}">
+      <div class="hg-cell hg-corner"></div>
+      ${wkDays.map(d => `<div class="hg-cell hg-day ${d.iso===iso?'today':''}">
+        <span class="dn">${DOW[d.dow][0]}</span><span class="dd">${d.day}</span></div>`).join('')}
+      ${gridRows.map(h => `
+        <div class="hg-cell hg-name tap" data-act="editHabit" data-id="${h.id}">
+          <span class="n">${esc(h.text)}</span>
+          ${h.time?`<span class="t">${esc(h.time)}</span>`:''}
+        </div>
+        ${wkDays.map(d => {
+          const due = habitRunsOn(h, parseISO(d.iso));
+          const done = !!(h.doneDays && h.doneDays[d.iso]);
+          const future = d.iso > iso;
+          const cls = [due?'due':'off', done?'done':'', future?'future':'', d.iso===iso?'today':''].filter(Boolean).join(' ');
+          return `<button class="hg-cell hg-box ${cls}" data-act="habitCell" data-id="${h.id}" data-d="${d.iso}" data-dow="${d.dow}"
+            title="${esc(h.text)} · ${fmtDay(d.iso)}">${done?TICK:''}</button>`;
+        }).join('')}`).join('')}
+    </div></div>
+    <div class="small muted" style="margin-top:10px">${planning
+      ? 'Tap any square to add or remove that weekday from the habit.'
+      : 'Tap a square to tick that day off. Switch to Plan to change which days a habit runs.'}</div>`;
+
   B.push({ key:'habits', name:'Habit reminders', html: `
     <div class="section-head"><h3>Habit reminders</h3><button class="link" data-act="addHabit">+ Habit</button></div>
+    ${gridRows.length ? `<div class="card">${habitGrid}</div>` : ''}
     <div class="card"><div class="small muted" style="margin-bottom:10px">${hSorted.length ? (hLeft ? `${hLeft} left today` : 'All done today 🎉') : "Habits with a time — you'll get a reminder."}</div><div class="list habit-list">
       ${hSorted.map(h => `
         <div class="check habit ${h.doneDays && h.doneDays[iso] ? 'done' : ''} ${habitRunsOn(h)?'':'offday'}" data-habit="${h.id}">
@@ -2278,6 +2321,32 @@ const ACT = {
     toast(S.settings.notify || Notification.permission === 'granted' ? 'Habit saved — reminder set' : 'Saved (enable notifications in Settings for alerts)');
   },
   delHabit(d) { S.systems.habits = (S.systems.habits||[]).filter(x=>x.id!==d.id); save(); closeSheet(); renderSystems(); },
+  /* ----- habit week grid ----- */
+  habitWeekPrev() { habitWeekOffset--; renderSystems(); },
+  habitWeekNext() { if (habitWeekOffset < 0) habitWeekOffset++; renderSystems(); },
+  setHabitGridMode(d) { habitGridMode = d.m; renderSystems(); },
+  habitCell(d, el) {
+    const h = (S.systems.habits||[]).find(x => x.id === d.id); if (!h) return;
+    const dow = num(d.dow);
+    if (habitGridMode === 'plan') {
+      // empty days[] means "every day"; expand it before removing one, otherwise
+      // dropping a day from an everyday habit would silently do nothing
+      let days = (h.days && h.days.length) ? h.days.slice() : [0,1,2,3,4,5,6];
+      days = days.includes(dow) ? days.filter(x => x !== dow) : days.concat(dow).sort();
+      if (!days.length) return toast('A habit needs at least one day');
+      h.days = days.length === 7 ? [] : days;
+      save(); renderSystems();
+      return;
+    }
+    if (d.d > todayISO()) return toast("Can't tick off a day that hasn't happened");
+    if (!habitRunsOn(h, parseISO(d.d))) return toast(`${h.text} isn't scheduled that day — switch to Plan to add it`);
+    if (!h.doneDays) h.doneDays = {};
+    const nowDone = !h.doneDays[d.d];
+    h.doneDays[d.d] = nowDone;
+    save();
+    if (nowDone && el) { el.classList.add('done','ticking'); if (navigator.vibrate) navigator.vibrate(10); }
+    setTimeout(() => renderSystems(), nowDone ? 260 : 0);
+  },
   toggleHabit(d) {
     const h = (S.systems.habits||[]).find(x=>x.id===d.id); if (!h) return;
     if (!h.doneDays) h.doneDays = {};
@@ -2366,6 +2435,24 @@ function habitDaysLabel(h) {
   if (s.join() === '0,6') return 'Weekends';
   return s.map(i => DOW[i]).join(' ');
 }
+// the Sun–Sat week the habit grid is showing, as [{iso, dow, day}]
+function habitWeekDays() {
+  const base = new Date();
+  base.setDate(base.getDate() + habitWeekOffset * 7);
+  const sun = new Date(base); sun.setDate(base.getDate() - base.getDay());
+  return [...Array(7)].map((_, i) => {
+    const d = new Date(sun); d.setDate(sun.getDate() + i);
+    return { iso: todayISO(d), dow: d.getDay(), day: d.getDate() };
+  });
+}
+function habitWeekLabel() {
+  if (habitWeekOffset === 0) return 'This week';
+  if (habitWeekOffset === -1) return 'Last week';
+  const d = habitWeekDays();
+  const a = parseISO(d[0].iso), b = parseISO(d[6].iso);
+  return `${a.getDate()} ${MON[a.getMonth()].slice(0,3)} – ${b.getDate()} ${MON[b.getMonth()].slice(0,3)}`;
+}
+
 // consecutive SCHEDULED days completed, counting back from today
 // (skips days the habit wasn't due, so a Tuesday-only run keeps its streak all week)
 function habitStreak(h) {
