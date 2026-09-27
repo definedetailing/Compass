@@ -3239,7 +3239,7 @@ const ACT = {
     mealEditorSheet();
   },
   healthJump(d) {
-    const el = $(`#view-health [data-sec="${d.sec}"]`); if (!el) return;
+    const el = $(`#view-health .sec[data-sec="${d.sec}"]`); if (!el) return;   // the section, not the strip button (which carries the same data-sec)
     window.scrollTo({ top: el.getBoundingClientRect().top + scrollY - 70, behavior: 'smooth' });
   },
   pickFoodMeal(d, el) { foodMeal = d.m; $$('button', el.parentElement).forEach(b => b.classList.toggle('on', b === el)); },
