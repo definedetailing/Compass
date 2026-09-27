@@ -2137,7 +2137,7 @@ function renderHealth() {
       ${tile('food', '💪', Math.round(td.p) + 'g', fg.protein ? `of ${fg.protein}g` : 'protein', fg.protein && td.p >= fg.protein ? 'pos' : '')}
       ${tile('foodStats', '💸', AUD(td.cost, td.cost >= 100 ? 0 : 2), fg.budget ? `of ${AUD(fg.budget, 0)}` : 'food', fg.budget && td.cost > fg.budget ? 'neg' : '')}
       ${tile('water', '💧', (water / 1000).toFixed(1) + 'L', `${Math.round(wp * 100)}%`)}
-      ${tile('sleep', '😴', lastN ? lastN.hours.toFixed(1) + 'h' : '—', lastN && lastN.date === iso ? 'last night' : 'sleep')}
+      ${tile('sleep', '😴', lastN ? lastN.hours.toFixed(1) + 'h' : '—', lastN && lastN.date === iso ? 'slept' : 'sleep')}
     </div>`;
 
   $('#view-health').innerHTML =
