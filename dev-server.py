@@ -4,6 +4,7 @@
 Serves the static app AND emulates the two Vercel functions:
   /api/quote  -> live Yahoo Finance quotes (same behaviour as api/quote.js)
   /api/sync   -> file-backed sync store   (same contract as api/sync.js)
+  /api/food   -> Open Food Facts search    (same behaviour as api/food.js)
 
 On Vercel, the real api/*.js functions handle these. Run locally with:
     python3 dev-server.py           # http://localhost:8787
@@ -17,6 +18,28 @@ SYNC_SECRET = os.environ.get("SYNC_SECRET", "localdev")
 STORE = os.path.join(HERE, ".sync-store.json")
 STRAVA_ID = os.environ.get("STRAVA_CLIENT_ID", "")
 STRAVA_SECRET = os.environ.get("STRAVA_CLIENT_SECRET", "")
+
+
+OFF_UA = {"User-Agent": "Compass/1.0 (personal dashboard)"}
+OFF_FIELDS = "code,product_name,brands,serving_size,nutriments,countries_tags"
+
+
+def food_rank(items):
+    import re
+    latin = re.compile(r"^[\x00-\x7F\u00C0-\u017F’‘–—]*$")
+    keep = [p for p in items if p.get("product_name") and latin.match(p["product_name"])]
+    score = lambda p: 2 if "en:australia" in (p.get("countries_tags") or []) else 1 if "en:new-zealand" in (p.get("countries_tags") or []) else 0
+    return sorted(keep, key=score, reverse=True)[:24]
+
+
+def food_search(q):
+    qq = urllib.parse.quote(q)
+    try:
+        j = get_json(f"https://search.openfoodfacts.org/search?q={qq}&page_size=60&fields={OFF_FIELDS}", OFF_UA)
+        return [{**h, "brands": ",".join(h["brands"]) if isinstance(h.get("brands"), list) else h.get("brands")} for h in j.get("hits", [])]
+    except Exception:
+        j = get_json(f"https://world.openfoodfacts.org/cgi/search.pl?search_terms={qq}&search_simple=1&action=process&json=1&page_size=60&fields={OFF_FIELDS}", OFF_UA)
+        return j.get("products", [])
 
 
 def post_json(url, payload=None, headers=None):
@@ -131,6 +154,14 @@ class H(http.server.SimpleHTTPRequestHandler):
                 if q:
                     out[s] = q
             return self._json(200, out)
+        if self.path.startswith("/api/food"):
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("q", [""])[0].strip()[:80]
+            if len(q) < 2:
+                return self._json(400, {"error": "query too short"})
+            try:
+                return self._json(200, {"products": food_rank(food_search(q))})
+            except Exception:
+                return self._json(502, {"error": "food database unavailable"})
         if self.path.startswith("/api/sync"):
             if self.headers.get("x-sync-key") != SYNC_SECRET:
                 return self._json(401, {"error": "unauthorized"})

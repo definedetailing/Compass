@@ -232,6 +232,13 @@ function defaultState() {
       runs: [],
       sleep: [],
       sleepGoal: 8,                  // hours per night
+      // food diary: per-serving values × qty; cost is $ per serving
+      food: {
+        goals: { kcal: 2500, protein: 160, carbs: 280, fat: 80, budget: 25 },
+        log: [],                     // {id, date, meal, name, serving, qty, kcal, p, c, f, cost, foodId}
+        foods: [],                   // My foods: {id, name, serving, kcal, p, c, f, cost, uses, last}
+        toMoney: true,               // each day's food cost → one linked Money expense
+      },
       // Strava link: refresh token + short-lived access token, plus the last import time
       strava: { refreshToken: '', accessToken: '', expiresAt: 0, athlete: null, lastSync: 0, auto: true },
     },
@@ -571,6 +578,232 @@ const SLEEP_QUALITY = ['', 'Rough', 'Poor', 'OK', 'Good', 'Great'];
 // the one checkmark used by every checkbox — its stroke draws on when ticked
 const TICK = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l4 4 10-11"/></svg>`;
 
+/* ============================================================
+   Food: calories, macros, and what it cost
+   ============================================================ */
+const MEALS = ['Breakfast', 'Lunch', 'Dinner', 'Snacks'];
+const MEAL_ICON = { Breakfast: '🍳', Lunch: '🥪', Dinner: '🍽', Snacks: '🍎' };
+// Built-in starter list so search works on day one. Values are per serving;
+// cost is a rough Australian price per serving and is yours to correct — the
+// first time you log one it's copied into My foods, and your price sticks.
+//   [name, serving, kcal, protein, carbs, fat, $]
+const FOOD_DB = [
+  ['Egg', '1 large', 72, 6.3, 0.4, 4.8, 0.60],
+  ['White bread', '1 slice', 80, 2.7, 15, 1, 0.20],
+  ['Wholemeal bread', '1 slice', 85, 4, 14, 1.2, 0.25],
+  ['Weet-Bix', '2 biscuits', 107, 3.8, 20, 0.4, 0.25],
+  ['Rolled oats', '40 g', 150, 5, 24, 3.4, 0.15],
+  ['Milk, full cream', '250 ml', 165, 8.5, 12, 9, 0.40],
+  ['Milk, skim', '250 ml', 90, 9, 12.5, 0.3, 0.40],
+  ['Greek yoghurt', '170 g', 160, 15, 7, 8, 1.20],
+  ['Banana', '1 medium', 105, 1.3, 27, 0.4, 0.50],
+  ['Apple', '1 medium', 95, 0.5, 25, 0.3, 0.80],
+  ['Blueberries', '1/2 cup', 42, 0.5, 11, 0.2, 1.50],
+  ['Peanut butter', '1 tbsp', 120, 5, 3, 10, 0.20],
+  ['Avocado', '1/2 fruit', 160, 2, 8.5, 15, 1.25],
+  ['Butter', '10 g', 72, 0.1, 0, 8.1, 0.12],
+  ['Honey', '1 tbsp', 64, 0, 17, 0, 0.20],
+  ['Cheese slice', '1 slice (20 g)', 80, 5, 0.3, 6.5, 0.30],
+  ['Bacon', '2 rashers', 150, 12, 0.5, 11, 1.00],
+  ['Protein powder', '1 scoop (30 g)', 120, 24, 3, 1.5, 1.20],
+  ['Protein shake with milk', '1 shake', 285, 33, 15, 10.5, 1.60],
+  ['Chicken breast', '150 g cooked', 248, 46, 0, 5.4, 2.50],
+  ['Chicken thigh', '150 g cooked', 270, 37, 0, 13, 2.00],
+  ['Beef mince, lean', '150 g', 255, 31, 0, 14, 2.40],
+  ['Rump steak', '200 g', 360, 50, 0, 17, 6.00],
+  ['Salmon fillet', '150 g', 310, 31, 0, 20, 5.50],
+  ['Tuna, canned', '95 g can', 100, 22, 0, 1, 1.50],
+  ['White rice, cooked', '1 cup', 240, 4.5, 53, 0.4, 0.30],
+  ['Brown rice, cooked', '1 cup', 218, 4.5, 46, 1.6, 0.35],
+  ['Microwave rice', '1 pouch (250 g)', 370, 8, 78, 3, 2.00],
+  ['Pasta, cooked', '1 cup', 220, 8, 43, 1.3, 0.30],
+  ['Potato', '1 medium', 115, 3, 26, 0.1, 0.40],
+  ['Sweet potato', '150 g', 130, 2.4, 30, 0.2, 0.70],
+  ['Wrap / tortilla', '1 wrap', 180, 5, 30, 4, 0.60],
+  ['Broccoli', '1 cup', 30, 2.5, 6, 0.3, 0.60],
+  ['Mixed salad', '1 cup', 15, 1, 3, 0.1, 0.60],
+  ['Frozen mixed veg', '1 cup', 80, 4, 13, 0.5, 0.50],
+  ['Olive oil', '1 tbsp', 120, 0, 0, 14, 0.25],
+  ['Almonds', '30 g', 175, 6, 6, 15, 0.70],
+  ['Muesli bar', '1 bar', 140, 2.5, 20, 5.5, 0.70],
+  ['Protein bar', '1 bar', 200, 20, 20, 7, 3.00],
+  ['Chocolate bar', '50 g', 260, 3.5, 30, 14, 2.50],
+  ['Chips', '45 g packet', 240, 3, 23, 15, 1.50],
+  ['Chocolate biscuit', '1 biscuit', 95, 1, 12, 5, 0.40],
+  ['Flat white', 'regular, full cream', 130, 7, 10, 7, 5.00],
+  ['Long black', 'regular', 5, 0.3, 0, 0, 4.50],
+  ['Iced coffee, bottled', '500 ml', 330, 16, 45, 9, 4.50],
+  ['Soft drink', '375 ml can', 160, 0, 40, 0, 2.50],
+  ['Energy drink', '500 ml can', 225, 0, 55, 0, 4.00],
+  ['Sugar-free energy drink', '500 ml can', 10, 0, 2, 0, 4.00],
+  ['Orange juice', '250 ml', 110, 1.5, 25, 0.3, 0.80],
+  ['Beer', 'schooner (425 ml)', 180, 1.5, 14, 0, 9.00],
+  ['Big Mac', '1 burger', 500, 26, 40, 26, 8.00],
+  ['Cheeseburger', '1 burger', 300, 16, 32, 12, 4.00],
+  ['Fries, large', '1 serve', 450, 5, 58, 21, 5.00],
+  ['Chicken nuggets', '10 pieces', 450, 25, 27, 27, 9.00],
+  ['Pizza', '1 slice (large)', 285, 12, 36, 10, 3.50],
+  ['Chicken kebab', '1 kebab', 700, 40, 70, 28, 16.00],
+  ['Sub, 6-inch chicken', '1 sub', 350, 25, 45, 7, 10.00],
+  ['Sushi hand roll', '1 roll', 180, 6, 32, 3, 3.00],
+  ['Burrito bowl, chicken', '1 bowl', 650, 45, 70, 20, 17.00],
+  ['Meat pie', '1 pie', 450, 14, 36, 28, 5.50],
+  ['Sausage roll', '1 roll', 330, 8, 27, 21, 4.50],
+  ['Chicken schnitzel', '1 schnitzel', 480, 42, 22, 24, 8.00],
+  ['Fish & chips', '1 serve', 850, 35, 85, 42, 14.00],
+  ['Chicken, rice & veg (meal prep)', '1 container', 520, 45, 60, 10, 4.50],
+].map(([name, serving, kcal, p, c, f, cost], i) => ({ id: 'db:' + i, name, serving, kcal, p, c, f, cost, builtin: true }));
+
+let foodDate = todayISO();      // the day the Food diary is showing
+let foodRange = 'week';         // insights window: 'week' | 'month'
+let foodMeal = 'Breakfast';     // meal the add sheet is adding to
+let onlineFoods = [];           // last Open Food Facts results
+
+const FOOD = () => S.health.food;
+const r1 = n => Math.round(n * 10) / 10;
+const kcalStr = n => Math.round(n).toLocaleString('en-AU');
+const foodEntries = iso => FOOD().log.filter(e => e.date === iso);
+function sumEntries(list) {
+  return list.reduce((a, e) => {
+    const q = num(e.qty, 1);
+    a.kcal += num(e.kcal) * q; a.p += num(e.p) * q; a.c += num(e.c) * q; a.f += num(e.f) * q; a.cost += num(e.cost) * q; a.n++;
+    return a;
+  }, { kcal: 0, p: 0, c: 0, f: 0, cost: 0, n: 0 });
+}
+const dayTotals = iso => sumEntries(foodEntries(iso));
+function mealForNow(d = new Date()) {
+  const h = d.getHours() + d.getMinutes() / 60;
+  return h < 10.5 ? 'Breakfast' : h < 14.5 ? 'Lunch' : h >= 17 && h < 21.5 ? 'Dinner' : 'Snacks';
+}
+const shiftISO = (iso, days) => { const d = parseISO(iso); d.setDate(d.getDate() + days); return todayISO(d); };
+const foodDayLabel = iso => iso === todayISO() ? 'Today' : iso === shiftISO(todayISO(), -1) ? 'Yesterday' : fmtDay(iso);
+// "0.3 × 100 g" reads better as "30 g"
+function servingText(serving, q) {
+  const m = /^(\d+(?:\.\d+)?)\s*(g|ml)$/i.exec(serving || '');
+  if (m) return `${r1(q * +m[1])} ${m[2].toLowerCase()}`;
+  return q !== 1 ? `${r1(q)} × ${serving}` : serving;
+}
+const foodLine = f => [f.serving, `${kcalStr(f.kcal)} kcal`, f.p ? `P ${r1(f.p)}g` : '', num(f.cost) > 0 ? AUD(f.cost) : ''].filter(Boolean).join(' · ');
+
+// a food from any source: My foods, the built-in list, or the last online search
+function findFood(fid) {
+  if (!fid) return null;
+  if (fid.startsWith('db:')) return FOOD_DB[+fid.slice(3)] || null;
+  if (fid.startsWith('on:')) return onlineFoods[+fid.slice(3)] || null;
+  return FOOD().foods.find(f => f.id === fid) || null;
+}
+const nameKey = s => String(s || '').trim().toLowerCase();
+// Copy a food into My foods (or refresh the saved copy), so the next search finds
+// it first and a price you've corrected is remembered.
+function rememberFood(src) {
+  const lib = FOOD().foods;
+  let f = lib.find(x => x.id === src.id) || lib.find(x => nameKey(x.name) === nameKey(src.name));
+  const vals = { name: src.name, serving: src.serving || '1 serve', kcal: num(src.kcal), p: num(src.p), c: num(src.c), f: num(src.f), cost: num(src.cost) };
+  if (f) Object.assign(f, vals);
+  else { f = { id: uid(), ...vals, uses: 0 }; lib.push(f); }
+  f.uses = (f.uses || 0) + 1;
+  f.last = Date.now();
+  return f;
+}
+function searchFoods(q) {
+  const k = nameKey(q);
+  const mine = FOOD().foods;
+  const mineNames = new Set(mine.map(f => nameKey(f.name)));
+  const pool = [...mine, ...FOOD_DB.filter(f => !mineNames.has(nameKey(f.name)))];
+  const score = f => {
+    const n = nameKey(f.name);
+    let s = n.startsWith(k) ? 3 : n.split(/[\s,/&-]+/).some(w => w.startsWith(k)) ? 2 : n.includes(k) ? 1 : 0;
+    if (s && !f.builtin) s += 2 + Math.min(f.uses || 0, 20) / 20;
+    return s;
+  };
+  return pool.map(f => [f, score(f)]).filter(([, s]) => s > 0).sort((a, b) => b[1] - a[1]).slice(0, 30).map(([f]) => f);
+}
+// the foods you log most lately, newest first, one row each
+function recentFoods(n = 12) {
+  const seen = new Set(), out = [];
+  for (const e of FOOD().log.slice().reverse()) {
+    const f = findFood(e.foodId);
+    const key = f ? f.id : nameKey(e.name);
+    if (!f || seen.has(key)) continue;
+    seen.add(key); out.push(f);
+    if (out.length >= n) break;
+  }
+  return out;
+}
+
+// Each day's food cost lands in Money as ONE linked "Food log" expense, so the
+// Food budget and balance stay honest without a transaction per snack.
+function syncFoodMoney(iso) {
+  const tx = S.money.transactions;
+  const i = tx.findIndex(t => t.foodDay === iso);
+  const cost = FOOD().toMoney ? Math.round(dayTotals(iso).cost * 100) / 100 : 0;
+  if (cost > 0) {
+    const t = { id: i >= 0 ? tx[i].id : uid(), foodDay: iso, desc: 'Food log', amount: cost, category: 'Food', date: iso, dir: 'out' };
+    if (i >= 0) tx[i] = t; else tx.push(t);
+  } else if (i >= 0) tx.splice(i, 1);
+}
+function resyncAllFoodMoney() {
+  S.money.transactions = S.money.transactions.filter(t => !t.foodDay);
+  [...new Set(FOOD().log.map(e => e.date))].forEach(syncFoodMoney);
+}
+
+// Open Food Facts — free, no key. Digits = a barcode (that endpoint allows CORS).
+function offToFood(p) {
+  const n = p.nutriments || {};
+  const hasServ = n['energy-kcal_serving'] != null || n['energy_serving'] != null;
+  const k = hasServ ? '_serving' : '_100g';
+  let kcal = n['energy-kcal' + k];
+  if (kcal == null && n['energy' + k] != null) kcal = n['energy' + k] / 4.184;   // kJ → kcal
+  if (kcal == null || !p.product_name) return null;
+  const brand = String(p.brands || '').split(',')[0].trim();
+  return { name: p.product_name.trim() + (brand && !nameKey(p.product_name).includes(nameKey(brand)) ? ` (${brand})` : ''),
+    serving: hasServ ? (p.serving_size || '1 serving') : '100 g',
+    kcal: r1(kcal), p: r1(num(n['proteins' + k])), c: r1(num(n['carbohydrates' + k])), f: r1(num(n['fat' + k])), cost: 0, online: true };
+}
+async function searchOnline(q) {
+  const fields = 'code,product_name,brands,serving_size,nutriments';
+  if (/^\d{8,14}$/.test(q)) {
+    const r = await fetch(`https://world.openfoodfacts.org/api/v2/product/${q}.json?fields=${fields}`);
+    const j = await r.json();
+    const f = j.product && offToFood(j.product);
+    return f ? [f] : [];
+  }
+  // our /api/food proxy first (fast + reliable); straight to OFF if there's no server
+  let products;
+  try {
+    const r = await fetch(`/api/food?q=${encodeURIComponent(q)}`);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    products = (await r.json()).products;
+  } catch (e) {
+    const r = await fetch(`https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q)}&search_simple=1&action=process&json=1&page_size=24&fields=${fields}`);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    products = (await r.json()).products;
+  }
+  return (products || []).map(offToFood).filter(Boolean);
+}
+
+// numbers over a window of days, for the insights card
+function foodStats(days) {
+  const end = todayISO(), start = shiftISO(end, -(days - 1));
+  const list = FOOD().log.filter(e => e.date >= start && e.date <= end);
+  const byDay = [];
+  for (let i = 0; i < days; i++) { const iso = shiftISO(start, i); byDay.push({ iso, ...sumEntries(list.filter(e => e.date === iso)) }); }
+  const logged = byDay.filter(d => d.n);
+  const tot = sumEntries(list);
+  const byMeal = MEALS.map(m => ({ meal: m, ...sumEntries(list.filter(e => e.meal === m)) }));
+  const byFood = {};
+  list.forEach(e => {
+    const k = nameKey(e.name), q = num(e.qty, 1);
+    const b = byFood[k] || (byFood[k] = { name: e.name, n: 0, cost: 0, kcal: 0, p: 0 });
+    b.n++; b.cost += num(e.cost) * q; b.kcal += num(e.kcal) * q; b.p += num(e.p) * q;
+  });
+  const foods = Object.values(byFood);
+  const topSpend = foods.filter(f => f.cost > 0).sort((a, b) => b.cost - a.cost).slice(0, 5);
+  // cheapest protein you actually ate: $ per 10 g, only foods where protein matters
+  const protein = foods.filter(f => f.cost > 0 && f.p / f.n >= 8).map(f => ({ ...f, per10: f.cost / f.p * 10 })).sort((a, b) => a.per10 - b.per10);
+  return { byDay, logged, tot, byMeal, topSpend, protein, days: logged.length || 0 };
+}
+
 /* ---------- water tank ----------
    The wave path holds exactly two periods across the viewBox and the <svg> is
    200% wide, so one period equals the tank's width — sliding it -50% loops
@@ -724,6 +957,9 @@ function briefingRows() {
   const w = S.health.water.log[iso] || 0, wg = S.health.water.goalMl;
   if (w < wg) push('💧', `Water <b>${(w/1000).toFixed(2)}</b> of ${(wg/1000).toFixed(1)} L`, 'health');
 
+  const ft = dayTotals(iso), fk = FOOD().goals.kcal;
+  if (ft.n) push('🍽', `<b>${kcalStr(ft.kcal)}</b> of ${kcalStr(fk)} kcal${ft.cost > 0 ? ` · <b>${AUD(ft.cost)}</b> on food` : ''}`, 'health');
+
   const due = upcomingBills().filter(b => b.status !== 'ok')[0];
   if (due) push('🧾', `<b>${esc(due.name)}</b> ${due.dd < 0 ? `${-due.dd}d overdue` : due.dd === 0 ? 'due today' : `due in ${due.dd}d`} · ${AUD(due.amount)}`, 'money');
 
@@ -828,8 +1064,10 @@ function barChart(items, opts = {}) {   // items: [{label, v}]
   const span = (max - base) || 1;
   const frac = v => clamp((v - base) / span, 0, 1);
   const bw = 100 / n;
-  // opts.goal draws a dashed target line and dims any bar that falls short of it
-  const gy = opts.goal ? h - 18 - frac(opts.goal) * (h - 22) : null;
+  // opts.goal draws a dashed target line and dims any bar that falls short of it;
+  // opts.line just draws the line; opts.cap draws it and turns bars over it red
+  const lineAt = opts.goal || opts.line || opts.cap;
+  const gy = lineAt ? h - 18 - frac(lineAt) * (h - 22) : null;
   // with many bars, label every other one so the axis stays on one line
   const every = n > 10 ? 2 : 1;
   return `<svg class="chart" viewBox="0 0 100 ${h}" height="${h}" preserveAspectRatio="none">
@@ -837,21 +1075,25 @@ function barChart(items, opts = {}) {   // items: [{label, v}]
       const bh = frac(it.v) * (h - 22);
       const x = i * bw + bw * 0.18, ww = bw * 0.64;
       const short = opts.goal && it.v < opts.goal;
-      return `<rect x="${x}" y="${h - 18 - bh}" width="${ww}" height="${Math.max(bh, 0.5)}" rx="1.5" fill="var(--blue-500)"${short?' opacity=".45"':''}/>`;
+      const over = opts.cap && it.v > opts.cap;
+      return `<rect x="${x}" y="${h - 18 - bh}" width="${ww}" height="${Math.max(bh, 0.5)}" rx="1.5" fill="${over ? 'var(--red)' : 'var(--blue-500)'}"${short?' opacity=".45"':''}/>`;
     }).join('')}
     ${gy !== null ? `<line x1="0" y1="${gy.toFixed(1)}" x2="100" y2="${gy.toFixed(1)}" stroke="var(--green)" stroke-width="0.6" stroke-dasharray="2 2" vector-effect="non-scaling-stroke"/>` : ''}
   </svg>
   <div class="chart-legend bars">${items.map((it, i) => `<span class="small muted">${i % every ? '' : esc(it.label)}</span>`).join('')}</div>`;
 }
-function ring(pct, opts = {}) {
+function ring(pct, opts = {}) {   // opts.label/caption replace the % in the middle
   const size = opts.size || 74, sw = opts.sw || 9, r = (size - sw) / 2, c = 2 * Math.PI * r;
   const off = c * (1 - clamp(pct, 0, 1));
   return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="flex:none">
     <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="var(--surface-hover)" stroke-width="${sw}"/>
-    <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="var(--primary)" stroke-width="${sw}"
+    <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="${opts.color || 'var(--primary)'}" stroke-width="${sw}"
       stroke-linecap="round" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}"
       transform="rotate(-90 ${size/2} ${size/2})" style="transition:stroke-dashoffset .5s"/>
-    <text x="50%" y="52%" text-anchor="middle" dominant-baseline="middle" font-size="${size*0.24}" font-weight="800" fill="var(--text)">${Math.round(pct*100)}%</text>
+    ${opts.label != null
+      ? `<text x="50%" y="46%" text-anchor="middle" dominant-baseline="middle" font-size="${size*0.2}" font-weight="800" fill="var(--text)">${esc(opts.label)}</text>
+         <text x="50%" y="64%" text-anchor="middle" dominant-baseline="middle" font-size="${size*0.105}" font-weight="600" fill="var(--text-3)">${esc(opts.caption || '')}</text>`
+      : `<text x="50%" y="52%" text-anchor="middle" dominant-baseline="middle" font-size="${size*0.24}" font-weight="800" fill="var(--text)">${Math.round(pct*100)}%</text>`}
   </svg>`;
 }
 
@@ -1160,7 +1402,8 @@ function orderBlocks(tab, blocks) {
   const byKey = Object.fromEntries(blocks.map(b => [b.key, b]));
   const out = [];
   saved.forEach(k => { if (byKey[k]) { out.push(byKey[k]); delete byKey[k]; } });
-  blocks.forEach(b => { if (byKey[b.key]) out.push(b); });
+  // a block the saved order has never seen slots in at its default position
+  blocks.forEach((b, i) => { if (byKey[b.key]) out.splice(Math.min(i, out.length), 0, b); });
   return out;
 }
 function renderBlocks(tab, blocks) {
@@ -1542,6 +1785,120 @@ function renderHealth() {
   const runs = S.health.runs.slice(-8);
 
   const B = [];
+  // ---- Food diary: goal − food = remaining, macros, spend, then each meal ----
+  const fg = FOOD().goals;
+  const ft = dayTotals(foodDate);
+  const left = fg.kcal - ft.kcal;
+  const macro = (label, have, goal, color) => {
+    const p = goal ? clamp(have / goal, 0, 1) : 0;
+    return `<div class="macro">
+      <div class="macro-top"><span>${label}</span><span class="${goal && have > goal * 1.1 ? 'neg' : 'muted'}">${Math.round(have)}${goal ? ` / ${goal}` : ''} g</span></div>
+      <div class="bar slim"><i style="width:${p * 100}%;background:${color}"></i></div>
+    </div>`;
+  };
+  const budgetP = fg.budget ? clamp(ft.cost / fg.budget, 0, 1) : 0;
+  const yest = shiftISO(foodDate, -1);
+  const mealBlock = (m) => {
+    const es = foodEntries(foodDate).filter(e => e.meal === m);
+    const mt = sumEntries(es);
+    const hadYest = !es.length && foodEntries(yest).some(e => e.meal === m);
+    return `<div class="meal">
+      <div class="meal-head">
+        <span class="mh-name">${MEAL_ICON[m]} ${m}</span>
+        <span class="mh-tot">${es.length ? `${kcalStr(mt.kcal)} kcal${mt.cost > 0 ? ` · ${AUD(mt.cost)}` : ''}` : ''}</span>
+        <button class="link" data-act="addFood" data-meal="${m}">+ Add</button>
+      </div>
+      ${es.length ? `<div class="list">${es.map(e => {
+        const q = num(e.qty, 1);
+        return `<div class="item tap food-entry" data-act="editFoodEntry" data-id="${e.id}">
+          <div class="body"><div class="t">${esc(e.name)}</div>
+            <div class="s">${esc([servingText(e.serving, q), e.p ? `P ${Math.round(e.p * q)}g` : ''].filter(Boolean).join(' · '))}</div></div>
+          <div class="right"><div class="trail">${kcalStr(e.kcal * q)}</div>
+            <div class="s muted">${num(e.cost) > 0 ? AUD(e.cost * q) : '—'}</div></div>
+        </div>`; }).join('')}</div>`
+        : hadYest ? `<button class="more-link copy-meal" data-act="copyMeal" data-meal="${m}">Copy ${m.toLowerCase()} from ${foodDate === todayISO() ? 'yesterday' : fmtDay(yest)}</button>` : ''}
+    </div>`;
+  };
+
+  B.push({ key:'food', name:'Food diary', grow:true, html: `
+    <div class="section-head"><h3>Food</h3>
+      <span style="display:inline-flex;gap:12px;align-items:center">
+        <button class="link" data-act="editFoodGoals">Goals</button>
+        <button class="link" data-act="addFood">+ Food</button>
+      </span></div>
+    <div class="card">
+      <div class="food-date">
+        <button class="icon-btn" data-act="foodPrev" aria-label="Previous day">‹</button>
+        <button class="fd-label" data-act="foodToday">${foodDayLabel(foodDate)}</button>
+        <button class="icon-btn" data-act="foodNext" aria-label="Next day" ${foodDate >= todayISO() ? 'disabled' : ''}>›</button>
+      </div>
+      <div class="food-top">
+        ${ring(clamp(ft.kcal / (fg.kcal || 1), 0, 1), { size: 108, sw: 10, label: kcalStr(Math.abs(left)), caption: left >= 0 ? 'kcal left' : 'kcal over', color: left < 0 ? 'var(--red)' : '' })}
+        <div class="food-macros">
+          ${macro('Protein', ft.p, fg.protein, 'var(--blue-500)')}
+          ${macro('Carbs', ft.c, fg.carbs, '#f59e0b')}
+          ${macro('Fat', ft.f, fg.fat, '#ec4899')}
+        </div>
+      </div>
+      <div class="food-eq">
+        <span><b>${kcalStr(fg.kcal)}</b><small>goal</small></span><i>−</i>
+        <span><b>${kcalStr(ft.kcal)}</b><small>food</small></span><i>=</i>
+        <span class="${left < 0 ? 'neg' : ''}"><b>${kcalStr(left)}</b><small>remaining</small></span>
+      </div>
+      <div class="food-spend">
+        <div class="macro-top"><span>💸 Spent on food</span>
+          <span class="${fg.budget && ft.cost > fg.budget ? 'neg' : 'muted'}">${AUD(ft.cost)}${fg.budget ? ` / ${AUD(fg.budget, 0)}` : ''}</span></div>
+        ${fg.budget ? `<div class="bar slim"><i style="width:${budgetP * 100}%;${ft.cost > fg.budget ? 'background:var(--red)' : 'background:var(--green)'}"></i></div>` : ''}
+      </div>
+      ${MEALS.map(mealBlock).join('')}
+    </div>` });
+
+  // ---- Food insights: calories and money over a week or a month ----
+  const fs = foodStats(foodRange === 'month' ? 30 : 7);
+  const avgK = fs.days ? fs.logged.reduce((a, d) => a + d.kcal, 0) / fs.days : 0;
+  const avgP = fs.days ? fs.logged.reduce((a, d) => a + d.p, 0) / fs.days : 0;
+  const avgC = fs.days ? fs.tot.cost / fs.days : 0;
+  const dayLbl = d => foodRange === 'month' ? d.iso.slice(8) : DOW[parseISO(d.iso).getDay()].slice(0, 2);
+  const mealMax = Math.max(...fs.byMeal.map(m => m.cost), 0.01);
+  const bestP = fs.protein[0];
+
+  const foodStatsBlock = { key:'foodStats', name:'Food & spending', grow:true, html: `
+    <div class="section-head"><h3>Food &amp; spending</h3>
+      <div class="seg sm">${['week', 'month'].map(r => `<button data-act="setFoodRange" data-r="${r}" class="${foodRange === r ? 'on' : ''}">${r === 'week' ? '7 days' : '30 days'}</button>`).join('')}</div></div>
+    <div class="card">
+      ${fs.days ? `
+      <div class="stats-row">
+        <div class="stat"><div class="k">Avg calories</div><div class="v">${kcalStr(avgK)}<small> kcal</small></div>
+          <div class="sub ${Math.abs(avgK - fg.kcal) <= fg.kcal * 0.1 ? 'pos' : ''}">${avgK >= fg.kcal ? `${kcalStr(avgK - fg.kcal)} over` : `${kcalStr(fg.kcal - avgK)} under`} goal</div></div>
+        <div class="stat"><div class="k">Avg protein</div><div class="v">${Math.round(avgP)}<small> g</small></div>
+          <div class="sub ${fg.protein && avgP >= fg.protein ? 'pos' : ''}">${fg.protein ? `goal ${fg.protein} g` : '&nbsp;'}</div></div>
+        <div class="stat"><div class="k">Spent on food</div><div class="v">${AUD(fs.tot.cost, 0)}</div>
+          <div class="sub">${fs.days} day${fs.days === 1 ? '' : 's'} logged</div></div>
+        <div class="stat"><div class="k">Per day</div><div class="v">${AUD(avgC)}</div>
+          <div class="sub ${fg.budget && avgC > fg.budget ? 'neg' : fg.budget ? 'pos' : ''}">${fg.budget ? (avgC > fg.budget ? `${AUD(avgC - fg.budget)} over budget` : `${AUD(fg.budget - avgC)} under budget`) : 'no budget set'}</div></div>
+      </div>
+
+      <div class="card-label" style="margin:16px 0 8px">Calories · goal ${kcalStr(fg.kcal)}</div>
+      ${barChart(fs.byDay.map(d => ({ label: dayLbl(d), v: d.kcal })), { h: 96, min: fg.kcal * 1.15, line: fg.kcal })}
+
+      <div class="card-label" style="margin:16px 0 8px">Spend per day${fg.budget ? ` · budget ${AUD(fg.budget, 0)}` : ''}</div>
+      ${barChart(fs.byDay.map(d => ({ label: dayLbl(d), v: d.cost })), { h: 80, min: (fg.budget || 1) * 1.15, cap: fg.budget || null })}
+
+      <div class="card-label" style="margin:16px 0 8px">Where the money goes</div>
+      <div class="meal-split">${fs.byMeal.map(m => `
+        <div class="ms-row"><span class="ms-n">${MEAL_ICON[m.meal]} ${m.meal}</span>
+          <div class="bar slim"><i style="width:${m.cost / mealMax * 100}%"></i></div>
+          <span class="ms-v">${AUD(m.cost, 0)}</span></div>`).join('')}</div>
+
+      ${fs.topSpend.length ? `<div class="card-label" style="margin:16px 0 8px">Top spends</div>
+      <div class="list">${fs.topSpend.map(f => `
+        <div class="item"><div class="body"><div class="t">${esc(f.name)}</div>
+          <div class="s">${f.n}× · ${kcalStr(f.kcal)} kcal${f.kcal ? ` · ${AUD(f.cost / f.kcal * 100)}/100 kcal` : ''}</div></div>
+          <div class="trail">${AUD(f.cost)}</div></div>`).join('')}</div>` : ''}
+      ${bestP ? `<div class="food-tip">💪 Best-value protein: <b>${esc(bestP.name)}</b> at ${AUD(bestP.per10)} per 10 g${fs.protein.length > 1 ? ` — ${esc(fs.protein[fs.protein.length - 1].name)} is ${AUD(fs.protein[fs.protein.length - 1].per10)}` : ''}</div>` : ''}
+      ` : `<div class="empty">Log a few meals and your calorie and spending trends show up here</div>`}
+    </div>` };
+
   // Water is short and PBs is short, so they share one column cell — together they
   // fill the row beside Runs instead of each leaving a gap
   // only take over the row once there are enough PBs to actually fill it —
@@ -1702,6 +2059,9 @@ function renderHealth() {
       </div>
     </div>` });
 
+  // Food & spending heads the right-hand column, beside the Food diary
+  B.splice(Math.ceil((B.length + 1) / 2), 0, foodStatsBlock);
+
   $('#view-health').innerHTML =
     `<div class="section-head" style="margin-top:0"><div class="view-title" style="margin:0">Health</div>${arrangeHeader('health')}</div>`
     + renderBlocks('health', B);
@@ -1826,7 +2186,7 @@ function renderMoney() {
     <div class="card"><div class="list">
       ${S.money.transactions.slice().reverse().slice(0,12).map(t => `
         <div class="item tap" data-act="editTxn" data-id="${t.id}">
-          <div class="body"><div class="t">${esc(t.desc)}${t.source==='email'?' <span class="chip src" title="added from your email">✉︎</span>':''}</div><div class="s">${esc(t.category||'—')} · ${esc(t.date)}</div></div>
+          <div class="body"><div class="t">${esc(t.desc)}${t.source==='email'?' <span class="chip src" title="added from your email">✉︎</span>':''}${t.foodDay?' <span class="chip food-mine" title="from your Food diary">🍽</span>':''}</div><div class="s">${esc(t.category||'—')} · ${esc(t.date)}</div></div>
           <div class="trail ${t.dir==='in'?'pos':'neg'}">${t.dir==='in'?'+':'−'}${AUD(t.amount)}</div>
         </div>`).join('') || `<div class="empty">Log income & expenses</div>`}
     </div></div>` });
@@ -2019,6 +2379,95 @@ function sheetForm(title, desc, body, opts = {}) {
     </div>`);
 }
 const val = id => { const el = $('#' + id); return el ? el.value.trim() : ''; };
+
+/* ---------- food: add sheet, results, and the portion sheet ---------- */
+function foodResultRow(f, fid) {
+  return `<div class="item food-row">
+    <div class="body tap" data-act="pickFood" data-fid="${fid}">
+      <div class="t">${esc(f.name)}${f.builtin ? '' : f.online ? ' <span class="chip src food-src">online</span>' : ' <span class="chip food-mine">mine</span>'}</div>
+      <div class="s">${esc(foodLine(f))}</div></div>
+    <button class="food-add" data-act="quickLogFood" data-fid="${fid}" aria-label="Add one serving">+</button>
+  </div>`;
+}
+function renderFoodResults(q) {
+  const res = $('#fd_res'); if (!res) return;
+  q = q.trim();
+  if (!q) {
+    const rec = recentFoods();
+    res.innerHTML = rec.length
+      ? `<div class="card-label" style="margin:14px 0 8px">Recent</div><div class="list">${rec.map(f => foodResultRow(f, f.id)).join('')}</div>`
+      : `<div class="empty">Start typing — there's a list of everyday foods built in, and anything you log is saved to My foods with your price.</div>`;
+    return;
+  }
+  const hits = searchFoods(q);
+  res.innerHTML = (hits.length
+    ? `<div class="list" style="margin-top:12px">${hits.map(f => foodResultRow(f, f.id)).join('')}</div>` : '')
+    + `<button class="more-link" data-act="foodOnline">${hits.length ? 'Not it? ' : 'Nothing saved yet — '}search online for “${esc(q)}” →</button>`;
+}
+function logFood(f, qty, meal) {
+  const saved = rememberFood(f);
+  FOOD().log.push({ id: uid(), date: foodDate, meal, name: saved.name, serving: saved.serving, qty,
+    kcal: saved.kcal, p: saved.p, c: saved.c, f: saved.f, cost: saved.cost, foodId: saved.id, at: Date.now() });
+  syncFoodMoney(foodDate);
+  save();
+  if (currentTab === 'health') renderHealth();
+}
+// One sheet for "how much of this?" — logging a new food, or editing a logged entry.
+// Nutrition and price are editable here, so a correction sticks to My foods too.
+function foodPortionSheet(f, entry, creating = false) {
+  const qty = entry ? num(entry.qty, 1) : 1;
+  const nf = (label, id, v, ph) => field(label, id, { type: 'number', step: 'any', inputmode: 'decimal', val: v === '' ? '' : r1(num(v)), ph });
+  const lib = entry && entry.foodId ? FOOD().foods.find(x => x.id === entry.foodId) : (!f.builtin && !f.online && f.id ? f : null);
+  openSheet(`<h3>${creating ? 'New food' : entry ? 'Edit entry' : esc(f.name)}</h3>
+    <p class="desc">${creating ? 'Values per serving. It\'s saved to My foods for next time.' : `${esc(f.serving || '')} · values below are per serving`}</p>
+    <div class="seg full" id="fp_meals">${MEALS.map(m => `<button data-act="pickFoodMeal" data-m="${m}" class="${m === foodMeal ? 'on' : ''}">${m}</button>`).join('')}</div>
+    <div class="qty-row">
+      <span class="qty-l">Servings</span>
+      <button class="btn sm ghost" data-act="stepQty" data-s="-0.5">−</button>
+      <input id="fp_qty" type="number" step="0.25" min="0.25" inputmode="decimal" value="${qty}">
+      <button class="btn sm ghost" data-act="stepQty" data-s="0.5">+</button>
+    </div>
+    <div class="qty-chips">${[0.5, 1, 1.5, 2, 3].map(q => `<button class="chip" data-act="pickQty" data-q="${q}">${q === 0.5 ? '½' : q === 1.5 ? '1½' : q}</button>`).join('')}
+      <label class="grams" id="fp_gwrap" hidden>or <input id="fp_g" type="number" step="any" inputmode="decimal"> <span id="fp_gu">g</span></label></div>
+    <div class="food-total" id="fp_total"></div>
+    ${field('Name', 'fp_name', { val: f.name, ph: 'e.g. Chicken wrap' })}
+    ${field('Serving', 'fp_serv', { val: f.serving, ph: 'e.g. 1 wrap, 100 g, 1 cup' })}
+    <div class="row">${nf('Calories', 'fp_kcal', f.kcal, 'kcal')}${nf('Cost / serving ($)', 'fp_cost', f.cost === 0 || f.cost === '' ? '' : f.cost, '0.00')}</div>
+    <button class="link small pack-link" data-act="togglePackCalc">Work out cost from the pack price</button>
+    <div id="fp_pack" class="pack-calc" hidden>
+      <div class="row">${field('Pack price ($)', 'fp_packprice', { type: 'number', step: 'any', inputmode: 'decimal', ph: 'e.g. 6.50' })}${field('Servings in pack', 'fp_packn', { type: 'number', step: 'any', inputmode: 'decimal', ph: 'e.g. 10' })}</div>
+    </div>
+    <div class="row">${nf('Protein (g)', 'fp_p', f.p, '0')}${nf('Carbs (g)', 'fp_c', f.c, '0')}${nf('Fat (g)', 'fp_f', f.f, '0')}</div>
+    <div class="sheet-actions">
+      ${entry ? `<button class="btn danger" data-act="delFoodEntry" data-id="${entry.id}">Delete</button>`
+        : lib ? `<button class="btn ghost" data-act="delFood" data-id="${lib.id}">Forget food</button>`
+        : `<button class="btn ghost" data-act="addFood" data-meal="${foodMeal}">Back</button>`}
+      <button class="btn primary" data-act="saveFoodPortion" data-id="${entry ? entry.id : ''}" data-fid="${!entry && f.id ? f.id : ''}">${entry ? 'Save' : 'Add'}</button>
+    </div>`);
+  const total = () => {
+    const q = num(val('fp_qty'), 0);
+    const k = num(val('fp_kcal')) * q, c = num(val('fp_cost')) * q;
+    $('#fp_total').innerHTML = `<b>${kcalStr(k)}</b> kcal · P ${Math.round(num(val('fp_p')) * q)} · C ${Math.round(num(val('fp_c')) * q)} · F ${Math.round(num(val('fp_f')) * q)}
+      <span class="ft-cost">${c > 0 ? AUD(c) : 'no price'}</span>`;
+  };
+  const pack = () => {
+    const p = num(val('fp_packprice')), n = num(val('fp_packn'));
+    if (p > 0 && n > 0) { $('#fp_cost').value = (Math.round(p / n * 100) / 100).toFixed(2); total(); }
+  };
+  // a serving measured in g/ml ("100 g", "250 ml") can also be entered as an amount
+  const unit = () => { const m = /^(\d+(?:\.\d+)?)\s*(g|ml)$/i.exec(val('fp_serv')); return m ? { n: +m[1], u: m[2].toLowerCase() } : null; };
+  const syncGrams = () => {
+    const u = unit(); $('#fp_gwrap').hidden = !u;
+    if (u && document.activeElement !== $('#fp_g')) { $('#fp_g').value = r1(num(val('fp_qty'), 0) * u.n); $('#fp_gu').textContent = u.u; }
+  };
+  $('#fp_g').addEventListener('input', () => { const u = unit(); if (u && num(val('fp_g')) > 0) { $('#fp_qty').value = Math.round(num(val('fp_g')) / u.n * 1000) / 1000; total(); } });
+  ['fp_qty', 'fp_serv'].forEach(id => $('#' + id).addEventListener('input', syncGrams));
+  syncGrams();
+  ['fp_qty', 'fp_kcal', 'fp_cost', 'fp_p', 'fp_c', 'fp_f'].forEach(id => $('#' + id).addEventListener('input', total));
+  ['fp_packprice', 'fp_packn'].forEach(id => $('#' + id).addEventListener('input', pack));
+  total();
+  if (creating) setTimeout(() => $(f.name ? '#fp_kcal' : '#fp_name')?.focus(), 60);
+}
 
 /* ============================================================
    Actions
@@ -2422,6 +2871,154 @@ const ACT = {
     save(); closeSheet(); renderHealth();
   },
 
+  /* ----- health: food ----- */
+  foodPrev() { foodDate = shiftISO(foodDate, -1); renderHealth(); },
+  foodNext() { if (foodDate < todayISO()) { foodDate = shiftISO(foodDate, 1); renderHealth(); } },
+  foodToday() { foodDate = todayISO(); renderHealth(); },
+  setFoodRange(d) { foodRange = d.r; renderHealth(); },
+  addFood(d) {
+    foodMeal = d.meal || (foodDate === todayISO() ? mealForNow() : foodMeal);
+    openSheet(`<h3>Add food</h3>
+      <p class="desc">${foodDayLabel(foodDate)} · pick the meal, then search or tap a recent food</p>
+      <div class="seg full" id="fd_meals">${MEALS.map(m => `<button data-act="pickFoodMeal" data-m="${m}" class="${m === foodMeal ? 'on' : ''}">${m}</button>`).join('')}</div>
+      <input id="fd_q" class="food-q" type="search" placeholder="Search foods, or type a barcode" autocomplete="off" enterkeyhint="search">
+      <div class="food-tools">
+        <button class="btn sm" data-act="quickAddFood">⚡ Quick add</button>
+        <button class="btn sm" data-act="newFood">+ New food</button>
+        <button class="btn sm" data-act="foodOnline">🔎 Search online</button>
+      </div>
+      <div id="fd_res"></div>`);
+    const q = $('#fd_q');
+    q.addEventListener('input', () => renderFoodResults(q.value));
+    q.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); ACT.foodOnline(); } });
+    renderFoodResults('');
+    if (matchMedia('(pointer:fine)').matches) q.focus();
+  },
+  pickFoodMeal(d, el) { foodMeal = d.m; $$('button', el.parentElement).forEach(b => b.classList.toggle('on', b === el)); },
+  // the + on a result: log one serving straight away, MyFitnessPal-style
+  quickLogFood(d, el) {
+    const f = findFood(d.fid); if (!f) return;
+    logFood(f, 1, foodMeal);
+    el.classList.add('added'); el.textContent = '✓';
+    if (navigator.vibrate) navigator.vibrate(10);
+    toast(`${f.name} → ${foodMeal}${num(f.cost) > 0 ? '' : ' · tap it later to add a price'}`);
+  },
+  pickFood(d) { const f = findFood(d.fid); if (f) foodPortionSheet(f, null); },
+  editFoodEntry(d) {
+    const e = FOOD().log.find(x => x.id === d.id); if (!e) return;
+    foodMeal = e.meal;
+    foodPortionSheet(e, e);
+  },
+  pickQty(d) { const i = $('#fp_qty'); i.value = d.q; i.dispatchEvent(new Event('input')); },
+  stepQty(d) {
+    const i = $('#fp_qty');
+    i.value = Math.max(0.25, r1(num(i.value, 1) + num(d.s)));
+    i.dispatchEvent(new Event('input'));
+  },
+  togglePackCalc() { const w = $('#fp_pack'); w.hidden = !w.hidden; if (!w.hidden) $('#fp_packprice').focus(); },
+  saveFoodPortion(d) {
+    const qty = num(val('fp_qty'), 1);
+    if (qty <= 0) return toast('How many servings?');
+    const vals = { name: val('fp_name') || 'Food', serving: val('fp_serv') || '1 serve',
+      kcal: num(val('fp_kcal')), p: num(val('fp_p')), c: num(val('fp_c')), f: num(val('fp_f')), cost: num(val('fp_cost')) };
+    const meal = $('#fp_meals .on')?.dataset.m || foodMeal;
+    if (d.id) {
+      const e = FOOD().log.find(x => x.id === d.id); if (!e) return;
+      const oldDate = e.date;
+      Object.assign(e, vals, { qty, meal });
+      if (e.foodId) { const lib = FOOD().foods.find(x => x.id === e.foodId); if (lib) Object.assign(lib, vals); }
+      syncFoodMoney(oldDate);
+      save();
+      closeSheet(); renderHealth(); toast('Saved');
+    } else {
+      logFood({ ...findFood(d.fid) || {}, ...vals }, qty, meal);
+      closeSheet(); renderHealth(); toast(`Added to ${meal}`);
+    }
+  },
+  delFoodEntry(d) {
+    const e = FOOD().log.find(x => x.id === d.id); if (!e) return;
+    FOOD().log = FOOD().log.filter(x => x.id !== d.id);
+    syncFoodMoney(e.date);
+    save(); closeSheet(); renderHealth(); toast('Removed');
+  },
+  quickAddFood() {
+    sheetForm('Quick add', `Just the numbers — for a meal out or anything you can't be bothered looking up. Goes to ${foodMeal}.`,
+      field('What was it? (optional)', 'qa_name', { ph: 'e.g. Dinner at the pub' }) +
+      `<div class="row">${field('Calories', 'qa_kcal', { type: 'number', inputmode: 'numeric', ph: 'kcal' })}${field('Cost ($)', 'qa_cost', { type: 'number', step: 'any', inputmode: 'decimal', ph: '0.00' })}</div>` +
+      `<div class="row">${field('Protein (g)', 'qa_p', { type: 'number', step: 'any', inputmode: 'decimal', ph: 'opt.' })}${field('Carbs (g)', 'qa_c', { type: 'number', step: 'any', inputmode: 'decimal', ph: 'opt.' })}${field('Fat (g)', 'qa_f', { type: 'number', step: 'any', inputmode: 'decimal', ph: 'opt.' })}</div>`,
+      { save: 'saveQuickAdd', saveLabel: `Add to ${foodMeal}` });
+    setTimeout(() => $('#qa_kcal')?.focus(), 60);
+  },
+  saveQuickAdd() {
+    const kcal = num(val('qa_kcal')), cost = num(val('qa_cost'));
+    if (!kcal && !cost) return toast('Add calories or a cost');
+    FOOD().log.push({ id: uid(), date: foodDate, meal: foodMeal, name: val('qa_name') || 'Quick add', serving: 'quick add', qty: 1,
+      kcal, p: num(val('qa_p')), c: num(val('qa_c')), f: num(val('qa_f')), cost, foodId: null, at: Date.now() });
+    syncFoodMoney(foodDate);
+    save(); closeSheet(); renderHealth(); toast(`Added to ${foodMeal}`);
+  },
+  newFood(d) {
+    const q = $('#fd_q') ? $('#fd_q').value.trim() : '';
+    foodPortionSheet({ name: q, serving: '1 serve', kcal: '', p: '', c: '', f: '', cost: '' }, null, true);
+  },
+  async foodOnline() {
+    const qEl = $('#fd_q'); const q = qEl ? qEl.value.trim() : '';
+    const res = $('#fd_res'); if (!res) return;
+    if (q.length < 2) { toast('Type a food or barcode first'); qEl && qEl.focus(); return; }
+    res.innerHTML = `<div class="empty">Searching Open Food Facts…</div>`;
+    try {
+      onlineFoods = await searchOnline(q);
+      if (!$('#fd_res')) return;   // sheet closed while we waited
+      res.innerHTML = onlineFoods.length
+        ? `<div class="card-label" style="margin:14px 0 8px">Online · Open Food Facts — add your price when you log it</div>
+           <div class="list">${onlineFoods.map((f, i) => foodResultRow(f, 'on:' + i)).join('')}</div>`
+        : `<div class="empty">Nothing found online for “${esc(q)}”.<br>Try fewer words, or <button class="link" data-act="newFood">create it yourself</button>.</div>`;
+    } catch (err) {
+      res.innerHTML = `<div class="empty">Couldn't reach the food database — check your connection, or <button class="link" data-act="newFood">create it yourself</button>.</div>`;
+    }
+  },
+  delFood(d) {
+    FOOD().foods = FOOD().foods.filter(f => f.id !== d.id);
+    save(); closeSheet(); toast('Removed from My foods — your past logs are kept');
+    renderHealth();
+  },
+  copyMeal(d) {
+    const from = shiftISO(foodDate, -1);
+    const src = foodEntries(from).filter(e => e.meal === d.meal);
+    if (!src.length) return;
+    src.forEach(e => FOOD().log.push({ ...e, id: uid(), date: foodDate, at: Date.now() }));
+    syncFoodMoney(foodDate);
+    save(); renderHealth(); toast(`Copied ${src.length} item${src.length > 1 ? 's' : ''} to ${d.meal}`);
+  },
+  editFoodGoals() {
+    const g = FOOD().goals;
+    sheetForm('Food goals',
+      'Daily targets. Protein 1.6–2.2 g per kg of body weight is the usual gym range. The budget is what you want to spend on food per day.',
+      field('Calories (kcal)', 'fg_kcal', { type: 'number', inputmode: 'numeric', val: g.kcal }) +
+      `<div class="row">${field('Protein (g)', 'fg_p', { type: 'number', inputmode: 'numeric', val: g.protein })}${field('Carbs (g)', 'fg_c', { type: 'number', inputmode: 'numeric', val: g.carbs })}${field('Fat (g)', 'fg_f', { type: 'number', inputmode: 'numeric', val: g.fat })}</div>` +
+      `<div class="pay-note" id="fg_macro"></div>` +
+      field('Food budget per day ($)', 'fg_budget', { type: 'number', step: 'any', inputmode: 'decimal', val: g.budget }) +
+      `<label class="toggle-row"><input type="checkbox" id="fg_money" ${FOOD().toMoney ? 'checked' : ''}>
+        <span><b>Send food costs to Money</b><br><small>Each day's total becomes one “Food log” expense under your Food budget. Turn off if you already log grocery shops in Money, so nothing is counted twice.</small></span></label>`,
+      { save: 'saveFoodGoals' });
+    const note = () => {
+      const k = num(val('fg_p')) * 4 + num(val('fg_c')) * 4 + num(val('fg_f')) * 9;
+      $('#fg_macro').textContent = k ? `Those macros add up to ${kcalStr(k)} kcal${Math.abs(k - num(val('fg_kcal'))) > 150 ? ` — ${kcalStr(Math.abs(k - num(val('fg_kcal'))))} off your calorie goal` : ' ✓'}` : '';
+    };
+    ['fg_kcal', 'fg_p', 'fg_c', 'fg_f'].forEach(id => $('#' + id).addEventListener('input', note));
+    note();
+  },
+  saveFoodGoals() {
+    const g = FOOD().goals;
+    g.kcal = Math.max(0, Math.round(num(val('fg_kcal'), g.kcal)));
+    g.protein = Math.round(num(val('fg_p'))); g.carbs = Math.round(num(val('fg_c'))); g.fat = Math.round(num(val('fg_f')));
+    g.budget = num(val('fg_budget'));
+    const was = FOOD().toMoney;
+    FOOD().toMoney = $('#fg_money').checked;
+    if (was !== FOOD().toMoney) resyncAllFoodMoney();
+    save(); closeSheet(); renderHealth(); toast('Goals saved');
+  },
+
   /* ----- money: holdings ----- */
   addHolding() { ACT.editHolding({ id:'' }); },
   editHolding(d) {
@@ -2500,7 +3097,7 @@ const ACT = {
   editTxn(d) {
     const t = S.money.transactions.find(x=>x.id===d.id) || { desc:'', amount:'', category:'', date:todayISO(), dir:'out' };
     const cats = [...new Set([...S.money.budgets.map(b=>b.category),'Bills','Income','Other'])];
-    sheetForm(d.id?'Edit entry':'New entry','',
+    sheetForm(d.id?'Edit entry':'New entry', t.foodDay ? 'This is your Food diary total for the day — it updates itself when you log food in Health, so change the food there.' : '',
       field('Description','t_desc',{val:t.desc,ph:'Groceries…'}) +
       `<div class="row">${field('Amount','t_amt',{type:'number',step:'any',val:t.amount,inputmode:'decimal'})}${field('Type','t_dir',{type:'select',val:t.dir==='in'?'Income':'Expense',options:['Expense','Income']})}</div>` +
       field('Category','t_cat',{type:'select',val:t.category,options:['',...cats]}) +

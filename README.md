@@ -18,6 +18,7 @@ Works offline, installs to your phone's home screen, and (optionally) syncs the 
 | `manifest.webmanifest`, `sw.js`, `icons/` | PWA install + offline |
 | `api/quote.js` | Serverless function: live prices |
 | `api/sync.js` | Serverless function: cloud sync |
+| `api/food.js` | Serverless function: food search (Open Food Facts, no key needed) |
 | `dev-server.py` | **Local testing only** — mimics the two functions |
 
 ---
