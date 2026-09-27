@@ -237,6 +237,7 @@ function defaultState() {
         goals: { kcal: 2500, protein: 160, carbs: 280, fat: 80, budget: 25 },
         log: [],                     // {id, date, meal, name, serving, qty, kcal, p, c, f, cost, foodId}
         foods: [],                   // My foods: {id, name, serving, kcal, p, c, f, cost, uses, last}
+        meals: [],                   // meals & recipes: {id, name, servings, items:[food × qty], uses, last}
         toMoney: true,               // each day's food cost → one linked Money expense
       },
       // Strava link: refresh token + short-lived access token, plus the last import time
@@ -314,7 +315,10 @@ let undoStack = [], redoStack = [];
 function save(touch = true) {
   if (touch) {
     undoStack.push(lastSavedJSON);            // remember the previous state for undo
-    if (undoStack.length > 80) undoStack.shift();
+    // each step is a full copy, so cap by size too — a year of food logs makes
+    // every copy ~0.7 MB, and 80 of them would be enough to get a phone to kill the app
+    let bytes = undoStack.reduce((n, s) => n + s.length, 0);
+    while (undoStack.length > 80 || (undoStack.length > 5 && bytes > 12e6)) bytes -= undoStack.shift().length;
     redoStack = [];
     updateHistoryButtons();
     S.updatedAt = Date.now();
@@ -583,83 +587,100 @@ const TICK = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-
    ============================================================ */
 const MEALS = ['Breakfast', 'Lunch', 'Dinner', 'Snacks'];
 const MEAL_ICON = { Breakfast: '🍳', Lunch: '🥪', Dinner: '🍽', Snacks: '🍎' };
-// Built-in starter list so search works on day one. Values are per serving;
-// cost is a rough Australian price per serving and is yours to correct — the
-// first time you log one it's copied into My foods, and your price sticks.
-//   [name, serving, kcal, protein, carbs, fat, $]
+// Built-in starter list so search works on day one. Values are per serving.
+// Grocery prices were read off Coles, Woolworths and Aldi's websites on 27 Sep 2026:
+// each store's everyday own-brand version (or the main brand where there isn't one),
+// averaged across the three and worked down to one serving — `src` says which packs.
+// Café/takeaway items aren't sold there, so those carry a public figure or an estimate.
+// The first time you log a food it's copied into My foods, and a price you change sticks.
+//   [name, serving, kcal, protein, carbs, fat, $ per serving, where the price came from]
+const PRICES_CHECKED = '27 Sep 2026';
 const FOOD_DB = [
-  ['Egg', '1 large', 72, 6.3, 0.4, 4.8, 0.60],
-  ['White bread', '1 slice', 80, 2.7, 15, 1, 0.20],
-  ['Wholemeal bread', '1 slice', 85, 4, 14, 1.2, 0.25],
-  ['Weet-Bix', '2 biscuits', 107, 3.8, 20, 0.4, 0.25],
-  ['Rolled oats', '40 g', 150, 5, 24, 3.4, 0.15],
-  ['Milk, full cream', '250 ml', 165, 8.5, 12, 9, 0.40],
-  ['Milk, skim', '250 ml', 90, 9, 12.5, 0.3, 0.40],
-  ['Greek yoghurt', '170 g', 160, 15, 7, 8, 1.20],
-  ['Banana', '1 medium', 105, 1.3, 27, 0.4, 0.50],
-  ['Apple', '1 medium', 95, 0.5, 25, 0.3, 0.80],
-  ['Blueberries', '1/2 cup', 42, 0.5, 11, 0.2, 1.50],
-  ['Peanut butter', '1 tbsp', 120, 5, 3, 10, 0.20],
-  ['Avocado', '1/2 fruit', 160, 2, 8.5, 15, 1.25],
-  ['Butter', '10 g', 72, 0.1, 0, 8.1, 0.12],
-  ['Honey', '1 tbsp', 64, 0, 17, 0, 0.20],
-  ['Cheese slice', '1 slice (20 g)', 80, 5, 0.3, 6.5, 0.30],
-  ['Bacon', '2 rashers', 150, 12, 0.5, 11, 1.00],
-  ['Protein powder', '1 scoop (30 g)', 120, 24, 3, 1.5, 1.20],
-  ['Protein shake with milk', '1 shake', 285, 33, 15, 10.5, 1.60],
-  ['Chicken breast', '150 g cooked', 248, 46, 0, 5.4, 2.50],
-  ['Chicken thigh', '150 g cooked', 270, 37, 0, 13, 2.00],
-  ['Beef mince, lean', '150 g', 255, 31, 0, 14, 2.40],
-  ['Rump steak', '200 g', 360, 50, 0, 17, 6.00],
-  ['Salmon fillet', '150 g', 310, 31, 0, 20, 5.50],
-  ['Tuna, canned', '95 g can', 100, 22, 0, 1, 1.50],
-  ['White rice, cooked', '1 cup', 240, 4.5, 53, 0.4, 0.30],
-  ['Brown rice, cooked', '1 cup', 218, 4.5, 46, 1.6, 0.35],
-  ['Microwave rice', '1 pouch (250 g)', 370, 8, 78, 3, 2.00],
-  ['Pasta, cooked', '1 cup', 220, 8, 43, 1.3, 0.30],
-  ['Potato', '1 medium', 115, 3, 26, 0.1, 0.40],
-  ['Sweet potato', '150 g', 130, 2.4, 30, 0.2, 0.70],
-  ['Wrap / tortilla', '1 wrap', 180, 5, 30, 4, 0.60],
-  ['Broccoli', '1 cup', 30, 2.5, 6, 0.3, 0.60],
-  ['Mixed salad', '1 cup', 15, 1, 3, 0.1, 0.60],
-  ['Frozen mixed veg', '1 cup', 80, 4, 13, 0.5, 0.50],
-  ['Olive oil', '1 tbsp', 120, 0, 0, 14, 0.25],
-  ['Almonds', '30 g', 175, 6, 6, 15, 0.70],
-  ['Muesli bar', '1 bar', 140, 2.5, 20, 5.5, 0.70],
-  ['Protein bar', '1 bar', 200, 20, 20, 7, 3.00],
-  ['Chocolate bar', '50 g', 260, 3.5, 30, 14, 2.50],
-  ['Chips', '45 g packet', 240, 3, 23, 15, 1.50],
-  ['Chocolate biscuit', '1 biscuit', 95, 1, 12, 5, 0.40],
-  ['Flat white', 'regular, full cream', 130, 7, 10, 7, 5.00],
-  ['Long black', 'regular', 5, 0.3, 0, 0, 4.50],
-  ['Iced coffee, bottled', '500 ml', 330, 16, 45, 9, 4.50],
-  ['Soft drink', '375 ml can', 160, 0, 40, 0, 2.50],
-  ['Energy drink', '500 ml can', 225, 0, 55, 0, 4.00],
-  ['Sugar-free energy drink', '500 ml can', 10, 0, 2, 0, 4.00],
-  ['Orange juice', '250 ml', 110, 1.5, 25, 0.3, 0.80],
-  ['Beer', 'schooner (425 ml)', 180, 1.5, 14, 0, 9.00],
-  ['Big Mac', '1 burger', 500, 26, 40, 26, 8.00],
-  ['Cheeseburger', '1 burger', 300, 16, 32, 12, 4.00],
-  ['Fries, large', '1 serve', 450, 5, 58, 21, 5.00],
-  ['Chicken nuggets', '10 pieces', 450, 25, 27, 27, 9.00],
-  ['Pizza', '1 slice (large)', 285, 12, 36, 10, 3.50],
-  ['Chicken kebab', '1 kebab', 700, 40, 70, 28, 16.00],
-  ['Sub, 6-inch chicken', '1 sub', 350, 25, 45, 7, 10.00],
-  ['Sushi hand roll', '1 roll', 180, 6, 32, 3, 3.00],
-  ['Burrito bowl, chicken', '1 bowl', 650, 45, 70, 20, 17.00],
-  ['Meat pie', '1 pie', 450, 14, 36, 28, 5.50],
-  ['Sausage roll', '1 roll', 330, 8, 27, 21, 4.50],
-  ['Chicken schnitzel', '1 schnitzel', 480, 42, 22, 24, 8.00],
-  ['Fish & chips', '1 serve', 850, 35, 85, 42, 14.00],
-  ['Chicken, rice & veg (meal prep)', '1 container', 520, 45, 60, 10, 4.50],
-].map(([name, serving, kcal, p, c, f, cost], i) => ({ id: 'db:' + i, name, serving, kcal, p, c, f, cost, builtin: true }));
+  ['Egg', '1 large', 72, 6.3, 0.4, 4.8, 0.53, 'Free-range 12-packs: Coles $6.70 · Woolies $6.40 · Aldi $5.99'],
+  ['White bread', '1 slice', 80, 2.7, 15, 1, 0.16, '700 g loaf: Coles $3.50 · Woolies $3.25 · Aldi $3.69'],
+  ['Wholemeal bread', '1 slice', 85, 4, 14, 1.2, 0.16, 'Wholemeal loaf: Coles $3.50 (700 g) · Woolies $3.25 (700 g) · Aldi $2.59 (650 g)'],
+  ['Weet-Bix', '2 biscuits', 107, 3.8, 20, 0.4, 0.31, 'Weet-Bix: Coles $5 (575 g) · Woolies $5 (575 g) · Aldi $3.99 (375 g)'],
+  ['Rolled oats', '40 g', 150, 5, 24, 3.4, 0.08, 'Coles $3.50 (1.8 kg) · Woolies $3 (1.5 kg) · Aldi $1.49 (750 g)'],
+  ['Milk, full cream', '250 ml', 165, 8.5, 12, 9, 0.42, '2 L: Coles $3.40 · Woolies $3.40 · Aldi $3.39'],
+  ['Milk, skim', '250 ml', 90, 9, 12.5, 0.3, 0.42, '2 L: Coles $3.40 · Woolies $3.40 · Aldi $3.39'],
+  ['Greek yoghurt', '170 g', 160, 15, 7, 8, 0.69, 'Natural Greek-style 1 kg: Woolies $4.20 · Aldi $3.89 (no Coles 1 kg tub listed)'],
+  ['Banana', '1 medium', 105, 1.3, 27, 0.4, 0.83, 'Each: Coles $0.83 · Woolies $0.86 · Aldi $0.81'],
+  ['Apple', '1 medium', 95, 0.5, 25, 0.3, 1.24, 'Royal Gala each: Coles $1.34 · Woolies $1.26 · Aldi $1.12'],
+  ['Blueberries', '1/2 cup (75 g)', 42, 0.5, 11, 0.2, 1.76, '170 g punnet: Coles $4 · Woolies $4.50 · Aldi $3.49'],
+  ['Peanut butter', '1 tbsp (20 g)', 120, 5, 3, 10, 0.15, 'Coles $7.40 (Bega 755 g) · Woolies $3.20 (500 g) · Aldi $2.99 (500 g)'],
+  ['Avocado', '1/2 fruit', 160, 2, 8.5, 15, 1.25, 'Hass each: Coles $2.50 · Woolies $2.70 · Aldi $2.29'],
+  ['Butter', '10 g', 72, 0.1, 0, 8.1, 0.18, '250 g block: Coles $4.80 · Woolies $4.50 · Aldi $3.99'],
+  ['Honey', '1 tbsp', 64, 0, 17, 0, 0.29, '500 g: Coles $6.50 · Woolies $8.15 · Aldi $5.99'],
+  ['Cheese slice', '1 slice (20 g)', 80, 5, 0.3, 6.5, 0.30, '500 g tasty slices: Coles $8 · Woolies $7.50 · Aldi $6.99'],
+  ['Bacon', '2 rashers (60 g)', 150, 12, 0.5, 11, 1.02, 'Middle bacon 250 g: Coles $4.40 · Woolies $4.40 · Aldi $3.99'],
+  ['Protein powder', '1 scoop (30 g)', 120, 24, 3, 1.5, 1.64, 'Whey: Coles $25 (500 g) · Woolies $66.10 (1 kg) · Aldi $23.99 (500 g)'],
+  ['Protein shake with milk', '1 shake', 285, 33, 15, 10.5, 2.06, '1 scoop whey + 250 ml full cream milk, priced as above'],
+  ['Chicken breast', '150 g cooked', 248, 46, 0, 5.4, 2.73, '≈200 g raw at $/kg: Coles $14.50 · Woolies $14.50 · Aldi $12'],
+  ['Chicken thigh', '150 g cooked', 270, 37, 0, 13, 3.47, '≈200 g raw at $/kg: Coles $18 · Woolies $18 · Aldi $16'],
+  ['Beef mince, lean', '150 g', 255, 31, 0, 14, 2.88, '500 g lean: Coles $10 · Woolies $9.80 · Aldi $8.99'],
+  ['Rump steak', '200 g', 360, 50, 0, 17, 5.73, 'Rump $/kg: Coles $31 · Woolies $29 · Aldi $26'],
+  ['Salmon fillet', '150 g', 310, 31, 0, 20, 5.27, 'Salmon $/kg: Coles $34.67 (frozen) · Woolies $38 · Aldi $32.60'],
+  ['Tuna, canned', '95 g can', 100, 22, 0, 1, 1.03, '95 g can: Coles $1.10 · Woolies $1 · Aldi $0.99'],
+  ['White rice, cooked', '1 cup', 240, 4.5, 53, 0.4, 0.12, '≈66 g dry; long grain: Coles $3.60 (2 kg) · Woolies $1.80 (1 kg) · Aldi $3.59 (2 kg)'],
+  ['Brown rice, cooked', '1 cup', 218, 4.5, 46, 1.6, 0.20, '≈60 g dry; 1 kg: Coles $5 · Woolies $2.50 · Aldi $2.49'],
+  ['Microwave rice', '1 pouch (250 g)', 370, 8, 78, 3, 1.60, '250 g pouch: Coles $1.65 · Woolies $1.65 · Aldi $1.49'],
+  ['Pasta, cooked', '1 cup', 220, 8, 43, 1.3, 0.12, '≈62 g dry; 500 g spaghetti: Woolies $1 · Aldi $0.89 (Coles dry pasta not listed)'],
+  ['Potato', '1 medium (150 g)', 115, 3, 26, 0.1, 0.54, '2 kg washed: Coles $8.50 · Woolies $6 · Aldi $6.99'],
+  ['Sweet potato', '150 g', 130, 2.4, 30, 0.2, 0.62, 'Gold $/kg: Coles $3.50 · Woolies $4.90 · Aldi $4'],
+  ['Wrap / tortilla', '1 wrap', 180, 5, 30, 4, 0.46, 'Large 8-packs: Coles $3.50 · Woolies $4 · Aldi $3.49'],
+  ['Broccoli', '1 cup (90 g)', 30, 2.5, 6, 0.3, 0.35, 'Loose $/kg: Coles $4.50 · Woolies ≈$4.30 · Aldi $3'],
+  ['Mixed salad', '1 cup (50 g)', 15, 1, 3, 0.1, 0.71, 'Leaf mix: Woolies $3 (200 g) · Aldi $3.99 (300 g) (Coles only had organic)'],
+  ['Frozen mixed veg', '1 cup (135 g)', 80, 4, 13, 0.5, 0.38, '1 kg bag: Coles $2.80 · Woolies $2.80 · Aldi $2.79'],
+  ['Olive oil', '1 tbsp', 120, 0, 0, 14, 0.22, 'Extra virgin 1 L: Coles $14 · Woolies $19 · Aldi $13.29'],
+  ['Almonds', '30 g', 175, 6, 6, 15, 0.55, '750 g: Coles $15 · Woolies $13.50 · Aldi $12.49'],
+  ['Muesli bar', '1 bar', 140, 2.5, 20, 5.5, 0.47, 'Coles $8 (15-pack) · Woolies $8 (15-pack) · Aldi $2.09 (6-pack)'],
+  ['Protein bar', '1 bar', 200, 20, 20, 7, 4.00, 'Single bar: Coles $4.50 · Woolies $5 · Aldi $2.49'],
+  ['Chocolate bar', '45–50 g bar', 240, 3.5, 27, 13, 3.06, 'Dairy Milk 45 g: Coles $3.20 · Woolies $4 · Aldi $1.99'],
+  ['Chips', '45 g', 240, 3, 23, 15, 1.81, 'Coles $2.90 (60 g) · Woolies $6 (8×19 g) · Aldi $1.49 (45 g)'],
+  ['Chocolate biscuit', '1 biscuit', 95, 1, 12, 5, 0.50, 'Tim Tam 200 g: Coles $6 · Woolies $6 · Aldi $4.49'],
+  ['Flat white', 'regular, full cream', 130, 7, 10, 7, 6.00, 'Café average for Australian capital cities, 2026 (~$5.50 regional)'],
+  ['Long black', 'regular', 5, 0.3, 0, 0, 5.30, 'Estimate — usually a little under a flat white'],
+  ['Iced coffee, bottled', '500 ml', 330, 16, 45, 9, 3.11, 'Coles $2.90 (Ice Break) · Woolies $3.30 (Dare) · Aldi $4.69 (Dare 750 ml)'],
+  ['Soft drink', '375 ml can', 160, 0, 40, 0, 1.15, 'Coke cans in multipacks: Coles $11.50 (10) · Woolies $27 (24) · Aldi $20.99 (18)'],
+  ['Energy drink', '500 ml can', 225, 0, 55, 0, 3.31, 'Coles $3.25 (Monster) · Woolies $4.70 (Monster) · Aldi $1.99 (Flying Power)'],
+  ['Sugar-free energy drink', '500 ml can', 10, 0, 2, 0, 3.31, 'Coles $3.25 (Monster Ultra) · Woolies $4.70 · Aldi $1.99 (Flying Power no sugar)'],
+  ['Orange juice', '250 ml', 110, 1.5, 25, 0.3, 0.65, '2 L: Coles $6.50 · Woolies $4.20 · Aldi $4.99'],
+  ['Beer', 'schooner (425 ml)', 180, 1.5, 14, 0, 11.00, 'Estimate for a pub schooner'],
+  ['Big Mac', '1 burger', 500, 26, 40, 26, 10.80, 'Big Mac Index, Australia, May 2026'],
+  ['Cheeseburger', '1 burger', 300, 16, 32, 12, 5.00, 'Estimate'],
+  ['Fries, large', '1 serve', 450, 5, 58, 21, 5.95, 'Estimate'],
+  ['Chicken nuggets', '10 pieces', 450, 25, 27, 27, 10.50, 'Estimate'],
+  ['Pizza', '1 slice (large)', 285, 12, 36, 10, 4.50, 'Estimate (large pizza ÷ 8)'],
+  ['Chicken kebab', '1 kebab', 700, 40, 70, 28, 17.00, 'Estimate'],
+  ['Sub, 6-inch chicken', '1 sub', 350, 25, 45, 7, 11.00, 'Estimate'],
+  ['Sushi hand roll', '1 roll', 180, 6, 32, 3, 4.00, 'Estimate'],
+  ['Burrito bowl, chicken', '1 bowl', 650, 45, 70, 20, 18.00, 'Estimate'],
+  ['Meat pie', '1 pie', 450, 14, 36, 28, 6.50, 'Estimate (bakery)'],
+  ['Sausage roll', '1 roll', 330, 8, 27, 21, 5.50, 'Estimate (bakery)'],
+  ['Chicken schnitzel', '1 schnitzel', 480, 42, 22, 24, 8.00, 'Estimate'],
+  ['Fish & chips', '1 serve', 850, 35, 85, 42, 15.00, 'Estimate'],
+  ['Chicken, rice & veg (meal prep)', '1 container', 520, 45, 60, 10, 3.30, '200 g raw chicken + 66 g rice + 135 g frozen veg + oil, priced as above'],
+].map(([name, serving, kcal, p, c, f, cost, src], i) => ({ id: 'db:' + i, name, serving, kcal, p, c, f, cost, src, builtin: true }));
 
 let foodDate = todayISO();      // the day the Food diary is showing
+let foodToday = foodDate;       // what "today" was when foodDate was last set to it
 let foodRange = 'week';         // insights window: 'week' | 'month'
 let foodMeal = 'Breakfast';     // meal the add sheet is adding to
 let onlineFoods = [];           // last Open Food Facts results
+let mealDraft = null;           // the meal/recipe being built or edited
+let foodPick = false;           // true while the add sheet is picking ingredients for mealDraft
 
 const FOOD = () => S.health.food;
+// Numbers typed into food forms: never negative, and capped at something no real
+// serving reaches, so one fat-fingered entry can't wreck a day's totals or Money.
+const LIMITS = { kcal: 10000, g: 1000, cost: 1000, qty: 100 };
+const clampIn = (v, max) => Math.min(Math.max(num(v), 0), max);
+function foodNums(src) {
+  const out = { kcal: clampIn(src.kcal, LIMITS.kcal), p: clampIn(src.p, LIMITS.g), c: clampIn(src.c, LIMITS.g),
+    f: clampIn(src.f, LIMITS.g), cost: Math.round(clampIn(src.cost, LIMITS.cost) * 100) / 100 };
+  const bad = ['kcal', 'p', 'c', 'f', 'cost'].some(k => num(src[k]) < 0 || num(src[k]) > (k === 'kcal' ? LIMITS.kcal : k === 'cost' ? LIMITS.cost : LIMITS.g));
+  return { out, bad };
+}
 const r1 = n => Math.round(n * 10) / 10;
 const kcalStr = n => Math.round(n).toLocaleString('en-AU');
 const foodEntries = iso => FOOD().log.filter(e => e.date === iso);
@@ -685,14 +706,31 @@ function servingText(serving, q) {
 }
 const foodLine = f => [f.serving, `${kcalStr(f.kcal)} kcal`, f.p ? `P ${r1(f.p)}g` : '', num(f.cost) > 0 ? AUD(f.cost) : ''].filter(Boolean).join(' · ');
 
-// a food from any source: My foods, the built-in list, or the last online search
+/* Meals & recipes: a saved list of foods × amounts. A recipe just makes more than
+   one serving — logging "1 serving" logs its total ÷ servings. Logged as ONE diary
+   entry (a snapshot), so editing the recipe later never rewrites past days. */
+const MEALS_LIB = () => (FOOD().meals || (FOOD().meals = []));
+function mealTotals(m) { return sumEntries(m.items || []); }
+function mealAsFood(m) {
+  const t = mealTotals(m), n = Math.max(num(m.servings, 1), 1);
+  return { id: 'meal:' + m.id, mealId: m.id, isMeal: true, name: m.name,
+    serving: n > 1 ? `1 of ${r1(n)} serves` : '1 serve', parts: (m.items || []).length,
+    kcal: r1(t.kcal / n), p: r1(t.p / n), c: r1(t.c / n), f: r1(t.f / n), cost: Math.round(t.cost / n * 100) / 100, uses: m.uses || 0 };
+}
+// a food from any source: My foods, the built-in list, the last online search, or a meal
 function findFood(fid) {
   if (!fid) return null;
+  if (fid.startsWith('meal:')) { const m = MEALS_LIB().find(x => x.id === fid.slice(5)); return m ? mealAsFood(m) : null; }
   if (fid.startsWith('db:')) return FOOD_DB[+fid.slice(3)] || null;
   if (fid.startsWith('on:')) return onlineFoods[+fid.slice(3)] || null;
   return FOOD().foods.find(f => f.id === fid) || null;
 }
 const nameKey = s => String(s || '').trim().toLowerCase();
+// a built-in price's source note only stays true while the name and price are unchanged
+function priceSrcFor(name, cost) {
+  const db = FOOD_DB.find(x => nameKey(x.name) === nameKey(name));
+  return db && Math.abs(num(db.cost) - num(cost)) < 0.005 ? db.src : '';
+}
 // Copy a food into My foods (or refresh the saved copy), so the next search finds
 // it first and a price you've corrected is remembered.
 function rememberFood(src) {
@@ -700,21 +738,27 @@ function rememberFood(src) {
   let f = lib.find(x => x.id === src.id) || (src.code && lib.find(x => x.code === src.code)) || lib.find(x => nameKey(x.name) === nameKey(src.name));
   const vals = { name: src.name, serving: src.serving || '1 serve', kcal: num(src.kcal), p: num(src.p), c: num(src.c), f: num(src.f), cost: num(src.cost) };
   if (src.code) vals.code = src.code;
+  vals.src = priceSrcFor(vals.name, vals.cost);
   if (f) Object.assign(f, vals);
   else { f = { id: uid(), ...vals, uses: 0 }; lib.push(f); }
   f.uses = (f.uses || 0) + 1;
   f.last = Date.now();
   return f;
 }
+// match regardless of plurals, on both sides: "eggs" finds Egg, "blueberry" finds Blueberries
+const singular = w => w.length > 3 ? w.replace(/(oes|ies|es|s)$/, m => m === 'ies' ? 'y' : m === 'oes' ? 'o' : m === 'es' && !/(ch|sh|x|ss)es$/.test(w) ? 'e' : '') : w;
+const searchKey = s => nameKey(s).replace(/[,/&()'’-]+/g, ' ').split(/\s+/).filter(Boolean).map(singular).join(' ');
 function searchFoods(q) {
-  const k = nameKey(q);
+  const k = searchKey(q);
+  if (!k) return [];
   const mine = FOOD().foods;
   const mineNames = new Set(mine.map(f => nameKey(f.name)));
-  const pool = [...mine, ...FOOD_DB.filter(f => !mineNames.has(nameKey(f.name)))];
+  const pool = [...MEALS_LIB().map(mealAsFood), ...mine, ...FOOD_DB.filter(f => !mineNames.has(nameKey(f.name)))];
   const score = f => {
-    const n = nameKey(f.name);
-    let s = n.startsWith(k) ? 3 : n.split(/[\s,/&-]+/).some(w => w.startsWith(k)) ? 2 : n.includes(k) ? 1 : 0;
+    const n = searchKey(f.name);
+    let s = n.startsWith(k) ? 3 : n.split(' ').some(w => w.startsWith(k)) ? 2 : n.includes(k) ? 1 : 0;
     if (s && !f.builtin) s += 2 + Math.min(f.uses || 0, 20) / 20;
+    if (s && f.isMeal) s += 1;   // your own meals first
     return s;
   };
   return pool.map(f => [f, score(f)]).filter(([, s]) => s > 0).sort((a, b) => b[1] - a[1]).slice(0, 30).map(([f]) => f);
@@ -723,7 +767,7 @@ function searchFoods(q) {
 function recentFoods(n = 12) {
   const seen = new Set(), out = [];
   for (const e of FOOD().log.slice().reverse()) {
-    const f = findFood(e.foodId);
+    const f = findFood(e.mealId ? 'meal:' + e.mealId : e.foodId);
     const key = f ? f.id : nameKey(e.name);
     if (!f || seen.has(key)) continue;
     seen.add(key); out.push(f);
@@ -1830,26 +1874,28 @@ function renderHealth() {
         const q = num(e.qty, 1);
         return `<div class="item tap food-entry" data-act="editFoodEntry" data-id="${e.id}">
           <div class="body"><div class="t">${esc(e.name)}</div>
-            <div class="s">${esc([servingText(e.serving, q), e.p ? `P ${Math.round(e.p * q)}g` : ''].filter(Boolean).join(' · '))}</div></div>
+            <div class="s">${e.mealId ? '<span class="chip food-meal">meal</span> ' : ''}${esc([servingText(e.serving, q), e.p ? `P ${Math.round(e.p * q)}g` : ''].filter(Boolean).join(' · '))}</div></div>
           <div class="right"><div class="trail">${kcalStr(e.kcal * q)}</div>
             <div class="s muted">${num(e.cost) > 0 ? AUD(e.cost * q) : '—'}</div></div>
-        </div>`; }).join('')}</div>`
+        </div>`; }).join('')}</div>
+        ${es.length >= 2 ? `<button class="more-link save-meal" data-act="saveAsMeal" data-meal="${m}">Save ${m.toLowerCase()} as a meal →</button>` : ''}`
         : hadYest ? `<button class="more-link copy-meal" data-act="copyMeal" data-meal="${m}">Copy ${m.toLowerCase()} from ${foodDate === todayISO() ? 'yesterday' : fmtDay(yest)}</button>` : ''}
     </div>`;
   };
 
   B.push({ key:'food', name:'Food diary', grow:true, html: `
     <div class="section-head"><h3>Food</h3>
-      <span style="display:inline-flex;gap:12px;align-items:center">
-        <button class="link" data-act="editFoodGoals">Goals</button>
-        <button class="link" data-act="scanBarcode">Scan</button>
-        <button class="link" data-act="addFood">+ Food</button>
-      </span></div>
+      <button class="link" data-act="editFoodGoals">Goals</button></div>
     <div class="card">
       <div class="food-date">
         <button class="icon-btn" data-act="foodPrev" aria-label="Previous day">‹</button>
         <button class="fd-label" data-act="foodToday">${foodDayLabel(foodDate)}</button>
         <button class="icon-btn" data-act="foodNext" aria-label="Next day" ${foodDate >= todayISO() ? 'disabled' : ''}>›</button>
+      </div>
+      <div class="food-actions">
+        <button class="btn sm primary" data-act="addFood">+ Add food</button>
+        <button class="btn sm" data-act="scanBarcode">📷 Scan</button>
+        <button class="btn sm" data-act="mealList">🍱 Meals</button>
       </div>
       <div class="food-top">
         ${ring(clamp(ft.kcal / (fg.kcal || 1), 0, 1), { size: 108, sw: 10, label: kcalStr(Math.abs(left)), caption: left >= 0 ? 'kcal left' : 'kcal over', color: left < 0 ? 'var(--red)' : '' })}
@@ -2081,9 +2127,22 @@ function renderHealth() {
   // Food & spending heads the right-hand column, beside the Food diary
   B.splice(Math.ceil((B.length + 1) / 2), 0, foodStatsBlock);
 
+  // one glance at the day across every section; each tile jumps to its section
+  const td = dayTotals(iso), lastN = S.health.sleep[S.health.sleep.length - 1];
+  const kLeft = fg.kcal - td.kcal;
+  const tile = (sec, icon, v, label, cls = '') => `<button class="hs-item tap" data-act="healthJump" data-sec="${sec}">
+      <span class="hs-v ${cls}">${v}</span><span class="hs-l">${icon} ${label}</span></button>`;
+  const strip = `<div class="card health-strip">
+      ${tile('food', '🔥', kcalStr(Math.abs(kLeft)), kLeft >= 0 ? 'kcal left' : 'kcal over', kLeft < 0 ? 'neg' : '')}
+      ${tile('food', '💪', Math.round(td.p) + 'g', fg.protein ? `of ${fg.protein}g` : 'protein', fg.protein && td.p >= fg.protein ? 'pos' : '')}
+      ${tile('foodStats', '💸', AUD(td.cost, td.cost >= 100 ? 0 : 2), fg.budget ? `of ${AUD(fg.budget, 0)}` : 'food', fg.budget && td.cost > fg.budget ? 'neg' : '')}
+      ${tile('water', '💧', (water / 1000).toFixed(1) + 'L', `${Math.round(wp * 100)}%`)}
+      ${tile('sleep', '😴', lastN ? lastN.hours.toFixed(1) + 'h' : '—', lastN && lastN.date === iso ? 'last night' : 'sleep')}
+    </div>`;
+
   $('#view-health').innerHTML =
     `<div class="section-head" style="margin-top:0"><div class="view-title" style="margin:0">Health</div>${arrangeHeader('health')}</div>`
-    + renderBlocks('health', B);
+    + strip + renderBlocks('health', B);
 }
 
 /* ---------- MONEY ---------- */
@@ -2403,9 +2462,9 @@ const val = id => { const el = $('#' + id); return el ? el.value.trim() : ''; };
 function foodResultRow(f, fid) {
   return `<div class="item food-row">
     <div class="body tap" data-act="pickFood" data-fid="${fid}">
-      <div class="t">${esc(f.name)}${f.builtin ? '' : f.online ? ' <span class="chip src food-src">online</span>' : ' <span class="chip food-mine">mine</span>'}</div>
+      <div class="t">${esc(f.name)}${f.builtin ? '' : f.isMeal ? ` <span class="chip food-meal">${f.parts} items</span>` : f.online ? ' <span class="chip src food-src">online</span>' : ' <span class="chip food-mine">mine</span>'}</div>
       <div class="s">${esc(foodLine(f))}</div></div>
-    <button class="food-add" data-act="quickLogFood" data-fid="${fid}" aria-label="Add one serving">+</button>
+    <button class="food-add" data-act="quickLogFood" data-fid="${fid}" aria-label="${foodPick ? 'Add to recipe' : 'Add one serving'}">+</button>
   </div>`;
 }
 function renderFoodResults(q) {
@@ -2424,6 +2483,16 @@ function renderFoodResults(q) {
     + `<button class="more-link" data-act="foodOnline">${hits.length ? 'Not it? ' : 'Nothing saved yet — '}search online for “${esc(q)}” →</button>`;
 }
 function logFood(f, qty, meal) {
+  if (f.isMeal) {
+    const m = MEALS_LIB().find(x => x.id === f.mealId);
+    if (m) { m.uses = (m.uses || 0) + 1; m.last = Date.now(); }
+    FOOD().log.push({ id: uid(), date: foodDate, meal, name: f.name, serving: f.serving, qty,
+      kcal: num(f.kcal), p: num(f.p), c: num(f.c), f: num(f.f), cost: num(f.cost), foodId: null, mealId: f.mealId, parts: f.parts, at: Date.now() });
+    syncFoodMoney(foodDate);
+    save();
+    if (currentTab === 'health') renderHealth();
+    return;
+  }
   const saved = rememberFood(f);
   FOOD().log.push({ id: uid(), date: foodDate, meal, name: saved.name, serving: saved.serving, qty,
     kcal: saved.kcal, p: saved.p, c: saved.c, f: saved.f, cost: saved.cost, foodId: saved.id, at: Date.now() });
@@ -2436,10 +2505,13 @@ function logFood(f, qty, meal) {
 function foodPortionSheet(f, entry, creating = false, note = '') {
   const qty = entry ? num(entry.qty, 1) : 1;
   const nf = (label, id, v, ph) => field(label, id, { type: 'number', step: 'any', inputmode: 'decimal', val: v === '' ? '' : r1(num(v)), ph });
-  const lib = entry && entry.foodId ? FOOD().foods.find(x => x.id === entry.foodId) : (!f.builtin && !f.online && f.id ? f : null);
+  const lib = entry && entry.foodId ? FOOD().foods.find(x => x.id === entry.foodId) : (!f.builtin && !f.online && !f.isMeal && f.id ? f : null);
+  const picking = foodPick && !entry;
   openSheet(`<h3>${creating ? 'New food' : entry ? 'Edit entry' : esc(f.name)}</h3>
     <p class="desc">${note || (creating ? 'Values per serving. It\'s saved to My foods for next time.' : `${esc(f.serving || '')} · values below are per serving`)}</p>
-    <div class="seg full" id="fp_meals">${MEALS.map(m => `<button data-act="pickFoodMeal" data-m="${m}" class="${m === foodMeal ? 'on' : ''}">${m}</button>`).join('')}</div>
+    ${picking ? `<div class="pick-banner">Adding to <b>${esc(mealDraft ? mealDraft.name || 'your recipe' : 'your recipe')}</b></div>`
+      : `<div class="seg full" id="fp_meals">${MEALS.map(m => `<button data-act="pickFoodMeal" data-m="${m}" class="${m === foodMeal ? 'on' : ''}">${m}</button>`).join('')}</div>`}
+    ${entry && entry.mealId ? `<div class="pick-banner">A saved meal — values are per serving. Changing them here only changes this day.</div>` : ''}
     <div class="qty-row">
       <span class="qty-l">Servings</span>
       <button class="btn sm ghost" data-act="stepQty" data-s="-0.5">−</button>
@@ -2451,7 +2523,9 @@ function foodPortionSheet(f, entry, creating = false, note = '') {
     <div class="food-total" id="fp_total"></div>
     ${field('Name', 'fp_name', { val: f.name, ph: 'e.g. Chicken wrap' })}
     ${field('Serving', 'fp_serv', { val: f.serving, ph: 'e.g. 1 wrap, 100 g, 1 cup' })}
-    <div class="row">${nf('Calories', 'fp_kcal', f.kcal, 'kcal')}${nf('Cost / serving ($)', 'fp_cost', f.cost === 0 || f.cost === '' ? '' : f.cost, '0.00')}</div>
+    <div class="row">${nf('Calories', 'fp_kcal', f.kcal, 'kcal')}${field('Cost / serving ($)', 'fp_cost', { type: 'number', step: 'any', inputmode: 'decimal', ph: '0.00',
+      val: num(f.cost) > 0 ? (Math.round(num(f.cost) * 100) / 100).toFixed(2) : '' })}</div>
+    ${f.src && !entry ? `<div class="price-src">💲 ${esc(f.src)} <span class="muted">· checked ${PRICES_CHECKED}</span></div>` : ''}
     <button class="link small pack-link" data-act="togglePackCalc">Work out cost from the pack price</button>
     <div id="fp_pack" class="pack-calc" ${f.perPack && !num(f.cost) ? '' : 'hidden'}>
       <div class="row">${field('Pack price ($)', 'fp_packprice', { type: 'number', step: 'any', inputmode: 'decimal', ph: 'e.g. 6.50' })}${field('Servings in pack', 'fp_packn', { type: 'number', step: 'any', inputmode: 'decimal', ph: 'e.g. 10', val: f.perPack || '' })}</div>
@@ -2460,8 +2534,9 @@ function foodPortionSheet(f, entry, creating = false, note = '') {
     <div class="sheet-actions">
       ${entry ? `<button class="btn danger" data-act="delFoodEntry" data-id="${entry.id}">Delete</button>`
         : lib ? `<button class="btn ghost" data-act="delFood" data-id="${lib.id}">Forget food</button>`
+        : picking ? `<button class="btn ghost" data-act="addFood" data-pick="1">Back</button>`
         : `<button class="btn ghost" data-act="addFood" data-meal="${foodMeal}">Back</button>`}
-      <button class="btn primary" data-act="saveFoodPortion" data-id="${entry ? entry.id : ''}" data-fid="${!entry && f.id ? f.id : ''}" data-code="${esc(!entry && f.code || '')}">${entry ? 'Save' : 'Add'}</button>
+      <button class="btn primary" data-act="saveFoodPortion" data-id="${entry ? entry.id : ''}" data-fid="${!entry && f.id ? f.id : ''}" data-code="${esc(!entry && f.code || '')}">${entry ? 'Save' : picking ? 'Add to recipe' : 'Add'}</button>
     </div>`);
   const total = () => {
     const q = num(val('fp_qty'), 0);
@@ -2485,7 +2560,81 @@ function foodPortionSheet(f, entry, creating = false, note = '') {
   ['fp_qty', 'fp_kcal', 'fp_cost', 'fp_p', 'fp_c', 'fp_f'].forEach(id => $('#' + id).addEventListener('input', total));
   ['fp_packprice', 'fp_packn'].forEach(id => $('#' + id).addEventListener('input', pack));
   total();
-  if (creating) setTimeout(() => $(f.name ? '#fp_kcal' : '#fp_name')?.focus(), 60);
+  if (creating) $(f.name ? '#fp_kcal' : '#fp_name')?.focus({ preventScroll: true });
+}
+
+/* ---------- meals & recipes: builder ---------- */
+function addToDraft(f, qty) {
+  if (!mealDraft) return;
+  if (f.isMeal && f.mealId === mealDraft.id) return toast("A recipe can't contain itself");
+  const same = mealDraft.items.find(i => (f.id && i.foodId === f.id) || nameKey(i.name) === nameKey(f.name));
+  if (same) same.qty = r1(num(same.qty, 1) + qty);
+  else mealDraft.items.push({ name: f.name, serving: f.serving || '1 serve', qty,
+    kcal: num(f.kcal), p: num(f.p), c: num(f.c), f: num(f.f), cost: num(f.cost), foodId: f.isMeal ? null : (f.id || null) });
+  toast(`${f.name} added`);
+}
+function mealDraftSummary() {
+  const t = sumEntries(mealDraft.items), n = Math.max(num(mealDraft.servings, 1), 1);
+  return `<div class="md-tot">
+      <div><b>${kcalStr(t.kcal / n)}</b> kcal · P ${Math.round(t.p / n)} · C ${Math.round(t.c / n)} · F ${Math.round(t.f / n)}
+        <span class="ft-cost">${t.cost > 0 ? AUD(t.cost / n) : 'no price'}</span></div>
+      <small>${n !== 1 ? `per serving · whole recipe ${kcalStr(t.kcal)} kcal, ${AUD(t.cost)}` : 'per serving'}</small>
+    </div>`;
+}
+function mealEditorSheet() {
+  const m = mealDraft, saved = MEALS_LIB().some(x => x.id === m.id);
+  openSheet(`<h3>${saved ? 'Edit meal' : 'New meal or recipe'}</h3>
+    <p class="desc">Add everything that goes in once — then it's one tap to log. For a recipe that makes several serves, set how many it makes and each log is one serve.</p>
+    ${field('Name', 'md_name', { val: m.name, ph: 'e.g. Morning shake, Eggs on toast, Bolognese' })}
+    <div class="qty-row md-serv"><span class="qty-l">Makes</span>
+      <button class="btn sm ghost" data-act="mdServ" data-s="-1">−</button>
+      <input id="md_serv" type="number" min="1" step="1" inputmode="numeric" value="${r1(num(m.servings, 1))}">
+      <button class="btn sm ghost" data-act="mdServ" data-s="1">+</button><span class="muted small">serve${num(m.servings, 1) === 1 ? '' : 's'}</span></div>
+    <div class="card-label" style="margin:12px 0 8px">Ingredients</div>
+    <div class="list md-items">${m.items.map((i, k) => `
+      <div class="item md-item">
+        <div class="body"><div class="t">${esc(i.name)}</div>
+          <div class="s">${esc(i.serving)} · ${kcalStr(i.kcal * i.qty)} kcal${num(i.cost) > 0 ? ` · ${AUD(i.cost * i.qty)}` : ''}</div></div>
+        <input class="md-qty" type="number" step="0.25" min="0" inputmode="decimal" value="${r1(num(i.qty, 1))}" data-k="${k}" aria-label="Servings of ${esc(i.name)}">
+        <button class="md-del" data-act="mdRemove" data-k="${k}" aria-label="Remove ${esc(i.name)}">✕</button>
+      </div>`).join('') || '<div class="empty">No ingredients yet</div>'}
+    </div>
+    <button class="btn btn-add" data-act="addFood" data-pick="1" style="margin-top:10px">+ Add an ingredient</button>
+    <div id="md_sum">${mealDraftSummary()}</div>
+    <div class="sheet-actions">
+      ${saved ? `<button class="btn danger" data-act="delMeal" data-id="${m.id}">Delete</button>` : `<button class="btn ghost" data-act="cancelMeal">Cancel</button>`}
+      <button class="btn" data-act="saveMeal" data-log="1">Save &amp; log</button>
+      <button class="btn primary" data-act="saveMeal">Save</button>
+    </div>`);
+  const refresh = () => { $('#md_sum').innerHTML = mealDraftSummary(); };
+  $('#md_name').addEventListener('input', e => { mealDraft.name = e.target.value; });
+  $('#md_serv').addEventListener('input', e => { mealDraft.servings = Math.min(Math.max(Math.round(num(e.target.value, 1)), 1), 100); refresh(); });
+  $$('.md-qty').forEach(inp => inp.addEventListener('input', () => {
+    const it = mealDraft.items[+inp.dataset.k]; if (!it) return;
+    it.qty = Math.max(num(inp.value, 0), 0);
+    inp.closest('.md-item').querySelector('.s').textContent =
+      `${it.serving} · ${kcalStr(it.kcal * it.qty)} kcal${num(it.cost) > 0 ? ` · ${AUD(it.cost * it.qty)}` : ''}`;
+    refresh();
+  }));
+  if (!m.name) $('#md_name')?.focus({ preventScroll: true });   // in the tap itself, so iOS raises the keyboard
+}
+function mealListSheet() {
+  const list = MEALS_LIB().slice().sort((a, b) => (b.last || 0) - (a.last || 0));
+  openSheet(`<h3>My meals</h3>
+    <p class="desc">Tap + to log one serving to ${foodMeal} (${foodDayLabel(foodDate)}), or tap a meal to edit it.</p>
+    <div class="list">${list.map(m => { const f = mealAsFood(m); return `
+      <div class="item food-row">
+        <div class="body tap" data-act="editMeal" data-id="${m.id}">
+          <div class="t">${esc(m.name)} <span class="chip food-meal">${f.parts} items</span></div>
+          <div class="s">${esc(foodLine(f))}${num(m.servings, 1) > 1 ? ` · makes ${r1(m.servings)}` : ''}</div></div>
+        <button class="food-add" data-act="quickLogFood" data-fid="meal:${m.id}" aria-label="Log one serving">+</button>
+      </div>`; }).join('') || `<div class="empty">No meals yet. Build one — like your morning shake — or tap “Save as meal” under a meal in your diary.</div>`}
+    </div>
+    <div class="sheet-actions">
+      <button class="btn ghost" data-act="addFood" data-meal="${foodMeal}">Back</button>
+      <button class="btn primary" data-act="newMeal">+ New meal / recipe</button>
+    </div>`);
+  foodPick = false;
 }
 
 /* ---------- barcode scanner ----------
@@ -2507,8 +2656,17 @@ function stopScanner() {
   if (scanStream) { scanStream.getTracks().forEach(t => t.stop()); scanStream = null; }
   const ov = $('#scanner'); if (ov) ov.remove();
 }
-// never leave the camera running behind a backgrounded app
-document.addEventListener('visibilitychange', () => { if (document.hidden) stopScanner(); });
+// never leave the camera running behind a backgrounded app; and if the app was left
+// on today's diary overnight, come back to the new today rather than logging to yesterday
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return stopScanner();
+  const t = todayISO();
+  if (t !== foodToday) {
+    if (foodDate === foodToday) foodDate = t;
+    foodToday = t;
+    if (currentTab === 'health' && !$('#scrim').classList.contains('open')) renderHealth();
+  }
+});
 function scanMsg(text, bad) { const m = $('#scanMsg'); if (m) { m.textContent = text; m.classList.toggle('bad', !!bad); } }
 async function openScanner() {
   stopScanner();
@@ -2992,18 +3150,21 @@ const ACT = {
   foodToday() { foodDate = todayISO(); renderHealth(); },
   setFoodRange(d) { foodRange = d.r; renderHealth(); },
   addFood(d) {
-    foodMeal = d.meal || (foodDate === todayISO() ? mealForNow() : foodMeal);
-    openSheet(`<h3>Add food</h3>
-      <p class="desc">${foodDayLabel(foodDate)} · pick the meal, then search or tap a recent food</p>
-      <div class="seg full" id="fd_meals">${MEALS.map(m => `<button data-act="pickFoodMeal" data-m="${m}" class="${m === foodMeal ? 'on' : ''}">${m}</button>`).join('')}</div>
-      <input id="fd_q" class="food-q" type="search" placeholder="Search foods, or type a barcode" autocomplete="off" enterkeyhint="search">
-      <button class="btn primary scan-cta" data-act="scanBarcode">
+    foodPick = !!d.pick && !!mealDraft;
+    if (!foodPick) foodMeal = d.meal || (foodDate === todayISO() ? mealForNow() : foodMeal);
+    openSheet(`<h3>${foodPick ? 'Add an ingredient' : 'Add food'}</h3>
+      <p class="desc">${foodPick ? `to ${esc(mealDraft.name || 'your recipe')} — tap + for one serving, or the food to set the amount`
+        : `${foodDayLabel(foodDate)} · pick the meal, then search or tap a recent food`}</p>
+      ${foodPick ? '' : `<div class="seg full" id="fd_meals">${MEALS.map(m => `<button data-act="pickFoodMeal" data-m="${m}" class="${m === foodMeal ? 'on' : ''}">${m}</button>`).join('')}</div>`}
+      <input id="fd_q" class="food-q" type="search" placeholder="Search foods${foodPick ? '' : ' and meals'}, or type a barcode" autocomplete="off" enterkeyhint="search">
+      <button class="btn primary scan-cta" data-act="scanBarcode" ${foodPick ? 'data-pick="1"' : ''}>
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M7 8v8M10 8v8M13 8v8M17 8v8"/></svg>
         Scan a barcode</button>
       <div class="food-tools">
-        <button class="btn sm" data-act="quickAddFood">⚡ Quick add</button>
+        ${foodPick ? `<button class="btn sm" data-act="openMealEditor">← Back to recipe</button>`
+          : `<button class="btn sm" data-act="mealList">🍱 My meals</button><button class="btn sm" data-act="quickAddFood">⚡ Quick add</button>`}
         <button class="btn sm" data-act="newFood">+ New food</button>
-        <button class="btn sm" data-act="foodOnline">🔎 Search online</button>
+        <button class="btn sm" data-act="foodOnline">🔎 Online</button>
       </div>
       <div id="fd_res"></div>`);
     const q = $('#fd_q');
@@ -3013,6 +3174,7 @@ const ACT = {
     if (matchMedia('(pointer:fine)').matches) q.focus();
   },
   scanBarcode(d) {
+    foodPick = !!d.pick && !!mealDraft;
     if (d.meal) foodMeal = d.meal;
     else if (!$('#fd_meals')) foodMeal = foodDate === todayISO() ? mealForNow() : foodMeal;
     openScanner();
@@ -3027,17 +3189,64 @@ const ACT = {
     stopScanner();
     sheetForm('Type the barcode', 'The long number under the bars — usually 13 digits.',
       field('Barcode', 'bc_num', { type: 'text', inputmode: 'numeric', ph: 'e.g. 9300652010794' }), { save: 'scanTypedCode', saveLabel: 'Look up' });
-    setTimeout(() => $('#bc_num')?.focus(), 60);
+    $('#bc_num')?.focus({ preventScroll: true });
   },
   scanTypedCode() {
     const code = val('bc_num').replace(/\D/g, '');
     if (!/^\d{8,14}$/.test(code)) return toast('Barcodes are 8–14 digits');
     foundBarcode(code);
   },
+  mealList() { foodPick = false; mealListSheet(); },
+  newMeal() { mealDraft = { id: uid(), name: '', servings: 1, items: [] }; foodPick = false; mealEditorSheet(); },
+  editMeal(d) {
+    const m = MEALS_LIB().find(x => x.id === d.id); if (!m) return;
+    mealDraft = JSON.parse(JSON.stringify(m));   // edit a copy; Cancel leaves the saved one alone
+    foodPick = false; mealEditorSheet();
+  },
+  openMealEditor() { if (!mealDraft) return ACT.mealList(); foodPick = false; mealEditorSheet(); },
+  mdServ(d) { const i = $('#md_serv'); i.value = Math.max(1, Math.round(num(i.value, 1)) + num(d.s)); i.dispatchEvent(new Event('input')); },
+  mdRemove(d) { if (!mealDraft) return; mealDraft.items.splice(+d.k, 1); mealEditorSheet(); },
+  cancelMeal() { mealDraft = null; foodPick = false; ACT.mealList(); },
+  saveMeal(d) {
+    const m = mealDraft; if (!m) return;
+    m.name = (val('md_name') || m.name || '').trim();
+    if (!m.name) { toast('Give it a name'); $('#md_name')?.focus(); return; }
+    const items = m.items.filter(i => num(i.qty) > 0);
+    if (!items.length) return toast(m.items.length ? 'Set an amount above 0 for at least one ingredient' : 'Add at least one ingredient');
+    if (items.some(i => num(i.qty) > LIMITS.qty)) return toast(`An ingredient is over ${LIMITS.qty} servings — check it`);
+    m.items = items;
+    m.servings = Math.min(Math.max(Math.round(num(m.servings, 1)), 1), 100);
+    const lib = MEALS_LIB(), i = lib.findIndex(x => x.id === m.id);
+    if (i >= 0) lib[i] = { ...lib[i], ...m }; else lib.push({ ...m, uses: 0, last: Date.now() });
+    mealDraft = null; foodPick = false;
+    if (d.log) { logFood(findFood('meal:' + m.id), 1, foodMeal); closeSheet(); toast(`${m.name} saved and added to ${foodMeal}`); }
+    else { save(); toast(`${m.name} saved`); ACT.mealList(); }
+    renderHealth();
+  },
+  delMeal(d) {
+    const m = MEALS_LIB().find(x => x.id === d.id); if (!m) return;
+    FOOD().meals = MEALS_LIB().filter(x => x.id !== d.id);
+    mealDraft = null; foodPick = false;
+    save(); toast(`${m.name} deleted — days you logged it keep their numbers`); ACT.mealList(); renderHealth();
+  },
+  // turn what's logged under Breakfast (etc.) into a reusable meal
+  saveAsMeal(d) {
+    const es = foodEntries(foodDate).filter(e => e.meal === d.meal);
+    if (!es.length) return;
+    mealDraft = { id: uid(), name: '', servings: 1,
+      items: es.map(e => ({ name: e.name, serving: e.serving, qty: num(e.qty, 1), kcal: num(e.kcal), p: num(e.p), c: num(e.c), f: num(e.f), cost: num(e.cost), foodId: e.foodId || null })) };
+    foodMeal = d.meal; foodPick = false;
+    mealEditorSheet();
+  },
+  healthJump(d) {
+    const el = $(`#view-health [data-sec="${d.sec}"]`); if (!el) return;
+    window.scrollTo({ top: el.getBoundingClientRect().top + scrollY - 70, behavior: 'smooth' });
+  },
   pickFoodMeal(d, el) { foodMeal = d.m; $$('button', el.parentElement).forEach(b => b.classList.toggle('on', b === el)); },
   // the + on a result: log one serving straight away, MyFitnessPal-style
   quickLogFood(d, el) {
     const f = findFood(d.fid); if (!f) return;
+    if (foodPick && mealDraft) { addToDraft(f, 1); return ACT.openMealEditor(); }
     logFood(f, 1, foodMeal);
     el.classList.add('added'); el.textContent = '✓';
     if (navigator.vibrate) navigator.vibrate(10);
@@ -3059,15 +3268,23 @@ const ACT = {
   saveFoodPortion(d) {
     const qty = num(val('fp_qty'), 1);
     if (qty <= 0) return toast('How many servings?');
-    const vals = { name: val('fp_name') || 'Food', serving: val('fp_serv') || '1 serve',
-      kcal: num(val('fp_kcal')), p: num(val('fp_p')), c: num(val('fp_c')), f: num(val('fp_f')), cost: num(val('fp_cost')) };
+    if (qty > LIMITS.qty) return toast(`That's over ${LIMITS.qty} servings — check the number`);
+    const chk = foodNums({ kcal: val('fp_kcal'), p: val('fp_p'), c: val('fp_c'), f: val('fp_f'), cost: val('fp_cost') });
+    if (chk.bad) return toast(`Numbers can't be negative, or over ${kcalStr(LIMITS.kcal)} kcal / ${LIMITS.g} g / $${LIMITS.cost} a serving`);
+    const vals = { name: val('fp_name') || 'Food', serving: val('fp_serv') || '1 serve', ...chk.out };
     if (d.code) vals.code = d.code;
+    if (!d.id && foodPick && mealDraft) {
+      const src = { ...findFood(d.fid) || {}, ...vals };
+      addToDraft(src.isMeal ? src : rememberFood(src), qty);
+      save();
+      return ACT.openMealEditor();
+    }
     const meal = $('#fp_meals .on')?.dataset.m || foodMeal;
     if (d.id) {
       const e = FOOD().log.find(x => x.id === d.id); if (!e) return;
       const oldDate = e.date;
       Object.assign(e, vals, { qty, meal });
-      if (e.foodId) { const lib = FOOD().foods.find(x => x.id === e.foodId); if (lib) Object.assign(lib, vals); }
+      if (e.foodId) { const lib = FOOD().foods.find(x => x.id === e.foodId); if (lib) Object.assign(lib, vals, { src: priceSrcFor(vals.name, vals.cost) }); }
       syncFoodMoney(oldDate);
       save();
       closeSheet(); renderHealth(); toast('Saved');
@@ -3088,13 +3305,15 @@ const ACT = {
       `<div class="row">${field('Calories', 'qa_kcal', { type: 'number', inputmode: 'numeric', ph: 'kcal' })}${field('Cost ($)', 'qa_cost', { type: 'number', step: 'any', inputmode: 'decimal', ph: '0.00' })}</div>` +
       `<div class="row">${field('Protein (g)', 'qa_p', { type: 'number', step: 'any', inputmode: 'decimal', ph: 'opt.' })}${field('Carbs (g)', 'qa_c', { type: 'number', step: 'any', inputmode: 'decimal', ph: 'opt.' })}${field('Fat (g)', 'qa_f', { type: 'number', step: 'any', inputmode: 'decimal', ph: 'opt.' })}</div>`,
       { save: 'saveQuickAdd', saveLabel: `Add to ${foodMeal}` });
-    setTimeout(() => $('#qa_kcal')?.focus(), 60);
+    $('#qa_kcal')?.focus({ preventScroll: true });
   },
   saveQuickAdd() {
-    const kcal = num(val('qa_kcal')), cost = num(val('qa_cost'));
+    const chk = foodNums({ kcal: val('qa_kcal'), p: val('qa_p'), c: val('qa_c'), f: val('qa_f'), cost: val('qa_cost') });
+    if (chk.bad) return toast(`Numbers can't be negative, or over ${kcalStr(LIMITS.kcal)} kcal / ${LIMITS.g} g / $${LIMITS.cost}`);
+    const { kcal, cost } = chk.out;
     if (!kcal && !cost) return toast('Add calories or a cost');
     FOOD().log.push({ id: uid(), date: foodDate, meal: foodMeal, name: val('qa_name') || 'Quick add', serving: 'quick add', qty: 1,
-      kcal, p: num(val('qa_p')), c: num(val('qa_c')), f: num(val('qa_f')), cost, foodId: null, at: Date.now() });
+      ...chk.out, foodId: null, at: Date.now() });
     syncFoodMoney(foodDate);
     save(); closeSheet(); renderHealth(); toast(`Added to ${foodMeal}`);
   },
@@ -3151,9 +3370,11 @@ const ACT = {
   },
   saveFoodGoals() {
     const g = FOOD().goals;
-    g.kcal = Math.max(0, Math.round(num(val('fg_kcal'), g.kcal)));
-    g.protein = Math.round(num(val('fg_p'))); g.carbs = Math.round(num(val('fg_c'))); g.fat = Math.round(num(val('fg_f')));
-    g.budget = num(val('fg_budget'));
+    const kc = Math.round(num(val('fg_kcal'), g.kcal));
+    if (kc < 800 || kc > 10000) return toast('Calorie goal should be between 800 and 10,000');
+    g.kcal = kc;
+    g.protein = Math.round(clampIn(val('fg_p'), LIMITS.g)); g.carbs = Math.round(clampIn(val('fg_c'), LIMITS.g)); g.fat = Math.round(clampIn(val('fg_f'), LIMITS.g));
+    g.budget = Math.round(clampIn(val('fg_budget'), LIMITS.cost) * 100) / 100;
     const was = FOOD().toMoney;
     FOOD().toMoney = $('#fg_money').checked;
     if (was !== FOOD().toMoney) resyncAllFoodMoney();
