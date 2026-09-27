@@ -697,8 +697,9 @@ const nameKey = s => String(s || '').trim().toLowerCase();
 // it first and a price you've corrected is remembered.
 function rememberFood(src) {
   const lib = FOOD().foods;
-  let f = lib.find(x => x.id === src.id) || lib.find(x => nameKey(x.name) === nameKey(src.name));
+  let f = lib.find(x => x.id === src.id) || (src.code && lib.find(x => x.code === src.code)) || lib.find(x => nameKey(x.name) === nameKey(src.name));
   const vals = { name: src.name, serving: src.serving || '1 serve', kcal: num(src.kcal), p: num(src.p), c: num(src.c), f: num(src.f), cost: num(src.cost) };
+  if (src.code) vals.code = src.code;
   if (f) Object.assign(f, vals);
   else { f = { id: uid(), ...vals, uses: 0 }; lib.push(f); }
   f.uses = (f.uses || 0) + 1;
@@ -756,16 +757,33 @@ function offToFood(p) {
   if (kcal == null && n['energy' + k] != null) kcal = n['energy' + k] / 4.184;   // kJ → kcal
   if (kcal == null || !p.product_name) return null;
   const brand = String(p.brands || '').split(',')[0].trim();
+  // servings per pack, so the pack-price helper only needs the price
+  const packQty = num(p.product_quantity), servQty = hasServ ? num(p.serving_quantity) : 100;
+  const perPack = packQty > 0 && servQty > 0 ? Math.round(packQty / servQty * 10) / 10 : 0;
   return { name: p.product_name.trim() + (brand && !nameKey(p.product_name).includes(nameKey(brand)) ? ` (${brand})` : ''),
     serving: hasServ ? (p.serving_size || '1 serving') : '100 g',
-    kcal: r1(kcal), p: r1(num(n['proteins' + k])), c: r1(num(n['carbohydrates' + k])), f: r1(num(n['fat' + k])), cost: 0, online: true };
+    kcal: r1(kcal), p: r1(num(n['proteins' + k])), c: r1(num(n['carbohydrates' + k])), f: r1(num(n['fat' + k])), cost: 0, online: true,
+    code: p.code ? String(p.code) : '', perPack };
+}
+const OFF_FIELDS = 'code,product_name,brands,serving_size,serving_quantity,product_quantity,nutriments';
+// one product by barcode: our proxy first, then OFF directly (its product API allows CORS)
+async function lookupCode(code) {
+  let product = null;
+  try {
+    const r = await fetch(`/api/food?code=${encodeURIComponent(code)}`);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    product = (await r.json()).products[0] || null;
+  } catch (e) {
+    const r = await fetch(`https://world.openfoodfacts.org/api/v2/product/${code}.json?fields=${OFF_FIELDS}`);
+    const j = await r.json();
+    product = j.product ? { code, ...j.product } : null;
+  }
+  return product ? offToFood(product) : null;
 }
 async function searchOnline(q) {
-  const fields = 'code,product_name,brands,serving_size,nutriments';
+  const fields = OFF_FIELDS;
   if (/^\d{8,14}$/.test(q)) {
-    const r = await fetch(`https://world.openfoodfacts.org/api/v2/product/${q}.json?fields=${fields}`);
-    const j = await r.json();
-    const f = j.product && offToFood(j.product);
+    const f = await lookupCode(q);
     return f ? [f] : [];
   }
   // our /api/food proxy first (fast + reliable); straight to OFF if there's no server
@@ -1824,6 +1842,7 @@ function renderHealth() {
     <div class="section-head"><h3>Food</h3>
       <span style="display:inline-flex;gap:12px;align-items:center">
         <button class="link" data-act="editFoodGoals">Goals</button>
+        <button class="link" data-act="scanBarcode">Scan</button>
         <button class="link" data-act="addFood">+ Food</button>
       </span></div>
     <div class="card">
@@ -2414,12 +2433,12 @@ function logFood(f, qty, meal) {
 }
 // One sheet for "how much of this?" — logging a new food, or editing a logged entry.
 // Nutrition and price are editable here, so a correction sticks to My foods too.
-function foodPortionSheet(f, entry, creating = false) {
+function foodPortionSheet(f, entry, creating = false, note = '') {
   const qty = entry ? num(entry.qty, 1) : 1;
   const nf = (label, id, v, ph) => field(label, id, { type: 'number', step: 'any', inputmode: 'decimal', val: v === '' ? '' : r1(num(v)), ph });
   const lib = entry && entry.foodId ? FOOD().foods.find(x => x.id === entry.foodId) : (!f.builtin && !f.online && f.id ? f : null);
   openSheet(`<h3>${creating ? 'New food' : entry ? 'Edit entry' : esc(f.name)}</h3>
-    <p class="desc">${creating ? 'Values per serving. It\'s saved to My foods for next time.' : `${esc(f.serving || '')} · values below are per serving`}</p>
+    <p class="desc">${note || (creating ? 'Values per serving. It\'s saved to My foods for next time.' : `${esc(f.serving || '')} · values below are per serving`)}</p>
     <div class="seg full" id="fp_meals">${MEALS.map(m => `<button data-act="pickFoodMeal" data-m="${m}" class="${m === foodMeal ? 'on' : ''}">${m}</button>`).join('')}</div>
     <div class="qty-row">
       <span class="qty-l">Servings</span>
@@ -2434,15 +2453,15 @@ function foodPortionSheet(f, entry, creating = false) {
     ${field('Serving', 'fp_serv', { val: f.serving, ph: 'e.g. 1 wrap, 100 g, 1 cup' })}
     <div class="row">${nf('Calories', 'fp_kcal', f.kcal, 'kcal')}${nf('Cost / serving ($)', 'fp_cost', f.cost === 0 || f.cost === '' ? '' : f.cost, '0.00')}</div>
     <button class="link small pack-link" data-act="togglePackCalc">Work out cost from the pack price</button>
-    <div id="fp_pack" class="pack-calc" hidden>
-      <div class="row">${field('Pack price ($)', 'fp_packprice', { type: 'number', step: 'any', inputmode: 'decimal', ph: 'e.g. 6.50' })}${field('Servings in pack', 'fp_packn', { type: 'number', step: 'any', inputmode: 'decimal', ph: 'e.g. 10' })}</div>
+    <div id="fp_pack" class="pack-calc" ${f.perPack && !num(f.cost) ? '' : 'hidden'}>
+      <div class="row">${field('Pack price ($)', 'fp_packprice', { type: 'number', step: 'any', inputmode: 'decimal', ph: 'e.g. 6.50' })}${field('Servings in pack', 'fp_packn', { type: 'number', step: 'any', inputmode: 'decimal', ph: 'e.g. 10', val: f.perPack || '' })}</div>
     </div>
     <div class="row">${nf('Protein (g)', 'fp_p', f.p, '0')}${nf('Carbs (g)', 'fp_c', f.c, '0')}${nf('Fat (g)', 'fp_f', f.f, '0')}</div>
     <div class="sheet-actions">
       ${entry ? `<button class="btn danger" data-act="delFoodEntry" data-id="${entry.id}">Delete</button>`
         : lib ? `<button class="btn ghost" data-act="delFood" data-id="${lib.id}">Forget food</button>`
         : `<button class="btn ghost" data-act="addFood" data-meal="${foodMeal}">Back</button>`}
-      <button class="btn primary" data-act="saveFoodPortion" data-id="${entry ? entry.id : ''}" data-fid="${!entry && f.id ? f.id : ''}">${entry ? 'Save' : 'Add'}</button>
+      <button class="btn primary" data-act="saveFoodPortion" data-id="${entry ? entry.id : ''}" data-fid="${!entry && f.id ? f.id : ''}" data-code="${esc(!entry && f.code || '')}">${entry ? 'Save' : 'Add'}</button>
     </div>`);
   const total = () => {
     const q = num(val('fp_qty'), 0);
@@ -2467,6 +2486,102 @@ function foodPortionSheet(f, entry, creating = false) {
   ['fp_packprice', 'fp_packn'].forEach(id => $('#' + id).addEventListener('input', pack));
   total();
   if (creating) setTimeout(() => $(f.name ? '#fp_kcal' : '#fp_name')?.focus(), 60);
+}
+
+/* ---------- barcode scanner ----------
+   The camera feed goes to BarcodeDetector: the browser's own where it reads
+   EAN/UPC (Chrome, Android), otherwise a small WebAssembly build of ZXing that
+   is only downloaded the first time you scan (iPhone Safari has no native one). */
+const SCAN_FORMATS = ['ean_13', 'ean_8', 'upc_a', 'upc_e'];
+const SCAN_LIB = 'https://cdn.jsdelivr.net/npm/barcode-detector@3.2.2/ponyfill/+esm';
+let scanDetector = null, scanStream = null, scanTimer = 0, scanBusy = false;
+async function barcodeDetector() {
+  if (scanDetector) return scanDetector;
+  let BD = window.BarcodeDetector;
+  try { if (!BD || !(await BD.getSupportedFormats()).includes('ean_13')) BD = null; } catch { BD = null; }
+  if (!BD) BD = (await import(SCAN_LIB)).BarcodeDetector;
+  return (scanDetector = new BD({ formats: SCAN_FORMATS }));
+}
+function stopScanner() {
+  clearTimeout(scanTimer); scanTimer = 0; scanBusy = false;
+  if (scanStream) { scanStream.getTracks().forEach(t => t.stop()); scanStream = null; }
+  const ov = $('#scanner'); if (ov) ov.remove();
+}
+// never leave the camera running behind a backgrounded app
+document.addEventListener('visibilitychange', () => { if (document.hidden) stopScanner(); });
+function scanMsg(text, bad) { const m = $('#scanMsg'); if (m) { m.textContent = text; m.classList.toggle('bad', !!bad); } }
+async function openScanner() {
+  stopScanner();
+  const ov = document.createElement('div');
+  ov.id = 'scanner'; ov.className = 'scanner';
+  ov.innerHTML = `<video id="scanVideo" playsinline muted autoplay></video>
+    <div class="scan-frame"><i class="scan-line"></i></div>
+    <div class="scan-top">
+      <button class="scan-btn" data-act="closeScanner" aria-label="Close">✕</button>
+      <span id="scanMsg">Starting camera…</span>
+      <button class="scan-btn" id="scanTorch" data-act="scanTorch" aria-label="Torch" style="visibility:hidden">🔦</button>
+    </div>
+    <div class="scan-bottom">
+      <div class="scan-meal">Adding to <b>${foodMeal}</b> · ${foodDayLabel(foodDate)}</div>
+      <button class="btn" data-act="scanTypeCode">Type the barcode number instead</button>
+    </div>`;
+  document.body.appendChild(ov);
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    return scanMsg(location.protocol === 'https:' || location.hostname === 'localhost'
+      ? 'This browser can\'t use the camera here' : 'The camera only works on the https:// version of Compass', true);
+  }
+  try {
+    const [stream, det] = await Promise.all([
+      navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } } }),
+      barcodeDetector(),
+    ]);
+    if (!$('#scanner')) { stream.getTracks().forEach(t => t.stop()); return; }   // closed while starting
+    scanStream = stream;
+    const v = $('#scanVideo');
+    v.srcObject = stream;
+    await v.play().catch(() => {});
+    const track = stream.getVideoTracks()[0];
+    const caps = track && track.getCapabilities ? track.getCapabilities() : {};
+    if (caps.torch) $('#scanTorch').style.visibility = 'visible';   // keeps the message centred when absent
+    scanMsg('Point the camera at a barcode');
+    const tick = async () => {
+      if (!scanStream) return;
+      if (v.readyState >= 2 && !scanBusy) {
+        scanBusy = true;
+        try {
+          const hits = await det.detect(v);
+          const code = hits.map(h => h.rawValue).find(c => /^\d{8,14}$/.test(c));
+          if (code) { if (navigator.vibrate) navigator.vibrate(40); stopScanner(); return foundBarcode(code); }
+        } catch (e) { /* a bad frame — keep going */ }
+        scanBusy = false;
+      }
+      scanTimer = setTimeout(tick, 120);
+    };
+    tick();
+  } catch (e) {
+    const denied = e && (e.name === 'NotAllowedError' || e.name === 'SecurityError');
+    const none = e && (e.name === 'NotFoundError' || e.name === 'OverconstrainedError');
+    scanMsg(denied ? 'Camera access is blocked — allow it for Compass in your browser/phone settings'
+      : none ? 'No camera found on this device'
+      : 'Couldn\'t start the scanner — check your connection and try again', true);
+  }
+}
+// a scanned (or typed) barcode → your saved food if you've had it, else Open Food Facts
+async function foundBarcode(code) {
+  const mine = FOOD().foods.find(f => f.code === code);
+  if (mine) return foodPortionSheet(mine, null, false, `Scanned · ${esc(mine.serving)} · from My foods, with your price`);
+  openSheet(`<h3>Looking it up…</h3><p class="desc">Barcode ${esc(code)}</p><div class="empty">Checking Open Food Facts</div>`);
+  let f = null, failed = false;
+  try { f = await lookupCode(code); } catch (e) { failed = true; }
+  if (!$('#scrim').classList.contains('open')) return;   // closed while waiting
+  if (f) {
+    onlineFoods = [{ ...f, id: 'on:0' }];
+    return foodPortionSheet(onlineFoods[0], null, false,
+      `Scanned · ${esc(f.serving)} per serving${f.perPack ? ` · about ${f.perPack} in a pack` : ''} — add what you paid to track the cost`);
+  }
+  foodPortionSheet({ name: '', serving: '1 serve', kcal: '', p: '', c: '', f: '', cost: '', code }, null, true,
+    failed ? `Couldn't reach the food database, so fill this in — barcode ${esc(code)} is saved with it and scanning it again finds it straight away.`
+      : `Barcode ${esc(code)} isn't in the database yet. Copy the label once and scanning it again finds it straight away.`);
 }
 
 /* ============================================================
@@ -2882,6 +2997,9 @@ const ACT = {
       <p class="desc">${foodDayLabel(foodDate)} · pick the meal, then search or tap a recent food</p>
       <div class="seg full" id="fd_meals">${MEALS.map(m => `<button data-act="pickFoodMeal" data-m="${m}" class="${m === foodMeal ? 'on' : ''}">${m}</button>`).join('')}</div>
       <input id="fd_q" class="food-q" type="search" placeholder="Search foods, or type a barcode" autocomplete="off" enterkeyhint="search">
+      <button class="btn primary scan-cta" data-act="scanBarcode">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M7 8v8M10 8v8M13 8v8M17 8v8"/></svg>
+        Scan a barcode</button>
       <div class="food-tools">
         <button class="btn sm" data-act="quickAddFood">⚡ Quick add</button>
         <button class="btn sm" data-act="newFood">+ New food</button>
@@ -2893,6 +3011,28 @@ const ACT = {
     q.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); ACT.foodOnline(); } });
     renderFoodResults('');
     if (matchMedia('(pointer:fine)').matches) q.focus();
+  },
+  scanBarcode(d) {
+    if (d.meal) foodMeal = d.meal;
+    else if (!$('#fd_meals')) foodMeal = foodDate === todayISO() ? mealForNow() : foodMeal;
+    openScanner();
+  },
+  closeScanner() { stopScanner(); },
+  async scanTorch(d, el) {
+    const t = scanStream && scanStream.getVideoTracks()[0]; if (!t) return;
+    const on = !el.classList.contains('on');
+    try { await t.applyConstraints({ advanced: [{ torch: on }] }); el.classList.toggle('on', on); } catch (e) { toast('Torch not available'); }
+  },
+  scanTypeCode() {
+    stopScanner();
+    sheetForm('Type the barcode', 'The long number under the bars — usually 13 digits.',
+      field('Barcode', 'bc_num', { type: 'text', inputmode: 'numeric', ph: 'e.g. 9300652010794' }), { save: 'scanTypedCode', saveLabel: 'Look up' });
+    setTimeout(() => $('#bc_num')?.focus(), 60);
+  },
+  scanTypedCode() {
+    const code = val('bc_num').replace(/\D/g, '');
+    if (!/^\d{8,14}$/.test(code)) return toast('Barcodes are 8–14 digits');
+    foundBarcode(code);
   },
   pickFoodMeal(d, el) { foodMeal = d.m; $$('button', el.parentElement).forEach(b => b.classList.toggle('on', b === el)); },
   // the + on a result: log one serving straight away, MyFitnessPal-style
@@ -2921,6 +3061,7 @@ const ACT = {
     if (qty <= 0) return toast('How many servings?');
     const vals = { name: val('fp_name') || 'Food', serving: val('fp_serv') || '1 serve',
       kcal: num(val('fp_kcal')), p: num(val('fp_p')), c: num(val('fp_c')), f: num(val('fp_f')), cost: num(val('fp_cost')) };
+    if (d.code) vals.code = d.code;
     const meal = $('#fp_meals .on')?.dataset.m || foodMeal;
     if (d.id) {
       const e = FOOD().log.find(x => x.id === d.id); if (!e) return;
@@ -2967,7 +3108,7 @@ const ACT = {
     if (q.length < 2) { toast('Type a food or barcode first'); qEl && qEl.focus(); return; }
     res.innerHTML = `<div class="empty">Searching Open Food Facts…</div>`;
     try {
-      onlineFoods = await searchOnline(q);
+      onlineFoods = (await searchOnline(q)).map((f, i) => ({ ...f, id: 'on:' + i }));
       if (!$('#fd_res')) return;   // sheet closed while we waited
       res.innerHTML = onlineFoods.length
         ? `<div class="card-label" style="margin:14px 0 8px">Online · Open Food Facts — add your price when you log it</div>

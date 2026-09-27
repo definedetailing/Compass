@@ -921,3 +921,24 @@ label.field > span { display: block; font-size: 12.5px; font-weight: 600; color:
 .toggle-row { display: flex; gap: 12px; align-items: flex-start; margin-top: 6px; font-size: 13.5px; line-height: 1.4; cursor: pointer; }
 .toggle-row input { width: 20px; height: 20px; margin-top: 2px; flex: none; accent-color: var(--primary); }
 .toggle-row small { color: var(--text-3); font-size: 12px; }
+
+/* barcode scanner */
+.scan-cta { width: 100%; margin: 12px 0 0; display: flex; align-items: center; justify-content: center; gap: 8px; }
+.scanner { position: fixed; inset: 0; z-index: 200; background: #000; color: #fff; overflow: hidden; }
+.scanner video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.scan-frame { position: absolute; left: 50%; top: 45%; width: min(78vw, 340px); aspect-ratio: 16 / 10; transform: translate(-50%, -50%);
+  border-radius: 18px; box-shadow: 0 0 0 100vmax rgba(0, 0, 0, .5); border: 2px solid rgba(255, 255, 255, .85); overflow: hidden; }
+.scan-line { position: absolute; left: 8%; right: 8%; height: 2px; top: 50%; background: #ef4444; box-shadow: 0 0 12px #ef4444;
+  animation: scanline 1.6s ease-in-out infinite alternate; }
+@keyframes scanline { from { top: 18%; } to { top: 82%; } }
+.scan-top { position: absolute; left: 0; right: 0; top: 0; padding: calc(12px + var(--safe-t)) 14px 12px;
+  display: flex; align-items: center; gap: 12px; background: linear-gradient(rgba(0,0,0,.55), transparent); }
+.scan-top #scanMsg { flex: 1; text-align: center; font-weight: 650; font-size: 14.5px; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+.scan-top #scanMsg.bad { color: #fecaca; }
+.scan-btn { width: 42px; height: 42px; border-radius: 50%; border: none; background: rgba(255,255,255,.18); color: #fff; font-size: 18px;
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); flex: none; }
+.scan-btn.on { background: #facc15; color: #111; }
+.scan-bottom { position: absolute; left: 0; right: 0; bottom: 0; padding: 16px 16px calc(20px + var(--safe-b));
+  display: flex; flex-direction: column; gap: 10px; align-items: center; background: linear-gradient(transparent, rgba(0,0,0,.6)); }
+.scan-meal { font-size: 13px; opacity: .85; }
+.scan-bottom .btn { width: 100%; max-width: 420px; background: rgba(255,255,255,.14); color: #fff; border-color: rgba(255,255,255,.25); }

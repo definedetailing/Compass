@@ -21,7 +21,7 @@ STRAVA_SECRET = os.environ.get("STRAVA_CLIENT_SECRET", "")
 
 
 OFF_UA = {"User-Agent": "Compass/1.0 (personal dashboard)"}
-OFF_FIELDS = "code,product_name,brands,serving_size,nutriments,countries_tags"
+OFF_FIELDS = "code,product_name,brands,serving_size,serving_quantity,product_quantity,nutriments,countries_tags"
 
 
 def food_rank(items):
@@ -155,7 +155,21 @@ class H(http.server.SimpleHTTPRequestHandler):
                     out[s] = q
             return self._json(200, out)
         if self.path.startswith("/api/food"):
-            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("q", [""])[0].strip()[:80]
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            code = "".join(ch for ch in qs.get("code", [""])[0] if ch.isdigit())
+            if code:
+                if not 8 <= len(code) <= 14:
+                    return self._json(400, {"error": "bad barcode"})
+                try:
+                    j = get_json(f"https://world.openfoodfacts.org/api/v2/product/{code}.json?fields={OFF_FIELDS}", OFF_UA)
+                    return self._json(200, {"products": [{"code": code, **j["product"]}] if j.get("product") else []})
+                except urllib.error.HTTPError as e:
+                    if e.code == 404:
+                        return self._json(200, {"products": []})
+                    return self._json(502, {"error": "food database unavailable"})
+                except Exception:
+                    return self._json(502, {"error": "food database unavailable"})
+            q = qs.get("q", [""])[0].strip()[:80]
             if len(q) < 2:
                 return self._json(400, {"error": "query too short"})
             try:
