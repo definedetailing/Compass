@@ -28,7 +28,7 @@ Works offline, installs to your phone's home screen, and (optionally) syncs the 
 You already have Python, so:
 
 ```bash
-cd "/Users/tyson/Desktop/Tyson Tracker"
+cd "/Users/tyson/Desktop/Personal/Compass"
 python3 dev-server.py
 ```
 
@@ -46,7 +46,7 @@ This makes it installable on your phone with data synced everywhere. All free.
 1. Go to <https://github.com/new>, create an empty repo called `compass` (Private is fine). Don't add a README.
 2. In Terminal:
    ```bash
-   cd "/Users/tyson/Desktop/Tyson Tracker"
+   cd "/Users/tyson/Desktop/Personal/Compass"
    git init
    git add .
    git commit -m "Compass dashboard"
