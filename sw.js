@@ -2,7 +2,7 @@
    BUMP `CACHE` whenever index.html's ?v= changes. The activate handler deletes
    every cache that isn't the current one, so bumping it is what actually forces
    an installed home-screen app off a stale shell. */
-const CACHE = 'compass-v35';
+const CACHE = 'compass-v40';
 const ASSETS = [
   './', './index.html', './styles.css', './app.js', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png', './icons/favicon-32.png'
@@ -26,4 +26,13 @@ self.addEventListener('fetch', e => {
       return res;
     }).catch(() => caches.match(e.request).then(c => c || caches.match('./index.html')))
   );
+});
+
+// tapping a reminder opens (or focuses) Compass
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+    const open = list.find(c => 'focus' in c);
+    return open ? open.focus() : self.clients.openWindow('./');
+  }));
 });

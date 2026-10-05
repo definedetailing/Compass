@@ -9,6 +9,8 @@ const $  = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
+// one icon set (Lucide, inline sprite in index.html) instead of emoji
+const ic = (n, cls = '') => `<svg class="ic ${cls}" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 
 const AUD = (n, dp = 2) => '$' + (Number(n) || 0).toLocaleString('en-AU', { minimumFractionDigits: dp, maximumFractionDigits: dp });
@@ -38,7 +40,7 @@ function weekKey(d = new Date()) {
 }
 
 /* ---------- calendar categories & helpers ---------- */
-const CATS = { School:'#3b82f6', Work:'#f59e0b', Gym:'#10b981', Study:'#06b6d4', Personal:'#ec4899', Free:'#a855f7', Other:'#64748b' };
+const CATS = { School:'#4C6FE0', Work:'#C9821B', Gym:'#2F9E6B', Study:'#2A97A8', Personal:'#C2557D', Free:'#8162C9', Other:'#8A8A86' };
 const catColor = c => CATS[c] || CATS.Other;
 // Sort key for anything with an optional time. Untimed items get a digits-only
 // sentinel so they land last — an empty string would sort them to the top, and
@@ -113,11 +115,11 @@ function taskRepeatLabel(t) {
    blue/amber/green/cyan/pink/purple/slate — these sit in the gaps on the hue
    wheel so a task is never mistaken for an event of the same colour. */
 const TASK_CATS = {
-  School:    '#4f46e5',   // indigo
-  Health:    '#65a30d',   // lime
-  Business:  '#ea580c',   // orange
-  Important: '#dc2626',   // red
-  Random:    '#78716c',   // stone
+  School:    '#5B63C9',   // indigo
+  Health:    '#5E9A3A',   // green
+  Business:  '#C46A2E',   // orange
+  Important: '#C2453B',   // red
+  Random:    '#8A8580',   // stone
 };
 const taskColor = c => TASK_CATS[c] || TASK_CATS.Random;
 
@@ -144,12 +146,12 @@ const bySlot = (a, b) => timeKey(taskTime(a)).localeCompare(timeKey(taskTime(b))
 // `showDate` adds the day, for lists that span more than one.
 function taskRow(t, iso, showDate) {
   const done = taskDone(t, iso), rep = taskRepeatLabel(t), slot = taskSlot(t);
-  const sub = [showDate && t.scope === 'day' ? fmtDay(t.date) : '', slot ? `🕘 ${slot}` : '',
+  const sub = [showDate && t.scope === 'day' ? fmtDay(t.date) : '', slot || '',
                rep ? `↻ ${rep}` : '', t.cat || ''].filter(Boolean).join(' · ');
-  return `<div class="check task ${done ? 'done' : ''}" style="border-left:4px solid ${taskColor(t.cat)}">
+  return `<div class="check task ${done ? 'done' : ''}">
     <span class="box tap" data-act="toggleTask" data-id="${t.id}" data-d="${iso || ''}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 12l4 4 10-11"/></svg></span>
-    <span class="txt tap" data-act="editTask" data-id="${t.id}">${esc(t.text)}${sub ? `<span class="s muted">${esc(sub)}</span>` : ''}</span>
-    <button class="del" data-act="delTask" data-id="${t.id}">✕</button>
+    <span class="txt tap" data-act="editTask" data-id="${t.id}">${esc(t.text)}${sub ? `<span class="s muted"><i class="cdot" style="background:${taskColor(t.cat)}"></i> ${esc(sub)}</span>` : ''}</span>
+    <button class="del" data-act="delTask" data-id="${t.id}">${ic('x')}</button>
   </div>`;
 }
 // A set of same-title tasks shown as one row, expandable to the individual ones.
@@ -160,8 +162,8 @@ function taskGroupRow(g, iso, showDate) {
   const cats = [...new Set(g.items.map(t => t.cat).filter(Boolean))];
   const times = [...new Set(g.items.map(t => taskSlot(t)).filter(Boolean))].sort();
   return `<div class="tgroup ${open ? 'open' : ''}">
-    <div class="check task tgroup-head ${doneN === g.items.length ? 'done' : ''}"
-         style="border-left:4px solid ${taskColor(cats[0])}">
+    <div class="catrow check task tgroup-head ${doneN === g.items.length ? 'done' : ''}"
+         style="--cat:${taskColor(cats[0])}">
       <span class="tg-count">${g.items.length}</span>
       <span class="txt tap" data-act="toggleTaskGroup" data-k="${esc(g.key)}">${esc(g.title)}
         <span class="s muted">${esc([`${doneN}/${g.items.length} done`,
@@ -186,7 +188,7 @@ function tasksCard(scope, key, empty) {
   return `<div class="section-head"><h3>${title}</h3>
       <button class="link" data-act="addTask" data-scope="${scope}" data-d="${scope === 'day' ? key : ''}">+ Task</button></div>
     <div class="card">
-      ${list.length ? `<div class="small muted" style="margin-bottom:10px">${left ? `${left} of ${list.length} to go` : 'All done ✓'}</div>` : ''}
+      ${list.length ? `<div class="small muted" style="margin-bottom:10px">${left ? `${left} of ${list.length} to go` : 'All done'}</div>` : ''}
       <div class="list">${groupTasks(sorted).map(g => taskGroupRow(g, iso)).join('') || `<div class="empty">${empty}</div>`}</div>
     </div>`;
 }
@@ -322,11 +324,12 @@ function save(touch = true) {
     redoStack = [];
     updateHistoryButtons();
     S.updatedAt = Date.now();
+    lastChangeAt = Date.now();
   }
   lastSavedJSON = JSON.stringify(S);
   localStorage.setItem(LS_KEY, JSON.stringify(S));
   clearTimeout(saveTimer);
-  if (touch) schedulePush();
+  if (touch) { schedulePush(); queueMicrotask(checkMilestones); updateAppBadge(); }
 }
 function applyState(json) {
   S = deepMerge(defaultState(), JSON.parse(json));
@@ -476,7 +479,7 @@ async function stravaHandleCallback() {
     const c = stravaCfg();
     Object.assign(c, { refreshToken: j.refreshToken, accessToken: j.accessToken, expiresAt: j.expiresAt, athlete: j.athlete });
     save();
-    toast('Strava connected 🏃');
+    toast('Strava connected');
     await stravaImport(true);
   } catch (e) { toast('Strava: ' + e.message); }
   return true;
@@ -586,7 +589,7 @@ const TICK = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-
    Food: calories, macros, and what it cost
    ============================================================ */
 const MEALS = ['Breakfast', 'Lunch', 'Dinner', 'Snacks'];
-const MEAL_ICON = { Breakfast: '🍳', Lunch: '🥪', Dinner: '🍽', Snacks: '🍎' };
+const MEAL_ICON = { Breakfast: '', Lunch: '', Dinner: '', Snacks: '' };
 // Built-in starter list so search works on day one. Values are per serving.
 // Grocery prices were read off Coles, Woolworths and Aldi's websites on 27 Sep 2026:
 // each store's everyday own-brand version (or the main brand where there isn't one),
@@ -874,7 +877,7 @@ const TANK_WAVE = 'M0,13 C15,5 45,5 60,13 C75,21 105,21 120,13 C135,5 165,5 180,
 const waterPctOf = ml => clamp(ml / (S.health.water.goalMl || 1), 0, 1);
 function waterSubText(ml) {
   const g = S.health.water.goalMl || 0;
-  return ml >= g ? 'Goal reached 🎉' : `${((g - ml) / 1000).toFixed(2)} L to go`;
+  return ml >= g ? 'Goal reached' : `${((g - ml) / 1000).toFixed(2)} L to go`;
 }
 function waterTank(ml) {
   const pct = waterPctOf(ml);
@@ -996,43 +999,43 @@ function briefingRows() {
   const later = evs.filter(e => (e.start || e.time || '') >= `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`)
     .sort((a, b) => (a.start || '').localeCompare(b.start || ''));
   const nextEv = later[0];
-  if (evs.length) push('📅', nextEv
+  if (evs.length) push('calendar', nextEv
       ? `${evs.length} on today — next is <b>${esc(nextEv.title)}</b>${nextEv.start ? ` at ${esc(nextEv.start)}` : ''}`
       : `${evs.length} on today — all done`, 'calendar');
-  else push('📅', 'Nothing scheduled today', 'calendar');
+  else push('calendar', 'Nothing scheduled today', 'calendar');
 
   const tks = tasksForDate(iso), tLeft = tks.filter(t => !taskDone(t, iso)).sort(bySlot);
-  if (tks.length) push('✅', tLeft.length
+  if (tks.length) push('check-circle', tLeft.length
       ? `${tLeft.length} task${tLeft.length > 1 ? 's' : ''} to tick off — <b>${esc(tLeft[0].text)}</b>${tLeft.length > 1 ? ' first' : ''}`
-      : 'All today\'s tasks are done 🎉', 'calendar');
+      : 'All today\'s tasks are done', 'calendar');
 
   const hb = habitsToday().filter(h => !(h.doneDays && h.doneDays[iso]));
-  if (hb.length) push('🔁', `${hb.length} habit${hb.length > 1 ? 's' : ''} left — <b>${esc(hb[0].text)}</b> at ${esc(hb[0].time || '')}`, 'systems');
+  if (hb.length) push('repeat', `${hb.length} habit${hb.length > 1 ? 's' : ''} left — <b>${esc(hb[0].text)}</b> at ${esc(hb[0].time || '')}`, 'systems');
 
   const lastNight = S.health.sleep[S.health.sleep.length - 1];
   if (lastNight && lastNight.date === iso) {
     const d = lastNight.hours - sleepGoal();
-    push('😴', d >= 0 ? `Slept <b>${lastNight.hours.toFixed(1)}h</b> — at goal`
+    push('moon', d >= 0 ? `Slept <b>${lastNight.hours.toFixed(1)}h</b> — at goal`
       : `Slept <b>${lastNight.hours.toFixed(1)}h</b>, ${Math.abs(d).toFixed(1)}h under goal`, 'health');
   }
 
   const w = S.health.water.log[iso] || 0, wg = S.health.water.goalMl;
-  if (w < wg) push('💧', `Water <b>${(w/1000).toFixed(2)}</b> of ${(wg/1000).toFixed(1)} L`, 'health');
+  if (w < wg) push('droplet', `Water <b>${(w/1000).toFixed(2)}</b> of ${(wg/1000).toFixed(1)} L`, 'health');
 
   const ft = dayTotals(iso), fk = FOOD().goals.kcal;
-  if (ft.n) push('🍽', `<b>${kcalStr(ft.kcal)}</b> of ${kcalStr(fk)} kcal${ft.cost > 0 ? ` · <b>${AUD(ft.cost)}</b> on food` : ''}`, 'health');
+  if (ft.n) push('utensils', `<b>${kcalStr(ft.kcal)}</b> of ${kcalStr(fk)} kcal${ft.cost > 0 ? ` · <b>${AUD(ft.cost)}</b> on food` : ''}`, 'health');
 
   const due = upcomingBills().filter(b => b.status !== 'ok')[0];
-  if (due) push('🧾', `<b>${esc(due.name)}</b> ${due.dd < 0 ? `${-due.dd}d overdue` : due.dd === 0 ? 'due today' : `due in ${due.dd}d`} · ${AUD(due.amount)}`, 'money');
+  if (due) push('receipt', `<b>${esc(due.name)}</b> ${due.dd < 0 ? `${-due.dd}d overdue` : due.dd === 0 ? 'due today' : `due in ${due.dd}d`} · ${AUD(due.amount)}`, 'money');
 
   const over = S.money.budgets.find(bd => {
     const lim = periodIsWeekly() ? bd.limit / (52/12) : bd.limit;
     const sp = periodIsWeekly() ? spentThisWeek(bd.category) : spentThisMonth(bd.category);
     return lim && sp > lim;
   });
-  if (over) push('⚠️', `<b>${esc(over.category)}</b> is over budget`, 'money');
+  if (over) push('alert', `<b>${esc(over.category)}</b> is over budget`, 'money');
 
-  if (S.systems.focus) push('🎯', `Focus: <b>${esc(S.systems.focus)}</b>`, 'systems');
+  if (S.systems.focus) push('target', `Focus: <b>${esc(S.systems.focus)}</b>`, 'systems');
   return rows;
 }
 // Anything the email importer added recently, so it is never a silent change.
@@ -1041,11 +1044,11 @@ function recentImports(days = 3) {
   const cut = Date.now() - days * 86400000;
   const fresh = x => x.source === 'email' && x.importedAt >= cut;
   return [
-    ...S.calendar.events.filter(fresh).map(e => ({ kind:'event', icon:'📅', id:e.id,
+    ...S.calendar.events.filter(fresh).map(e => ({ kind:'event', icon:'calendar', id:e.id,
       label:e.title, sub:[fmtDay(e.date || todayISO()), e.start].filter(Boolean).join(' · ') })),
-    ...S.money.bills.filter(fresh).map(b => ({ kind:'bill', icon:'🧾', id:b.id,
+    ...S.money.bills.filter(fresh).map(b => ({ kind:'bill', icon:'receipt', id:b.id,
       label:b.name, sub:`${AUD(b.amount)} · ${FREQ_LABEL[b.freq||'monthly']}` })),
-    ...S.money.transactions.filter(fresh).map(t => ({ kind:'txn', icon:'💳', id:t.id,
+    ...S.money.transactions.filter(fresh).map(t => ({ kind:'txn', icon:'card', id:t.id,
       label:t.desc, sub:`${t.dir==='in'?'+':'−'}${AUD(t.amount)} · ${t.date}` })),
   ].sort((a, b) => a.kind.localeCompare(b.kind));
 }
@@ -1053,13 +1056,13 @@ function importStrip() {
   const items = recentImports();
   if (!items.length) return '';
   return `<div class="import-strip">
-    <div class="import-head"><span class="auto-badge">AUTO</span>
+    <div class="import-head"><span class="auto-badge">${ic('mail','sm')} From email</span>
       <span>Added from your email — check these are right</span></div>
     ${items.map(i => `
       <div class="import-row">
-        <span class="bi">${i.icon}</span>
+        <span class="bi">${ic(i.icon)}</span>
         <span class="bt"><b>${esc(i.label)}</b><span class="s">${esc(i.sub)}</span></span>
-        <button class="del" data-act="dropImport" data-kind="${i.kind}" data-id="${i.id}" title="Remove">✕</button>
+        <button class="del" data-act="dropImport" data-kind="${i.kind}" data-id="${i.id}" title="Remove">${ic('x')}</button>
       </div>`).join('')}
   </div>`;
 }
@@ -1069,7 +1072,7 @@ function briefingHeadline() {
   const hr = new Date().getHours();
   const open = hr < 12 ? 'Here\'s your day' : hr < 17 ? 'Rest of your day' : 'How today finished';
   const dp = dayProgress();
-  if (dp && dp.pct >= 1) return `${open} — everything's ticked off 🎉`;
+  if (dp && dp.pct >= 1) return `${open} — everything's ticked off`;
   const evs = eventsForDate(iso).length, left = dp ? dp.total - dp.done : 0;
   if (!evs && !left) return `${open} — completely clear`;
   return `${open} — ${evs ? `${evs} on` : 'nothing scheduled'}${left ? `, ${left} to tick off` : ''}`;
@@ -1099,10 +1102,10 @@ function areaChart(vals, opts = {}) {
   const gid = 'g' + uid();
   return `<svg class="chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" height="${h}">
     <defs><linearGradient id="${gid}" x1="0" x2="0" y1="0" y2="1">
-      <stop offset="0" stop-color="${col}" stop-opacity=".28"/><stop offset="1" stop-color="${col}" stop-opacity="0"/>
+      <stop offset="0" stop-color="${col}" stop-opacity=".10"/><stop offset="1" stop-color="${col}" stop-opacity=".02"/>
     </linearGradient></defs>
     <path d="${area}" fill="url(#${gid})"/>
-    <path d="${line}" fill="none" stroke="${col}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="${line}" fill="none" stroke="${col}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
   </svg>`;
 }
 function sparkline(vals, opts = {}) {   // tiny inline trend chart
@@ -1138,9 +1141,9 @@ function barChart(items, opts = {}) {   // items: [{label, v}]
       const x = i * bw + bw * 0.18, ww = bw * 0.64;
       const short = opts.goal && it.v < opts.goal;
       const over = opts.cap && it.v > opts.cap;
-      return `<rect x="${x}" y="${h - 18 - bh}" width="${ww}" height="${Math.max(bh, 0.5)}" rx="1.5" fill="${over ? 'var(--red)' : 'var(--blue-500)'}"${short?' opacity=".45"':''}/>`;
+      return `<rect x="${x}" y="${h - 18 - bh}" width="${ww}" height="${Math.max(bh, 0.5)}" rx="1.5" fill="${over ? 'var(--neg)' : short ? 'var(--border-strong)' : 'var(--accent)'}"/>`;
     }).join('')}
-    ${gy !== null ? `<line x1="0" y1="${gy.toFixed(1)}" x2="100" y2="${gy.toFixed(1)}" stroke="var(--green)" stroke-width="0.6" stroke-dasharray="2 2" vector-effect="non-scaling-stroke"/>` : ''}
+    ${gy !== null ? `<line x1="0" y1="${gy.toFixed(1)}" x2="100" y2="${gy.toFixed(1)}" stroke="var(--text-3)" stroke-width="1" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>` : ''}
   </svg>
   <div class="chart-legend bars">${items.map((it, i) => `<span class="small muted">${i % every ? '' : esc(it.label)}</span>`).join('')}</div>`;
 }
@@ -1148,14 +1151,14 @@ function ring(pct, opts = {}) {   // opts.label/caption replace the % in the mid
   const size = opts.size || 74, sw = opts.sw || 9, r = (size - sw) / 2, c = 2 * Math.PI * r;
   const off = c * (1 - clamp(pct, 0, 1));
   return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="flex:none">
-    <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="var(--surface-hover)" stroke-width="${sw}"/>
+    <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="var(--surface-2)" stroke-width="${sw}"/>
     <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="${opts.color || 'var(--primary)'}" stroke-width="${sw}"
       stroke-linecap="round" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}"
       transform="rotate(-90 ${size/2} ${size/2})" style="transition:stroke-dashoffset .5s"/>
     ${opts.label != null
-      ? `<text x="50%" y="46%" text-anchor="middle" dominant-baseline="middle" font-size="${size*0.2}" font-weight="800" fill="var(--text)">${esc(opts.label)}</text>
-         <text x="50%" y="64%" text-anchor="middle" dominant-baseline="middle" font-size="${size*0.105}" font-weight="600" fill="var(--text-3)">${esc(opts.caption || '')}</text>`
-      : `<text x="50%" y="52%" text-anchor="middle" dominant-baseline="middle" font-size="${size*0.24}" font-weight="800" fill="var(--text)">${Math.round(pct*100)}%</text>`}
+      ? `<text x="50%" y="46%" text-anchor="middle" dominant-baseline="middle" font-size="${size*(opts.label.length > 4 ? 0.21 : 0.25)}" font-weight="600" font-family="ui-rounded, -apple-system, system-ui" fill="var(--text)">${esc(opts.label)}</text>
+         <text x="50%" y="64%" text-anchor="middle" dominant-baseline="middle" font-size="${Math.max(10, size*0.135)}" font-weight="500" fill="var(--text-3)">${esc(opts.caption || '')}</text>`
+      : `<text x="50%" y="52%" text-anchor="middle" dominant-baseline="middle" font-size="${size*0.24}" font-weight="600" font-family="ui-rounded, -apple-system, system-ui" fill="var(--text)">${Math.round(pct*100)}%</text>`}
   </svg>`;
 }
 
@@ -1216,30 +1219,16 @@ function wxText(code) {
   return m[code] || 'Weather';
 }
 function wxIcon(code) {
-  if (code === 0 || code === 1) return '☀️';
-  if (code === 2) return '⛅';
-  if (code === 3 || code === 45 || code === 48) return '☁️';
-  if (code >= 51 && code <= 67) return '🌧️';
-  if (code >= 71 && code <= 77) return '❄️';
-  if (code >= 80 && code <= 82) return '🌦️';
-  if (code >= 95) return '⛈️';
-  return '🌡️';
+  if (code === 0 || code === 1) return ic('sun');
+  if (code === 2) return ic('cloud-sun');
+  if (code === 3 || code === 45 || code === 48) return ic('cloud');
+  if (code >= 51 && code <= 67) return ic('rain');
+  if (code >= 71 && code <= 77) return ic('snow');
+  if (code >= 80 && code <= 82) return ic('rain');
+  if (code >= 95) return ic('storm');
+  return ic('cloud');
 }
 // Animated weather layer for the hero, chosen by weather code.
-function heroWeatherFX(code) {
-  const sun = `<div class="fx-sun"></div>`;
-  const cloud = c => `<div class="fx-cloud ${c}"><span></span><span></span></div>`;
-  const many = (cls, n) => { let s = ''; for (let i = 0; i < n; i++) s += `<i class="${cls}" style="left:${Math.round(Math.random()*100)}%;animation-delay:${(Math.random()*2).toFixed(2)}s;animation-duration:${(cls==='fx-drop'?0.7+Math.random()*0.5:3+Math.random()*2.5).toFixed(2)}s"></i>`; return s; };
-  let inner;
-  if (code === 0 || code === 1) inner = sun;
-  else if (code === 2) inner = sun + cloud('c1');
-  else if (code === 3 || code === 45 || code === 48) inner = cloud('c1') + cloud('c2');
-  else if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) inner = cloud('c1') + many('fx-drop', 18);
-  else if ((code >= 71 && code <= 77) || code === 85 || code === 86) inner = cloud('c1') + many('fx-snow', 16);
-  else if (code >= 95) inner = cloud('c2') + many('fx-drop', 18) + `<div class="fx-flash"></div>`;
-  else inner = sun;
-  return `<div class="hero-fx">${inner}</div>`;
-}
 
 /* ============================================================
    Money helpers
@@ -1383,10 +1372,10 @@ function calEditPanel() {
     ${showEvents() ? section('Events', evs.length,
       `<button class="link" data-act="addEventOn" data-d="${calSel}">+ Event</button>`,
       evs.map(e => `
-        <div class="item tap" data-act="editEvent" data-id="${e.id}" style="border-left:4px solid ${catColor(e.category)}">
-          <div class="body"><div class="t">${esc(e.title)}${e.recurring?' <span class="chip" style="padding:1px 7px;font-size:10px">weekly</span>':''}${e.source==='email'?' <span class="chip src">✉︎</span>':''}</div>
+        <div class="catrow item tap" data-act="editEvent" data-id="${e.id}" style="--cat:${catColor(e.category)}">
+          <div class="body"><div class="t">${esc(e.title)}${e.recurring?` <span class="chip" style="padding:1px 6px;font-size:11px">${ic('repeat')} weekly</span>`:''}${e.source==='email'?` <span class="chip src">${ic('mail')}</span>`:''}</div>
             <div class="s">${[e.recurring?`Every ${DOW[e.weekday]}`:fmtDay(e.date||calSel), evTime(e), e.category].filter(Boolean).map(esc).join(' · ')}</div></div>
-          <button class="del" data-act="delEvent" data-id="${e.id}">✕</button>
+          <button class="del" data-act="delEvent" data-id="${e.id}">${ic('x')}</button>
         </div>`).join(''), 'No events in this period') : ''}
 
     ${showTasks() ? section('Tasks', tks.length,
@@ -1396,11 +1385,11 @@ function calEditPanel() {
     ${showHabits() ? section('Habits', hbs.length,
       `<button class="link" data-act="addHabit">+ Habit</button>`,
       hbs.map(h => `
-        <div class="item tap" data-act="editHabit" data-id="${h.id}" style="border-left:4px dashed var(--blue-300)">
+        <div class="catrow item tap" data-act="editHabit" data-id="${h.id}" style="--cat:var(--blue-300)">
           <div class="body"><div class="t">${esc(h.text)}</div>
             <div class="s">${[habitDaysLabel(h), h.time].filter(Boolean).map(esc).join(' · ')}</div></div>
-          ${habitStreak(h)>1?`<span class="chip good nowrap">🔥 ${habitStreak(h)}</span>`:''}
-          <button class="del" data-act="delHabit" data-id="${h.id}">✕</button>
+          ${habitStreak(h)>1?`<span class="chip good nowrap">${ic('flame')} ${habitStreak(h)}</span>`:''}
+          <button class="del" data-act="delHabit" data-id="${h.id}">${ic('x')}</button>
         </div>`).join(''), 'No habits in this period') : ''}`;
 }
 
@@ -1432,11 +1421,11 @@ function calSummaryCard() {
     <div class="card">
       ${nothing ? `<div class="empty">Nothing logged in this period yet. Add events with a start and end time and the totals fill in.</div>` : `
       <div class="stats-row sum-row">
-        <div class="stat"><div class="k">💼 Worked</div><div class="v">${hrs(s.worked)}<small> hrs</small></div></div>
-        <div class="stat"><div class="k">🎓 School</div><div class="v">${hrs(s.school)}<small> hrs</small></div></div>
-        <div class="stat"><div class="k">📈 Business</div><div class="v">${hrs(s.business)}<small> hrs</small></div></div>
-        <div class="stat"><div class="k">🏋️ Workouts</div><div class="v">${s.workouts}</div></div>
-        <div class="stat"><div class="k">💰 Earned</div><div class="v ${s.earned?'pos':''}">${AUD(s.earned, 0)}</div></div>
+        <div class="stat"><div class="k">${ic('briefcase')} Worked</div><div class="v">${hrs(s.worked)}<small> hrs</small></div></div>
+        <div class="stat"><div class="k">${ic('grad-cap')} School</div><div class="v">${hrs(s.school)}<small> hrs</small></div></div>
+        <div class="stat"><div class="k">${ic('trending')} Business</div><div class="v">${hrs(s.business)}<small> hrs</small></div></div>
+        <div class="stat"><div class="k">${ic('dumbbell')} Workouts</div><div class="v">${s.workouts}</div></div>
+        <div class="stat"><div class="k">${ic('wallet')} Earned</div><div class="v ${s.earned?'pos':''}">${AUD(s.earned, 0)}</div></div>
       </div>`}
     </div>`;
 }
@@ -1459,7 +1448,7 @@ let arranging = false;   // section-reorder mode
 /* ---------- section ordering ----------
    Each tab renders named blocks; the user's saved order wins, and any block
    added by a future update just appends at the end. */
-function orderBlocks(tab, blocks) {
+function orderBlocks(tab, blocks) {   // `tab` is the order key (tab, or tab.subtab)
   const saved = (S.settings.order && S.settings.order[tab]) || [];
   const byKey = Object.fromEntries(blocks.map(b => [b.key, b]));
   const out = [];
@@ -1468,14 +1457,14 @@ function orderBlocks(tab, blocks) {
   blocks.forEach((b, i) => { if (byKey[b.key]) out.splice(Math.min(i, out.length), 0, b); });
   return out;
 }
-function renderBlocks(tab, blocks) {
-  const ordered = orderBlocks(tab, blocks);
-  currentBlockKeys[tab] = ordered.map(b => b.key);
+function renderBlocks(tab, blocks, okey = tab) {
+  const ordered = orderBlocks(okey, blocks);
+  currentBlockKeys[okey] = ordered.map(b => b.key);
   // `fill` marks a pair that should stretch to a shared height rather than each
   // taking its natural one — used where a scrollable list can absorb the slack
   // `fill`  — stretch to the row and let the last list scroll inside it (caps growth)
   // `grow`  — stretch to the row but never scroll; always contributes its full height
-  const one = (b) => `<div class="sec ${b.fill?'fill':''} ${b.grow?'grow':''} ${arranging?'arrangeable':''}" data-sec="${b.key}" data-tab="${tab}" ${arranging?'draggable="true"':''}>
+  const one = (b) => `<div class="sec ${b.fill?'fill':''} ${b.grow?'grow':''} ${arranging?'arrangeable':''}" data-sec="${b.key}" data-tab="${okey}" ${arranging?'draggable="true"':''}>
     ${arranging ? `<div class="arrange-bar">
       <span class="grip">⠿</span><span class="an">${esc(b.name)}</span>
       <span class="small muted">drag to move</span></div>` : ''}
@@ -1486,7 +1475,8 @@ function renderBlocks(tab, blocks) {
   // sections pair up into shared grid rows and every row lines up exactly. DOM order
   // stays sequential, so mobile (one column) still reads top to bottom.
   const rows = Math.ceil(ordered.length / 2);
-  return `<div class="cols ${arranging?'arranging':''}" style="--rows:${rows}">${ordered.map(one).join('')}</div>`;
+  return `<div class="cols ${arranging?'arranging':''}" style="--rows:${rows}">${ordered.map(one).join('')}</div>
+    ${ordered.length > 1 ? `<div class="arrange-foot"><button class="link" data-act="toggleArrange" data-tab="${tab}">${arranging ? 'Done arranging' : 'Rearrange sections'}</button></div>` : ''}`;
 }
 // drop `key` immediately before `beforeKey` (or at the end when null)
 function reorderSection(tab, key, beforeKey) {
@@ -1499,7 +1489,7 @@ function reorderSection(tab, key, beforeKey) {
   S.settings.order = S.settings.order || {};
   S.settings.order[tab] = cur;
   save();
-  render(tab);
+  render(tab.split('.')[0]);
   return true;
 }
 let currentBlockKeys = {};   // tab -> [key] as last rendered
@@ -1508,166 +1498,182 @@ function arrangeHeader(tab) {
 }
 
 function renderAll() { render(currentTab); refreshBadges(); }
+const TAB_TITLE = { home: 'Today', calendar: 'Calendar', health: 'Health', money: 'Money', systems: 'Systems' };
+const tabScroll = {};   // each tab remembers where you were
 function render(tab) {
+  // re-rendering the tab you're on (after ticking something) keeps your place;
+  // only switching tabs moves the scroll
+  const switching = tab !== currentTab || !$('#view-' + tab).classList.contains('active');
+  if (switching && currentTab) tabScroll[currentTab] = window.scrollY;
   currentTab = tab;
   $$('.view').forEach(v => v.classList.remove('active'));
   $('#view-' + tab).classList.add('active');
   $$('.nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+  const bn = $('#brandName'); if (bn) bn.textContent = TAB_TITLE[tab] || 'Compass';
   ({ home: renderHome, calendar: renderCalendar, health: renderHealth, money: renderMoney, systems: renderSystems }[tab])();
-  window.scrollTo({ top: 0, behavior: 'instant' in window ? 'instant' : 'auto' });
+  if (switching) window.scrollTo({ top: tabScroll[tab] || 0, behavior: 'instant' in window ? 'instant' : 'auto' });
+}
+// jump straight to a section, switching tab and sub-tab first
+function go(tab, sec) {
+  const seg = sec && SEG_OF[tab] ? SEG_OF[tab][sec] : null;
+  if (seg) { S.settings.seg = S.settings.seg || {}; S.settings.seg[tab] = seg; save(false); }
+  tabScroll[tab] = 0;
+  render(tab);
+  if (!sec) return;
+  requestAnimationFrame(() => {
+    const el = $(`#view-${tab} .sec[data-sec="${sec}"]`);
+    if (el) window.scrollTo({ top: el.getBoundingClientRect().top + window.scrollY - 64, behavior: 'smooth' });
+  });
+}
+
+/* ---------- sub-tabs: Health / Money / Systems split into short pages ---------- */
+const SEGS = {
+  health:  [['food', 'Food'], ['body', 'Body'], ['train', 'Training']],
+  money:   [['spend', 'Spending'], ['bills', 'Bills'], ['wealth', 'Wealth']],
+  systems: [['habits', 'Habits'], ['goals', 'Goals'], ['review', 'Review']],
+};
+const SEG_OF = {
+  health:  { food: 'food', foodStats: 'food', water: 'body', sleep: 'body', split: 'train', runs: 'train' },
+  money:   { tracker: 'spend', budgets: 'spend', bills: 'bills', value: 'wealth', chart: 'wealth', holdings: 'wealth', goals: 'wealth' },
+  systems: { habits: 'habits', badday: 'habits', focus: 'goals', goals: 'goals', weekly: 'goals', review: 'review', notes: 'review' },
+};
+const segOf = tab => { const v = (S.settings.seg || {})[tab]; return SEGS[tab].some(s => s[0] === v) ? v : SEGS[tab][0][0]; };
+function segBar(tab) {
+  const cur = segOf(tab);
+  return `<div class="segbar"><div class="seg full">${SEGS[tab].map(([k, l]) =>
+    `<button data-act="setSeg" data-tab="${tab}" data-seg="${k}" class="${k === cur ? 'on' : ''}">${l}</button>`).join('')}</div></div>`;
+}
+// the blocks of a tab that belong to its current sub-tab, laid out with their own saved order
+function segBlocks(tab, B) {
+  const cur = segOf(tab);
+  return renderBlocks(tab, B.filter(b => SEG_OF[tab][b.key] === cur), tab + '.' + cur);
 }
 
 /* ---------- HOME ---------- */
 function renderHome() {
-  const now = new Date();
-  const hr = now.getHours();
-  const greet = hr < 12 ? 'Good morning' : hr < 17 ? 'Good afternoon' : 'Good evening';
-  const dateStr = `${DOW[now.getDay()]}, ${now.getDate()} ${MON[now.getMonth()]}`;
+  const now = new Date(), iso = todayISO();
+  const dateStr = `${DOW[now.getDay()]} ${now.getDate()} ${MON[now.getMonth()]}`;
   const wx = weatherCache;
-
-  const todaysEvents = eventsForDate(todayISO());
   const wk = weekKey();
   const mustDo = S.systems.weekly.filter(m => !m.weeks[wk]);
-
   const rough = isRoughDay();
-  const waterToday = S.health.water.log[todayISO()] || 0;
-  const waterPct = clamp(waterToday / S.health.water.goalMl, 0, 1);
-  const bills = upcomingBills();
-  const nextBill = bills.find(b => b.status !== 'ok') || bills[0];
-  const pv = portfolioValue(), pc = portfolioDayChange();
+
+  // ---- the day at a glance: four rings, each with its own one-tap action ----
+  const fg = FOOD().goals, ft = dayTotals(iso), kLeft = fg.kcal - ft.kcal;
+  const water = S.health.water.log[iso] || 0, wGoal = S.health.water.goalMl || 1;
+  const dp = dayProgress();
+  const lastN = S.health.sleep[S.health.sleep.length - 1];
+  const sleptToday = lastN && lastN.date === iso;
+  const ringCell = (sec, r, label, action) => `<div class="hr-cell">
+      <button class="hr-ring tap" data-go="${sec}" aria-label="${esc(label)}">${r}</button>
+      <div class="hr-label">${label}</div>${action}</div>`;
+  const rings = `<div class="card home-rings">
+    ${ringCell('health:food', ring(clamp(ft.kcal / (fg.kcal || 1), 0, 1), { size: 68, sw: 6, label: kcalStr(Math.abs(kLeft)), caption: kLeft >= 0 ? 'left' : 'over', color: kLeft < 0 ? 'var(--neg)' : '' }),
+      'Calories', `<button class="hr-act" data-act="addFood">${ic('plus')} Food</button>`)}
+    ${ringCell('health:water', ring(clamp(water / wGoal, 0, 1), { size: 68, sw: 6, label: (water / 1000).toFixed(1), caption: `of ${(wGoal / 1000).toFixed(1)} L` }),
+      'Water', `<button class="hr-act" data-act="water" data-ml="250">${ic('plus')} 250</button>`)}
+    ${ringCell('calendar', ring(dp ? dp.pct : 0, { size: 68, sw: 6, label: dp ? `${dp.done}/${dp.total}` : '0', caption: 'done', color: dp && dp.pct >= 1 ? 'var(--pos)' : '' }),
+      'To-dos', `<button class="hr-act" data-act="addTask" data-scope="day" data-d="${iso}">${ic('plus')} Task</button>`)}
+    ${ringCell('health:sleep', ring(lastN ? clamp(lastN.hours / sleepGoal(), 0, 1) : 0, { size: 68, sw: 6, label: lastN ? lastN.hours.toFixed(1) : '—', caption: 'hrs' }),
+      'Sleep', sleptToday ? `<span class="hr-act muted">${esc(SLEEP_QUALITY[lastN.quality] || 'Logged')}</span>` : `<button class="hr-act" data-act="addSleep">${ic('plus')} Log</button>`)}
+  </div>`;
+
+  // ---- up next: everything for today in time order; finished items fold away ----
+  const rowsAll = [
+    ...eventsForDate(iso).map(e => ({ time: e.start || e.time || '', done: false, html: `
+      <div class="item agenda tap" data-act="editEvent" data-id="${e.id}">
+        <span class="ag-time">${esc(e.start || e.time || 'All day')}</span>
+        <div class="body"><div class="t">${esc(e.title)}${e.source === 'email' ? ` <span class="chip src" title="added from your email">${ic('mail')}</span>` : ''}</div>
+          <div class="s"><i class="cdot" style="background:${catColor(e.category)}"></i> ${esc([e.end ? `until ${e.end}` : '', e.category].filter(Boolean).join(' · '))}</div></div>
+        ${e.cost > 0 ? `<div class="trail">${AUD(e.cost, 0)}</div>` : ''}
+      </div>` })),
+    ...habitsToday().map(h => { const done = !!(h.doneDays && h.doneDays[iso]); return { time: h.time || '', done, html: `
+      <div class="item agenda ${done ? 'done hab-done' : ''}">
+        <span class="ag-time">${esc(h.time || '')}</span>
+        <div class="body"><div class="t">${esc(h.text)}</div><div class="s">${ic('repeat', 'xs')} Habit${habitStreak(h) > 1 ? ` · ${habitStreak(h)}-day streak` : ''}</div></div>
+        <span class="box tap" data-act="toggleHabit" data-id="${h.id}">${TICK}</span>
+      </div>` }; }),
+    ...tasksForDate(iso).map(t => { const done = taskDone(t, iso); return { time: taskTime(t) || '99:99', done, html: `
+      <div class="item agenda ${done ? 'done hab-done' : ''}">
+        <span class="ag-time">${esc(taskTime(t) || '')}</span>
+        <div class="body tap" data-act="editTask" data-id="${t.id}"><div class="t">${esc(t.text)}</div>
+          <div class="s"><i class="cdot" style="background:${taskColor(t.cat)}"></i> ${esc(['Task', t.cat, taskRepeatLabel(t)].filter(Boolean).join(' · '))}</div></div>
+        <span class="box tap" data-act="toggleTask" data-id="${t.id}" data-d="${iso}">${TICK}</span>
+      </div>` }; }),
+  ].sort((a, b) => a.time.localeCompare(b.time));
+  const open = rowsAll.filter(r => !r.done), doneRows = rowsAll.filter(r => r.done);
+
+  // ---- needs attention: only things with a consequence ----
+  const attention = [];
+  upcomingBills().filter(b => b.status !== 'ok').slice(0, 3).forEach(b => attention.push(`
+    <div class="item tap" data-go="money:bills"><span class="att-ic ${b.status === 'over' ? 'neg' : ''}">${ic('receipt')}</span>
+      <div class="body"><div class="t">${esc(b.name)}</div><div class="s ${b.status === 'over' ? 'neg' : ''}">${b.dd < 0 ? `${-b.dd}d overdue` : b.dd === 0 ? 'Due today' : `Due in ${b.dd}d`}</div></div>
+      <div class="trail">${AUD(b.amount)}</div></div>`));
+  S.money.budgets.forEach(bd => {
+    const lim = periodIsWeekly() ? bd.limit / (52 / 12) : bd.limit;
+    const sp = periodIsWeekly() ? spentThisWeek(bd.category) : spentThisMonth(bd.category);
+    if (lim && sp > lim) attention.push(`<div class="item tap" data-go="money:budgets"><span class="att-ic neg">${ic('alert')}</span>
+      <div class="body"><div class="t">${esc(bd.category)} is over budget</div><div class="s">${AUD(sp, 0)} of ${AUD(lim, 0)}</div></div></div>`);
+  });
+  const imports = importStrip();
+
+  const hourNow = now.getHours();
+  const brief = S.brief && S.brief.text ? (() => {
+    const b = S.brief, fresh = b.date === iso;
+    const long = b.text.split('\n').length > 7 || b.text.length > 340;
+    return `<div class="section-head"><h3>From your inbox</h3><span class="small muted">${fresh ? 'Today' : esc(b.date || '')}</span></div>
+      <div class="card brief-card ${fresh ? '' : 'stale'} ${long && !briefOpen ? 'clipped' : ''}">
+        <pre class="brief-text">${esc(b.text)}</pre>
+        ${long ? `<button class="brief-more" data-act="toggleBrief">${briefOpen ? 'Show less' : 'Show more'}</button>` : ''}
+      </div>`;
+  })() : '';
 
   $('#view-home').innerHTML = `
-    <div class="hero">
-      ${heroWeatherFX(wx ? wx.code : 0)}
-      <div class="hero-lead">
-        <div class="greet">${greet}, ${esc(S.profile.name)}</div>
-        <div class="date">${dateStr}</div>
-        ${wx ? `<div class="weather">${wxIcon(wx.code)} ${wx.temp}° · ${wxText(wx.code)} · ${esc(S.profile.city)}</div>` : ''}
-        <div class="focus-chip tap" data-act="editFocus">
-          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>
-          <span>${S.systems.focus ? esc(S.systems.focus) : 'Set your focus…'}</span>
-        </div>
-      </div>
-      ${wx ? `<div class="hero-wx">
-        <div class="wx-emoji">${wxIcon(wx.code)}</div>
-        <div class="wx-temp">${wx.temp}°</div>
-        <div class="wx-desc">${wxText(wx.code)}<br>${esc(S.profile.city)}</div>
-      </div>` : ''}
+    <div class="today-head">
+      <div class="th-meta"><span>${dateStr}</span>${wx ? `<span class="th-wx">${wxIcon(wx.code)} ${wx.temp}° ${esc(wxText(wx.code))}</span>` : ''}</div>
+      <button class="th-focus tap ${S.systems.focus ? '' : 'empty'}" data-act="editFocus">${S.systems.focus ? esc(S.systems.focus) : 'Set a focus for today'}</button>
     </div>
 
-    <div class="section-head"><h3>Today's briefing</h3>
-      <button class="link ${rough ? 'on' : ''}" data-act="toggleRoughDay">${rough ? '✓ Rough day' : 'Rough day?'}</button></div>
     ${rough ? (() => {
       const items = badDayFor(), p = roughProgress();
-      return `<div class="card rough-card">
+      return `<div class="section-head"><h3>Just the minimums</h3><button class="link on" data-act="toggleRoughDay">End rough day</button></div>
+      <div class="card rough-card">
         <div class="rough-lead">Just these ${items.length} today. Nothing else counts.</div>
-        <div class="bar slim" style="margin-bottom:14px"><i style="width:${p.pct*100}%"></i></div>
+        <div class="bar slim" style="margin-bottom:6px"><i style="width:${p.pct * 100}%"></i></div>
         <div class="list">
           ${items.map(m => `
             <div class="check rough ${badDayDone(m) ? 'done' : ''}">
               <span class="box tap" data-act="toggleBadDay" data-id="${m.id}">${TICK}</span>
               <span class="txt">${esc(m.text)}</span>
-            </div>`).join('') || '<div class="empty">Add minimums in Systems</div>'}
+            </div>`).join('') || emptyState('No minimums yet', 'addBadDay', 'Add one')}
         </div>
-        ${p.pct >= 1 ? '<div class="rough-done">That\'s the whole list. Well done. 💙</div>' : ''}
+        ${p.pct >= 1 ? '<div class="rough-done">That\'s the whole list. Well done.</div>' : ''}
       </div>`;
     })() : `
-    <div class="card brief-card">
-      <div class="brief-head">${briefingHeadline()}</div>
-      <div class="brief-rows">
-        ${briefingRows().map(r => `
-          <div class="brief-row tap" data-tab-go="${r.tab}">
-            <span class="bi">${r.icon}</span><span class="bt">${r.text}</span>
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--text-3)" stroke-width="2.5" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg>
-          </div>`).join('')}
+    ${rings}
+
+    <div class="section-head"><h3>${hourNow >= 18 ? 'Rest of today' : 'Up next'}</h3>
+      <button class="link" data-act="toggleRoughDay">Rough day?</button></div>
+    <div class="card list-card">
+      <div class="list">
+        ${open.map(r => r.html).join('') || (rowsAll.length ? `<div class="empty">Everything for today is done.</div>`
+          : emptyState('Nothing planned for today.', 'quickAdd', 'Add something'))}
       </div>
-      ${importStrip()}
+      ${doneRows.length ? `<button class="more-link" data-act="toggleHomeDone">${homeDoneOpen ? 'Hide' : 'Show'} ${doneRows.length} done</button>
+        ${homeDoneOpen ? `<div class="list">${doneRows.map(r => r.html).join('')}</div>` : ''}` : ''}
     </div>`}
 
-    ${(() => {
-      const b = S.brief;
-      if (!b || !b.text) return '';
-      const fresh = b.date === todayISO();
-      const long = b.text.split('\n').length > 7 || b.text.length > 340;
-      return `<div class="section-head"><h3>From your inbox</h3>
-        <span class="small muted">${fresh ? 'today' : esc(b.date || '')}</span></div>
-        <div class="card brief-card ${fresh ? '' : 'stale'} ${long && !briefOpen ? 'clipped' : ''}">
-          <pre class="brief-text">${esc(b.text)}</pre>
-          ${long ? `<button class="brief-more" data-act="toggleBrief">${briefOpen ? 'Show less' : 'Show more'}</button>` : ''}
-        </div>`;
-    })()}
+    ${attention.length || imports ? `<div class="section-head"><h3>Needs attention</h3></div>
+      <div class="card list-card"><div class="list">${attention.join('')}</div>${imports}</div>` : ''}
 
-    ${arranging ? '' : `<div class="section-head" style="margin-top:8px"><span></span>${arrangeHeader('home')}</div>`}
-    <div class="section-head"><h3>Snapshot</h3></div>
-    <div class="stats-row">
-      <div class="card stat tap" data-tab-go="health">
-        <div class="k">💧 Water</div>
-        <div class="v">${(waterToday/1000).toFixed(2)}<small> / ${(S.health.water.goalMl/1000).toFixed(1)} L</small></div>
-        <div class="sub">${Math.round(waterPct*100)}% of goal</div>
-        <div class="bar slim"><i style="width:${waterPct*100}%"></i></div>
-      </div>
-      <div class="card stat tap" data-tab-go="money">
-        <div class="k">📈 Portfolio</div>
-        <div class="v">${AUD(pv, 0)}</div>
-        <div class="sub ${pc>=0?'pos':'neg'}">${pc>=0?'▲':'▼'} ${AUD(Math.abs(pc),2)} today</div>
-      </div>
-      <div class="card stat tap" data-tab-go="money">
-        <div class="k">🧾 Next bill</div>
-        ${nextBill ? `<div class="v" style="font-size:18px">${esc(nextBill.name)}</div>
-          <div class="sub ${nextBill.status==='over'?'neg':''}">${AUD(nextBill.amount)} · ${nextBill.dd<0?`${-nextBill.dd}d overdue`:nextBill.dd===0?'due today':`in ${nextBill.dd}d`}</div>`
-          : `<div class="v muted" style="font-size:16px">None set</div>`}
-      </div>
-      <div class="card stat tap" data-tab-go="systems">
-        <div class="k">✅ Today</div>
-        ${(() => { const dp = dayProgress();
-          return dp ? `<div class="v">${dp.done}<small> / ${dp.total} done</small></div>
-            <div class="sub">${dp.pct>=1 ? 'All clear 🎉' : `${dp.total-dp.done} left today`}</div>
-            <div class="bar slim"><i style="width:${dp.pct*100}%"></i></div>`
-          : `<div class="v">${S.systems.goals.filter(g=>g.done).length}<small> / ${S.systems.goals.length} goals</small></div>
-            <div class="sub">Add tasks in Calendar</div>`; })()}
-      </div>
-    </div>
+    ${(S.systems.weekly || []).length ? `<div class="section-head"><h3>This week</h3><span class="small muted">${(S.systems.weekly || []).length - mustDo.length} of ${(S.systems.weekly || []).length} done</span></div>
+    <div class="card list-card"><div class="list">
+      ${mustDo.length ? mustDo.map(m => `
+        <div class="check tap" data-act="toggleWeekly" data-id="${m.id}"><span class="box">${TICK}</span><span class="txt">${esc(m.text)}</span></div>`).join('')
+        : `<div class="empty">All done for this week.</div>`}
+    </div></div>` : ''}
 
-    <div class="section-head"><h3>Today</h3><span><button class="link" data-act="addTask" data-scope="day" data-d="${todayISO()}">+ Task</button><button class="link" data-tab-go="calendar">Calendar →</button></span></div>
-    <div class="home-cols">
-      <div class="card">
-        <div class="card-label">Today's agenda</div>
-        <div class="list">
-          ${(() => {
-            const iso = todayISO();
-            const rows = [
-              ...todaysEvents.map(e => ({ time: e.start || e.time || '', html: `
-                <div class="item" style="border-left:4px solid ${catColor(e.category)}">
-                  <div class="body"><div class="t">${esc(e.title)}${e.source==='email'?' <span class="chip src" title="added from your email">✉︎</span>':''}</div><div class="s">${[evTime(e), e.category].filter(Boolean).map(esc).join(' · ')}</div></div>
-                  ${e.cost>0?`<div class="trail">${AUD(e.cost,0)}</div>`:''}
-                </div>` })),
-              ...habitsToday().map(h => ({ time: h.time || '', html: `
-                <div class="item ${h.doneDays && h.doneDays[iso] ? 'done hab-done' : ''}" style="border-left:4px dashed var(--blue-300)">
-                  <div class="body"><div class="t">${esc(h.text)}</div><div class="s">${esc(h.time)} · habit</div></div>
-                  <span class="box tap" data-act="toggleHabit" data-id="${h.id}">${TICK}</span>
-                </div>` })),
-              // a timed task slots in with everything else; untimed ones sort last.
-              // The sentinel must be digits — localeCompare treats punctuation like
-              // '~' as ignorable, which sorted untimed tasks to the TOP.
-              ...tasksForDate(iso).map(t => ({ time: taskTime(t) || '99:99', html: `
-                <div class="item ${taskDone(t, iso) ? 'done hab-done' : ''}" style="border-left:4px dashed var(--amber)">
-                  <div class="body"><div class="t">${esc(t.text)}</div><div class="s">${[taskSlot(t), 'task', taskRepeatLabel(t) ? '↻ ' + taskRepeatLabel(t) : ''].filter(Boolean).map(esc).join(' · ')}</div></div>
-                  <span class="box tap" data-act="toggleTask" data-id="${t.id}" data-d="${iso}">${TICK}</span>
-                </div>` })),
-            ].sort((a,b)=>a.time.localeCompare(b.time));
-            return rows.length ? rows.map(r=>r.html).join('') : `<div class="empty">Nothing scheduled today</div>`;
-          })()}
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-label">This week's must-dos</div>
-        <div class="list">
-          ${mustDo.length ? mustDo.map(m => `
-            <div class="check" data-act="toggleWeekly" data-id="${m.id}"><span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 12l4 4 10-11"/></svg></span><span class="txt">${esc(m.text)}</span></div>`).join('')
-            : `<div class="empty">All done for this week 🎉</div>`}
-        </div>
-      </div>
-    </div>
+    ${brief}
   `;
 }
 
@@ -1675,7 +1681,6 @@ function renderHome() {
 function renderCalendar() {
   const v = $('#view-calendar');
   v.innerHTML = `
-    <div class="view-title">Calendar</div>
     <div class="section-head" style="margin-top:4px">
       <div class="seg" id="calSeg">
         ${['day','week','month'].map(k => `<button data-cal="${k}" class="${calView===k?'on':''}">${k[0].toUpperCase()+k.slice(1)}</button>`).join('')}
@@ -1685,16 +1690,11 @@ function renderCalendar() {
         <button class="link ${calEditing?'on':''}" data-act="toggleCalEdit">${calEditing ? 'Done' : 'Edit'}</button>
       </span>
     </div>
-    ${calEditing ? '' : `<div class="add-row">
-      <button class="btn sm" data-act="addEventOn" data-d="${calSel}">+ Event</button>
-      <button class="btn sm" data-act="addTask" data-scope="day" data-d="${calSel}">+ Task</button>
-      <button class="btn sm" data-act="addHabit">+ Habit</button>
-    </div>`}
     <div class="seg full" style="margin-top:10px">
       ${Object.entries(CAL_FILTERS).map(([k,label]) =>
         `<button data-act="setCalFilter" data-f="${k}" class="${calFilter===k?'on':''}">${label}</button>`).join('')}
     </div>
-    ${showEvents() ? `<div class="pill-row" style="margin:12px 2px 4px">
+    ${showEvents() && calEditing ? `<div class="pill-row" style="margin:12px 2px 4px">
       ${Object.entries(CATS).map(([k,c])=>`<span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--text-2)"><i style="width:9px;height:9px;border-radius:3px;background:${c}"></i>${k}</span>`).join('')}
     </div>` : '<div style="height:8px"></div>'}
     <div id="calBody"></div>`;
@@ -1814,14 +1814,14 @@ function habitsCard(iso) {
       <button class="link" data-act="addHabit">+ Habit</button></div>
     <div class="card">
       ${list.length ? `<div class="small muted" style="margin-bottom:10px">${
-        future ? `${list.length} scheduled` : left ? `${left} of ${list.length} to go` : 'All done ✓'}</div>` : ''}
+        future ? `${list.length} scheduled` : left ? `${left} of ${list.length} to go` : 'All done'}</div>` : ''}
       <div class="list">
         ${list.map(h => `
           <div class="check habit ${habitDoneOn(h, iso) ? 'done' : ''}">
             <span class="box tap" data-act="calToggleHabit" data-id="${h.id}" data-d="${iso}">${TICK}</span>
             <span class="txt tap" data-act="editHabit" data-id="${h.id}">${esc(h.text)}
               <span class="s muted">${esc(habitDaysLabel(h))}</span></span>
-            ${habitStreak(h) > 1 ? `<span class="chip good nowrap">🔥 ${habitStreak(h)}</span>` : ''}
+            ${habitStreak(h) > 1 ? `<span class="chip good nowrap">${ic('flame')} ${habitStreak(h)}</span>` : ''}
             <span class="chip nowrap">${esc(h.time||'')}</span>
           </div>`).join('') || `<div class="empty">No habits on this day</div>`}
       </div>
@@ -1830,8 +1830,8 @@ function habitsCard(iso) {
 function dayList(evs) {
   if (!evs.length) return `<div class="card"><div class="empty">No events. Tap “Event” to add one.</div></div>`;
   return `<div class="card"><div class="list">${evs.map(e => `
-    <div class="item tap" data-act="editEvent" data-id="${e.id}" style="border-left:4px solid ${catColor(e.category)}">
-      <div class="body"><div class="t">${esc(e.title)}${e.recurring?' <span class="chip" style="padding:1px 7px;font-size:10px">weekly</span>':''}${e.source==='email'?' <span class="chip src" title="added from your email">✉︎</span>':''}</div>
+    <div class="catrow item tap" data-act="editEvent" data-id="${e.id}" style="--cat:${catColor(e.category)}">
+      <div class="body"><div class="t">${esc(e.title)}${e.recurring?` <span class="chip" style="padding:1px 6px;font-size:11px">${ic('repeat')} weekly</span>`:''}${e.source==='email'?` <span class="chip src" title="added from your email">${ic('mail')}</span>`:''}</div>
         <div class="s">${[evTime(e), e.category, e.cost>0?AUD(e.cost,0):''].filter(Boolean).map(esc).join(' · ')}</div>
         ${e.notes?`<div class="s">${esc(e.notes)}</div>`:''}</div>
     </div>`).join('')}</div></div>`;
@@ -1866,7 +1866,7 @@ function renderHealth() {
     const hadYest = !es.length && foodEntries(yest).some(e => e.meal === m);
     return `<div class="meal">
       <div class="meal-head">
-        <span class="mh-name">${MEAL_ICON[m]} ${m}</span>
+        <span class="mh-name">${m}</span>
         <span class="mh-tot">${es.length ? `${kcalStr(mt.kcal)} kcal${mt.cost > 0 ? ` · ${AUD(mt.cost)}` : ''}` : ''}</span>
         <button class="link" data-act="addFood" data-meal="${m}">+ Add</button>
       </div>
@@ -1884,25 +1884,26 @@ function renderHealth() {
   };
 
   B.push({ key:'food', name:'Food diary', grow:true, html: `
-    <div class="section-head"><h3>Food</h3>
+    <div class="section-head"><h3>Diary</h3>
       <button class="link" data-act="editFoodGoals">Goals</button></div>
     <div class="card">
       <div class="food-date">
-        <button class="icon-btn" data-act="foodPrev" aria-label="Previous day">‹</button>
+        <button class="icon-btn" data-act="foodPrev" aria-label="Previous day">${ic('chevron-left')}</button>
         <button class="fd-label" data-act="foodToday">${foodDayLabel(foodDate)}</button>
-        <button class="icon-btn" data-act="foodNext" aria-label="Next day" ${foodDate >= todayISO() ? 'disabled' : ''}>›</button>
+        <button class="icon-btn" data-act="foodNext" aria-label="Next day" ${foodDate >= todayISO() ? 'disabled' : ''}>${ic('chevron')}</button>
       </div>
+      ${!ft.n && foodEntries(shiftISO(foodDate, -1)).length ? `<button class="btn sm copy-day" data-act="copyDay">${ic('repeat')} Copy everything from ${foodDate === todayISO() ? 'yesterday' : fmtDay(shiftISO(foodDate, -1))}</button>` : ''}
       <div class="food-actions">
-        <button class="btn sm primary" data-act="addFood">+ Add food</button>
-        <button class="btn sm" data-act="scanBarcode">📷 Scan</button>
-        <button class="btn sm" data-act="mealList">🍱 Meals</button>
+        <button class="btn sm primary" data-act="addFood">${ic('plus')} Add food</button>
+        <button class="btn sm" data-act="scanBarcode">${ic('barcode')} Scan</button>
+        <button class="btn sm" data-act="mealList">${ic('bookmark')} Meals</button>
       </div>
       <div class="food-top">
-        ${ring(clamp(ft.kcal / (fg.kcal || 1), 0, 1), { size: 108, sw: 10, label: kcalStr(Math.abs(left)), caption: left >= 0 ? 'kcal left' : 'kcal over', color: left < 0 ? 'var(--red)' : '' })}
+        ${ring(clamp(ft.kcal / (fg.kcal || 1), 0, 1), { size: 104, sw: 8, label: kcalStr(Math.abs(left)), caption: left >= 0 ? 'kcal left' : 'kcal over', color: left < 0 ? 'var(--red)' : '' })}
         <div class="food-macros">
-          ${macro('Protein', ft.p, fg.protein, 'var(--blue-500)')}
-          ${macro('Carbs', ft.c, fg.carbs, '#f59e0b')}
-          ${macro('Fat', ft.f, fg.fat, '#ec4899')}
+          ${macro('Protein', ft.p, fg.protein, 'var(--accent)')}
+          ${macro('Carbs', ft.c, fg.carbs, 'var(--text-2)')}
+          ${macro('Fat', ft.f, fg.fat, 'var(--text-2)')}
         </div>
       </div>
       <div class="food-eq">
@@ -1911,7 +1912,7 @@ function renderHealth() {
         <span class="${left < 0 ? 'neg' : ''}"><b>${kcalStr(left)}</b><small>remaining</small></span>
       </div>
       <div class="food-spend">
-        <div class="macro-top"><span>💸 Spent on food</span>
+        <div class="macro-top"><span>Spent on food</span>
           <span class="${fg.budget && ft.cost > fg.budget ? 'neg' : 'muted'}">${AUD(ft.cost)}${fg.budget ? ` / ${AUD(fg.budget, 0)}` : ''}</span></div>
         ${fg.budget ? `<div class="bar slim"><i style="width:${budgetP * 100}%;${ft.cost > fg.budget ? 'background:var(--red)' : 'background:var(--green)'}"></i></div>` : ''}
       </div>
@@ -1951,7 +1952,7 @@ function renderHealth() {
 
       <div class="card-label" style="margin:16px 0 8px">Where the money goes</div>
       <div class="meal-split">${fs.byMeal.map(m => `
-        <div class="ms-row"><span class="ms-n">${MEAL_ICON[m.meal]} ${m.meal}</span>
+        <div class="ms-row"><span class="ms-n">${m.meal}</span>
           <div class="bar slim"><i style="width:${m.cost / mealMax * 100}%"></i></div>
           <span class="ms-v">${AUD(m.cost, 0)}</span></div>`).join('')}</div>
 
@@ -1960,7 +1961,7 @@ function renderHealth() {
         <div class="item"><div class="body"><div class="t">${esc(f.name)}</div>
           <div class="s">${f.n}× · ${kcalStr(f.kcal)} kcal${f.kcal ? ` · ${AUD(f.cost / f.kcal * 100)}/100 kcal` : ''}</div></div>
           <div class="trail">${AUD(f.cost)}</div></div>`).join('')}</div>` : ''}
-      ${bestP ? `<div class="food-tip">💪 Best-value protein: <b>${esc(bestP.name)}</b> at ${AUD(bestP.per10)} per 10 g${fs.protein.length > 1 ? ` — ${esc(fs.protein[fs.protein.length - 1].name)} is ${AUD(fs.protein[fs.protein.length - 1].per10)}` : ''}</div>` : ''}
+      ${bestP ? `<div class="food-tip">Best-value protein: <b>${esc(bestP.name)}</b> at ${AUD(bestP.per10)} per 10 g${fs.protein.length > 1 ? ` — ${esc(fs.protein[fs.protein.length - 1].name)} is ${AUD(fs.protein[fs.protein.length - 1].per10)}` : ''}</div>` : ''}
       ` : `<div class="empty">Log a few meals and your calorie and spending trends show up here</div>`}
     </div>` };
 
@@ -2051,7 +2052,7 @@ function renderHealth() {
           <div class="item tap" data-act="editRun" data-id="${r.id}">
             <div class="body">
               <div class="t">${esc(r.name || `${r.distanceKm} km`)}${r.source==='strava'?' <span class="chip strava-chip">Strava</span>':''}</div>
-              <div class="s">${[fmtDay(r.date), `${r.distanceKm} km`, r.timeMin?`${r.timeMin} min`:'', r.elevM?`↑${r.elevM} m`:'', r.avgHr?`♥ ${r.avgHr}`:''].filter(Boolean).map(esc).join(' · ')}</div>
+              <div class="s">${[fmtDay(r.date), `${r.distanceKm} km`, r.timeMin?`${r.timeMin} min`:'', r.elevM?`↑${r.elevM} m`:'', r.avgHr?`${r.avgHr} bpm`:''].filter(Boolean).map(esc).join(' · ')}</div>
             </div>
             <div class="trail">${paceStr(pace(r))}</div>
           </div>`).join('') || '<div class="empty">Log a run, or connect Strava to pull them in</div>'}
@@ -2124,25 +2125,23 @@ function renderHealth() {
       </div>
     </div>` });
 
-  // Food & spending heads the right-hand column, beside the Food diary
-  B.splice(Math.ceil((B.length + 1) / 2), 0, foodStatsBlock);
+  B.splice(1, 0, foodStatsBlock);   // Food sub-tab: diary, then the trends
 
   // one glance at the day across every section; each tile jumps to its section
   const td = dayTotals(iso), lastN = S.health.sleep[S.health.sleep.length - 1];
   const kLeft = fg.kcal - td.kcal;
-  const tile = (sec, icon, v, label, cls = '') => `<button class="hs-item tap" data-act="healthJump" data-sec="${sec}">
-      <span class="hs-v ${cls}">${v}</span><span class="hs-l">${icon} ${label}</span></button>`;
+  const tile = (sec, icon, v, label, cls = '') => `<button class="hs-item tap" data-go="health:${sec}">
+      <span class="hs-v ${cls}">${v}</span><span class="hs-l">${ic(icon)} ${label}</span></button>`;
   const strip = `<div class="card health-strip">
-      ${tile('food', '🔥', kcalStr(Math.abs(kLeft)), kLeft >= 0 ? 'kcal left' : 'kcal over', kLeft < 0 ? 'neg' : '')}
-      ${tile('food', '💪', Math.round(td.p) + 'g', fg.protein ? `of ${fg.protein}g` : 'protein', fg.protein && td.p >= fg.protein ? 'pos' : '')}
-      ${tile('foodStats', '💸', AUD(td.cost, td.cost >= 100 ? 0 : 2), fg.budget ? `of ${AUD(fg.budget, 0)}` : 'food', fg.budget && td.cost > fg.budget ? 'neg' : '')}
-      ${tile('water', '💧', (water / 1000).toFixed(1) + 'L', `${Math.round(wp * 100)}%`)}
-      ${tile('sleep', '😴', lastN ? lastN.hours.toFixed(1) + 'h' : '—', lastN && lastN.date === iso ? 'slept' : 'sleep')}
+      ${tile('food', 'flame', kcalStr(Math.abs(kLeft)), kLeft >= 0 ? 'kcal left' : 'kcal over', kLeft < 0 ? 'neg' : '')}
+      ${tile('food', 'dumbbell', Math.round(td.p) + 'g', fg.protein ? `of ${fg.protein}g` : 'protein', fg.protein && td.p >= fg.protein ? 'pos' : '')}
+      ${tile('foodStats', 'wallet', AUD(td.cost, td.cost >= 100 ? 0 : 2), fg.budget ? `of ${AUD(fg.budget, 0)}` : 'food', fg.budget && td.cost > fg.budget ? 'neg' : '')}
+      ${tile('water', 'droplet', (water / 1000).toFixed(1) + 'L', `${Math.round(wp * 100)}%`)}
+      ${tile('sleep', 'moon', lastN ? lastN.hours.toFixed(1) + 'h' : '—', lastN && lastN.date === iso ? 'slept' : 'sleep')}
     </div>`;
 
   $('#view-health').innerHTML =
-    `<div class="section-head" style="margin-top:0"><div class="view-title" style="margin:0">Health</div>${arrangeHeader('health')}</div>`
-    + strip + renderBlocks('health', B);
+    strip + segBar('health') + segBlocks('health', B);
 }
 
 /* ---------- MONEY ---------- */
@@ -2155,26 +2154,19 @@ function renderMoney() {
   const bal = balance();
   const wk = periodIsWeekly();
 
-  $('#view-money').innerHTML = `
-    <div class="section-head" style="margin-top:0"><div class="view-title" style="margin:0">Money</div>${arrangeHeader('money')}</div>
-
-    <div class="hero" style="background:linear-gradient(140deg,#0f4c81,#1d4ed8 60%,#2563eb)">
-      <div class="date">Portfolio value</div>
-      <div class="greet">${AUD(pv, 2)}</div>
-      <div class="weather" style="gap:14px">
-        <span style="color:${pc>=0?'#86efac':'#fca5a5'}">${pc>=0?'▲':'▼'} ${AUD(Math.abs(pc),2)} today</span>
-        ${cost>0?`<span style="color:${totalRet>=0?'#86efac':'#fca5a5'}">${totalRet>=0?'▲':'▼'} ${AUD(Math.abs(totalRet),2)} total</span>`:''}
-      </div>
-    </div>
-
-    `;
-
   const B = [];
   // Portfolio, holdings and goals are each short; together they fill the column
   // beside Bills instead of each leaving a gap under its heading.
   // Six separate sections, so each heading on the left pairs with one on the right:
   //   Portfolio | Bills · Holdings | Budgets · Money goals | Money tracker
   // Every pair shares a grid row, which is what makes the headings line up exactly.
+  B.push({ key:'value', name:'Portfolio value', html: `
+    <div class="money-value">
+      <div class="card-label" style="margin:0">Portfolio</div>
+      <div class="mv-num">${AUD(pv, 2)}</div>
+      <div class="mv-sub"><span class="${pc >= 0 ? 'pos' : 'neg'}">${pc >= 0 ? '+' : '−'}${AUD(Math.abs(pc), 2)} today</span>${cost > 0
+        ? `<span class="${totalRet >= 0 ? 'pos' : 'neg'}">${totalRet >= 0 ? '+' : '−'}${AUD(Math.abs(totalRet), 2)} total</span>` : ''}</div>
+    </div>` });
   B.push({ key:'chart', name:'Portfolio chart', grow:true, html: `
     <div class="section-head"><h3>Portfolio — last month</h3></div>
     <div class="card">
@@ -2206,7 +2198,7 @@ function renderMoney() {
         if (g.by) {
           const left = daysUntil(parseISO(g.by)), rem = Math.max((g.target||0)-(g.saved||0), 0);
           const weeks = Math.max(left/7, 0);
-          pace = p>=1 ? `<span class="pos">Goal reached 🎉</span>`
+          pace = p>=1 ? `<span class="pos">Goal reached</span>`
             : left < 0 ? `<span class="neg">Target date passed · ${AUD(rem,0)} short</span>`
             : `by ${fmtDay(g.by)} · <b>${AUD(weeks>=1?rem/weeks:rem, 0)}/wk</b> to get there`;
         }
@@ -2264,12 +2256,12 @@ function renderMoney() {
     <div class="card"><div class="list">
       ${S.money.transactions.slice().reverse().slice(0,12).map(t => `
         <div class="item tap" data-act="editTxn" data-id="${t.id}">
-          <div class="body"><div class="t">${esc(t.desc)}${t.source==='email'?' <span class="chip src" title="added from your email">✉︎</span>':''}${t.foodDay?' <span class="chip food-mine" title="from your Food diary">🍽</span>':''}</div><div class="s">${esc(t.category||'—')} · ${esc(t.date)}</div></div>
+          <div class="body"><div class="t">${esc(t.desc)}${t.source==='email'?` <span class="chip src" title="added from your email">${ic('mail')}</span>`:''}${t.foodDay?' <span class="chip food-mine" title="from your Food diary">🍽</span>':''}</div><div class="s">${esc(t.category||'—')} · ${esc(t.date)}</div></div>
           <div class="trail ${t.dir==='in'?'pos':'neg'}">${t.dir==='in'?'+':'−'}${AUD(t.amount)}</div>
         </div>`).join('') || `<div class="empty">Log income & expenses</div>`}
     </div></div>` });
 
-  $('#view-money').innerHTML += renderBlocks('money', B);
+  $('#view-money').innerHTML = segBar('money') + segBlocks('money', B);
 }
 
 /* ---------- SYSTEMS ---------- */
@@ -2288,7 +2280,7 @@ function renderSystems() {
         <div class="check ${g.done?'done':''}">
           <span class="box tap" data-act="toggleGoal" data-id="${g.id}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 12l4 4 10-11"/></svg></span>
           <span class="txt tap" data-act="editGoal" data-id="${g.id}">${esc(g.text)}</span>
-          <button class="del" data-act="delGoal" data-id="${g.id}">✕</button>
+          <button class="del" data-act="delGoal" data-id="${g.id}">${ic('x')}</button>
         </div>`).join('') || `<div class="empty">Add your first goal</div>`}
     </div></div>` });
 
@@ -2299,7 +2291,7 @@ function renderSystems() {
         <div class="check ${m.weeks[wk]?'done':''}">
           <span class="box tap" data-act="toggleWeekly" data-id="${m.id}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 12l4 4 10-11"/></svg></span>
           <span class="txt tap" data-act="editWeekly" data-id="${m.id}">${esc(m.text)}</span>
-          <button class="del" data-act="delWeekly" data-id="${m.id}">✕</button>
+          <button class="del" data-act="delWeekly" data-id="${m.id}">${ic('x')}</button>
         </div>`).join('') || `<div class="empty">What must happen every week?</div>`}
     </div></div>` });
 
@@ -2355,15 +2347,15 @@ function renderSystems() {
   B.push({ key:'habits', name:'Habit reminders', html: `
     <div class="section-head"><h3>Habit reminders</h3><button class="link" data-act="addHabit">+ Habit</button></div>
     ${gridRows.length ? `<div class="card">${habitGrid}</div>` : ''}
-    <div class="card"><div class="small muted" style="margin-bottom:10px">${hSorted.length ? (hLeft ? `${hLeft} left today` : 'All done today 🎉') : "Habits with a time — you'll get a reminder."}</div><div class="list habit-list">
+    <div class="card"><div class="small muted" style="margin-bottom:10px">${hSorted.length ? (hLeft ? `${hLeft} left today` : 'All done today') : "Habits with a time — you'll get a reminder."}</div><div class="list habit-list">
       ${hSorted.map(h => `
         <div class="check habit ${h.doneDays && h.doneDays[iso] ? 'done' : ''} ${habitRunsOn(h)?'':'offday'}" data-habit="${h.id}">
           <span class="box tap" data-act="toggleHabit" data-id="${h.id}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 12l4 4 10-11"/></svg></span>
           <span class="txt tap" data-act="editHabit" data-id="${h.id}">${esc(h.text)}
             <span class="s muted" style="display:block;font-size:11.5px">${esc(habitDaysLabel(h))}</span></span>
-          ${habitStreak(h) > 1 ? `<span class="chip good nowrap" title="day streak">🔥 ${habitStreak(h)}</span>` : ''}
+          ${habitStreak(h) > 1 ? `<span class="chip good nowrap" title="day streak">${ic('flame')} ${habitStreak(h)}</span>` : ''}
           <span class="chip nowrap">${esc(h.time||'')}</span>
-          <button class="del" data-act="delHabit" data-id="${h.id}">✕</button>
+          <button class="del" data-act="delHabit" data-id="${h.id}">${ic('x')}</button>
         </div>`).join('') || `<div class="empty">e.g. Smoothie — 8:00 am daily, Run — Tuesdays</div>`}
     </div></div>` });
 
@@ -2372,7 +2364,7 @@ function renderSystems() {
   B.push({ key:'badday', name:'Bad-day minimums', html: `
     <div class="section-head"><h3>Bad-day minimums</h3>
       <span style="display:inline-flex;gap:12px;align-items:center">
-        <button class="link ${roughOn?'on':''}" data-act="toggleRoughDay">${roughOn ? '✓ Rough day on' : 'Start a rough day'}</button>
+        <button class="link ${roughOn?'on':''}" data-act="toggleRoughDay">${roughOn ? 'Rough day on' : 'Start a rough day'}</button>
         <button class="link" data-act="addBadDay">+ Add</button>
       </span></div>
     <div class="card">
@@ -2385,7 +2377,7 @@ function renderSystems() {
           <span class="box tap" data-act="toggleBadDay" data-id="${m.id}">${TICK}</span>
           <span class="txt tap" data-act="editBadDay" data-id="${m.id}">${esc(m.text)}
             <span class="s muted">${esc(daysLabel(m.days))}${badDayRunsOn(m) ? '' : ' · not today'}</span></span>
-          <button class="del" data-act="delBadDay" data-id="${m.id}">✕</button>
+          <button class="del" data-act="delBadDay" data-id="${m.id}">${ic('x')}</button>
         </div>`).join('') || `<div class="empty">Add a minimum</div>`}
     </div></div>` });
 
@@ -2432,22 +2424,54 @@ function renderSystems() {
     </div></div>` });
 
   $('#view-systems').innerHTML =
-    `<div class="section-head" style="margin-top:0"><div class="view-title" style="margin:0">Systems</div>${arrangeHeader('systems')}</div>`
-    + renderBlocks('systems', B);
+    segBar('systems') + segBlocks('systems', B);
 }
 
 /* ============================================================
    Sheet / modal
    ============================================================ */
-function openSheet(html) { $('#sheetBody').innerHTML = html; $('#scrim').classList.add('open'); }
-function closeSheet() { $('#scrim').classList.remove('open'); }
-$('#scrim').addEventListener('click', e => { if (e.target.id === 'scrim') closeSheet(); });
+let sheetDirty = false, discardArmed = 0;
+function openSheet(html) {
+  $('#sheetBody').innerHTML = html; $('#scrim').classList.add('open');
+  $('#sheet').style.transform = ''; $('#sheet').scrollTop = 0;
+  sheetDirty = false; discardArmed = 0;
+}
+function closeSheet() { $('#scrim').classList.remove('open'); sheetDirty = false; }
+// tapping outside a half-filled form asks once before throwing it away
+$('#scrim').addEventListener('click', e => {
+  if (e.target.id !== 'scrim') return;
+  if (sheetDirty && Date.now() - discardArmed > 2500) {
+    discardArmed = Date.now();
+    const sh = $('#sheet'); sh.classList.remove('shake'); void sh.offsetWidth; sh.classList.add('shake');
+    toast('Tap outside again to discard');
+    return;
+  }
+  closeSheet();
+});
+$('#sheetBody').addEventListener('input', () => { sheetDirty = true; });
+// Return in a one-line field saves the form; Escape closes
+$('#sheetBody').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.target.matches('input:not([type=checkbox]):not(#fd_q):not(.md-qty)') && !e.isComposing) {
+    const btn = $('#sheetBody .sheet-actions .btn.primary');
+    if (btn) { e.preventDefault(); btn.click(); }
+  }
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('#scrim').classList.contains('open')) closeSheet(); });
+// drag the handle down to close
+(() => {
+  const sh = $('#sheet'); let y0 = null, dy = 0;
+  sh.addEventListener('touchstart', e => { if (sh.scrollTop > 0 || !e.target.closest('.handle, h3, .desc')) return; y0 = e.touches[0].clientY; dy = 0; }, { passive: true });
+  sh.addEventListener('touchmove', e => { if (y0 == null) return; dy = Math.max(0, e.touches[0].clientY - y0); sh.style.transform = `translateY(${dy}px)`; }, { passive: true });
+  sh.addEventListener('touchend', () => { if (y0 == null) return; sh.style.transition = 'transform .2s'; if (dy > 110) closeSheet(); sh.style.transform = ''; setTimeout(() => { sh.style.transition = ''; }, 220); y0 = null; });
+})();
 
 function field(label, id, opts = {}) {
   const t = opts.type || 'text';
+  const im = opts.inputmode ? `inputmode="${opts.inputmode}"` : '';
+  const cap = t === 'text' ? 'autocapitalize="sentences"' : '';
   if (t === 'textarea') return `<label class="field"><span>${label}</span><textarea id="${id}" placeholder="${opts.ph||''}">${esc(opts.val||'')}</textarea></label>`;
   if (t === 'select') return `<label class="field"><span>${label}</span><select id="${id}">${opts.options.map(o=>`<option value="${esc(o)}" ${o===opts.val?'selected':''}>${esc(o)}</option>`).join('')}</select></label>`;
-  return `<label class="field"><span>${label}</span><input id="${id}" type="${t}" value="${esc(opts.val ?? '')}" placeholder="${opts.ph||''}" ${opts.step?`step="${opts.step}"`:''} inputmode="${opts.inputmode||''}"></label>`;
+  return `<label class="field"><span>${label}</span><input id="${id}" type="${t}" value="${esc(opts.val ?? '')}" placeholder="${opts.ph||''}" ${opts.step?`step="${opts.step}"`:''} ${im} ${cap} enterkeyhint="done"></label>`;
 }
 function sheetForm(title, desc, body, opts = {}) {
   openSheet(`<h3>${title}</h3>${desc?`<p class="desc">${desc}</p>`:''}${body}
@@ -2455,6 +2479,8 @@ function sheetForm(title, desc, body, opts = {}) {
       ${opts.del?`<button class="btn danger" data-act="${opts.del}" data-id="${opts.id||''}" data-i="${opts.i??''}">Delete</button>`:''}
       <button class="btn primary" data-act="${opts.save}" data-id="${opts.id||''}" data-i="${opts.i??''}">${opts.saveLabel||'Save'}</button>
     </div>`);
+  // a new item: put the cursor in the first box inside the tap, so iOS raises the keyboard
+  if (!opts.id && !opts.noFocus) $('#sheetBody input[type=text], #sheetBody input:not([type]), #sheetBody textarea')?.focus({ preventScroll: true });
 }
 const val = id => { const el = $('#' + id); return el ? el.value.trim() : ''; };
 
@@ -2525,7 +2551,7 @@ function foodPortionSheet(f, entry, creating = false, note = '') {
     ${field('Serving', 'fp_serv', { val: f.serving, ph: 'e.g. 1 wrap, 100 g, 1 cup' })}
     <div class="row">${nf('Calories', 'fp_kcal', f.kcal, 'kcal')}${field('Cost / serving ($)', 'fp_cost', { type: 'number', step: 'any', inputmode: 'decimal', ph: '0.00',
       val: num(f.cost) > 0 ? (Math.round(num(f.cost) * 100) / 100).toFixed(2) : '' })}</div>
-    ${f.src && !entry ? `<div class="price-src">💲 ${esc(f.src)} <span class="muted">· checked ${PRICES_CHECKED}</span></div>` : ''}
+    ${f.src && !entry ? `<div class="price-src">${ic('receipt','sm')} ${esc(f.src)} <span class="muted">· checked ${PRICES_CHECKED}</span></div>` : ''}
     <button class="link small pack-link" data-act="togglePackCalc">Work out cost from the pack price</button>
     <div id="fp_pack" class="pack-calc" ${f.perPack && !num(f.cost) ? '' : 'hidden'}>
       <div class="row">${field('Pack price ($)', 'fp_packprice', { type: 'number', step: 'any', inputmode: 'decimal', ph: 'e.g. 6.50' })}${field('Servings in pack', 'fp_packn', { type: 'number', step: 'any', inputmode: 'decimal', ph: 'e.g. 10', val: f.perPack || '' })}</div>
@@ -2596,7 +2622,7 @@ function mealEditorSheet() {
         <div class="body"><div class="t">${esc(i.name)}</div>
           <div class="s">${esc(i.serving)} · ${kcalStr(i.kcal * i.qty)} kcal${num(i.cost) > 0 ? ` · ${AUD(i.cost * i.qty)}` : ''}</div></div>
         <input class="md-qty" type="number" step="0.25" min="0" inputmode="decimal" value="${r1(num(i.qty, 1))}" data-k="${k}" aria-label="Servings of ${esc(i.name)}">
-        <button class="md-del" data-act="mdRemove" data-k="${k}" aria-label="Remove ${esc(i.name)}">✕</button>
+        <button class="md-del" data-act="mdRemove" data-k="${k}" aria-label="Remove ${esc(i.name)}">${ic('x')}</button>
       </div>`).join('') || '<div class="empty">No ingredients yet</div>'}
     </div>
     <button class="btn btn-add" data-act="addFood" data-pick="1" style="margin-top:10px">+ Add an ingredient</button>
@@ -2675,9 +2701,9 @@ async function openScanner() {
   ov.innerHTML = `<video id="scanVideo" playsinline muted autoplay></video>
     <div class="scan-frame"><i class="scan-line"></i></div>
     <div class="scan-top">
-      <button class="scan-btn" data-act="closeScanner" aria-label="Close">✕</button>
+      <button class="scan-btn" data-act="closeScanner" aria-label="Close">${ic('x')}</button>
       <span id="scanMsg">Starting camera…</span>
-      <button class="scan-btn" id="scanTorch" data-act="scanTorch" aria-label="Torch" style="visibility:hidden">🔦</button>
+      <button class="scan-btn" id="scanTorch" data-act="scanTorch" aria-label="Torch" style="visibility:hidden">${ic('flashlight')}</button>
     </div>
     <div class="scan-bottom">
       <div class="scan-meal">Adding to <b>${foodMeal}</b> · ${foodDayLabel(foodDate)}</div>
@@ -2709,7 +2735,7 @@ async function openScanner() {
         try {
           const hits = await det.detect(v);
           const code = hits.map(h => h.rawValue).find(c => /^\d{8,14}$/.test(c));
-          if (code) { if (navigator.vibrate) navigator.vibrate(40); stopScanner(); return foundBarcode(code); }
+          if (code) { haptic(); stopScanner(); return foundBarcode(code); }
         } catch (e) { /* a bad frame — keep going */ }
         scanBusy = false;
       }
@@ -2784,7 +2810,7 @@ const ACT = {
     const row = el && el.closest('.check, .tchip');
     if (nowDone && row) {
       row.classList.add('done', 'ticking');
-      if (navigator.vibrate) navigator.vibrate(12);
+      haptic();
       setTimeout(() => renderCalBody(), 380);
     } else renderCalBody();
   },
@@ -2971,7 +2997,7 @@ const ACT = {
     // list re-sort once the animation has been seen
     const row = el && el.closest('.check.task, .tchip, .item');
     if (!row || !nowDone) { render(currentTab); return; }
-    if (navigator.vibrate) navigator.vibrate(12);
+    haptic();
     row.classList.add('done', 'ticking');
     const sinks = row.classList.contains('check');    // only the stacked lists re-sort
     setTimeout(() => {
@@ -2992,9 +3018,10 @@ const ACT = {
     const wasShort = cur < S.health.water.goalMl;
     S.health.water.log[iso] = next;
     save();
-    if (navigator.vibrate) navigator.vibrate(add >= 0 ? 10 : 6);
-    if (!updateWaterUI(next, add)) renderHealth();
-    if (wasShort && next >= S.health.water.goalMl) toast('Water goal reached 🎉');
+    haptic();
+    if (currentTab !== 'health') render(currentTab);
+    else if (!updateWaterUI(next, add)) renderHealth();
+    if (wasShort && next >= S.health.water.goalMl) toast('Water goal reached');
   },
   editWaterGoal() {
     sheetForm('Water goal','Daily target in litres.',
@@ -3040,7 +3067,7 @@ const ACT = {
     const rec = { lift, weight: num(val('pb_w')), reps: num(val('pb_r'),1), date: val('pb_date')||todayISO() };
     if (d.id) Object.assign(S.health.pbs.find(x=>x.id===d.id), rec);
     else S.health.pbs.push({ id: uid(), ...rec });
-    save(); closeSheet(); renderHealth(); toast('PB saved 💪');
+    save(); closeSheet(); renderHealth(); toast('PB saved');
   },
   delPB(d) { S.health.pbs = S.health.pbs.filter(x=>x.id!==d.id); save(); closeSheet(); renderHealth(); },
 
@@ -3065,7 +3092,7 @@ const ACT = {
     if (d.id) Object.assign(S.health.runs.find(x=>x.id===d.id), rec);
     else S.health.runs.push({ id: uid(), ...rec });
     S.health.runs.sort((a,b)=>a.date.localeCompare(b.date));
-    save(); closeSheet(); renderHealth(); toast('Run logged 🏃');
+    save(); closeSheet(); renderHealth(); toast('Run logged');
   },
   delRun(d) { S.health.runs = S.health.runs.filter(x=>x.id!==d.id); save(); closeSheet(); renderHealth(); },
 
@@ -3137,7 +3164,7 @@ const ACT = {
     if (ex) Object.assign(ex, rec); else S.health.sleep.push(rec);
     S.health.sleep.sort((a,b)=>a.date.localeCompare(b.date));
     save(); closeSheet(); renderHealth();
-    toast(h >= sleepGoal() ? 'Sleep logged — goal hit 😴' : 'Sleep logged');
+    toast(h >= sleepGoal() ? 'Sleep logged — goal hit' : 'Sleep logged');
   },
   delSleep(d) {
     S.health.sleep = S.health.sleep.filter(s => s.date !== d.id);
@@ -3162,9 +3189,9 @@ const ACT = {
         Scan a barcode</button>
       <div class="food-tools">
         ${foodPick ? `<button class="btn sm" data-act="openMealEditor">← Back to recipe</button>`
-          : `<button class="btn sm" data-act="mealList">🍱 My meals</button><button class="btn sm" data-act="quickAddFood">⚡ Quick add</button>`}
+          : `<button class="btn sm" data-act="mealList">${ic('bookmark')} My meals</button><button class="btn sm" data-act="quickAddFood">${ic('zap')} Quick add</button>`}
         <button class="btn sm" data-act="newFood">+ New food</button>
-        <button class="btn sm" data-act="foodOnline">🔎 Online</button>
+        <button class="btn sm" data-act="foodOnline">${ic('search')} Online</button>
       </div>
       <div id="fd_res"></div>`);
     const q = $('#fd_q');
@@ -3238,18 +3265,38 @@ const ACT = {
     foodMeal = d.meal; foodPick = false;
     mealEditorSheet();
   },
-  healthJump(d) {
-    const el = $(`#view-health .sec[data-sec="${d.sec}"]`); if (!el) return;   // the section, not the strip button (which carries the same data-sec)
-    window.scrollTo({ top: el.getBoundingClientRect().top + scrollY - 70, behavior: 'smooth' });
+  setSeg(d) { S.settings.seg = S.settings.seg || {}; S.settings.seg[d.tab] = d.seg; save(false); tabScroll[d.tab] = 0; arranging = false; render(d.tab); window.scrollTo(0, 0); },
+  toggleHomeDone() { homeDoneOpen = !homeDoneOpen; renderHome(); },
+  quickAdd() { quickAddSheet(); },
+  search() { searchSheet(); },
+  qaSaveTask() {
+    const text = val('qa_task'); if (!text) { $('#qa_task')?.focus(); return; }
+    TASKS().push({ id: uid(), text, cat: 'Random', scope: 'day', date: todayISO(), repeat: 'none', done: false, doneDays: {} });
+    save(); haptic(); closeSheet(); render(currentTab); toast(`Added “${text}” to today`);
   },
+  qaWater(d) { ACT.water(d); closeSheet(); toast(`+${d.ml} ml water`); },
+  qaFood(d) { const f = findFood(d.fid); if (!f) return; foodDate = todayISO(); logFood(f, 1, foodMeal); haptic(); closeSheet(); render(currentTab); toast(`${f.name} → ${foodMeal}`); },
+  qaHabit(d) {
+    const h = (S.systems.habits || []).find(x => x.id === d.id); if (!h) return;
+    (h.doneDays || (h.doneDays = {}))[todayISO()] = true;
+    save(); haptic(); closeSheet(); render(currentTab); toast(`${h.text} — done`);
+  },
+  syncNowBtn() { syncNow(); toast('Syncing…', { undo: false }); },
+  copyDay() {
+    const from = shiftISO(foodDate, -1), src = foodEntries(from);
+    if (!src.length) return toast('Nothing logged the day before');
+    src.forEach(e => FOOD().log.push({ ...e, id: uid(), date: foodDate, at: Date.now() }));
+    syncFoodMoney(foodDate); save(); renderHealth(); toast(`Copied ${src.length} item${src.length > 1 ? 's' : ''} from ${foodDayLabel(from).toLowerCase()}`);
+  },
+  healthJump(d) { go('health', d.sec); },
   pickFoodMeal(d, el) { foodMeal = d.m; $$('button', el.parentElement).forEach(b => b.classList.toggle('on', b === el)); },
   // the + on a result: log one serving straight away, MyFitnessPal-style
   quickLogFood(d, el) {
     const f = findFood(d.fid); if (!f) return;
     if (foodPick && mealDraft) { addToDraft(f, 1); return ACT.openMealEditor(); }
     logFood(f, 1, foodMeal);
-    el.classList.add('added'); el.textContent = '✓';
-    if (navigator.vibrate) navigator.vibrate(10);
+    el.classList.add('added'); el.innerHTML = ic('check');
+    haptic();
     toast(`${f.name} → ${foodMeal}${num(f.cost) > 0 ? '' : ' · tap it later to add a price'}`);
   },
   pickFood(d) { const f = findFood(d.fid); if (f) foodPortionSheet(f, null); },
@@ -3549,7 +3596,7 @@ const ACT = {
     save();
     const row = el && el.closest('.check');
     if (nowDone && row) {
-      if (navigator.vibrate) navigator.vibrate(12);
+      haptic();
       row.classList.add('done', 'ticking');
       setTimeout(() => render(currentTab), 420);
     } else render(currentTab);
@@ -3672,7 +3719,7 @@ const ACT = {
     const nowDone = !h.doneDays[d.d];
     h.doneDays[d.d] = nowDone;
     save();
-    if (nowDone && el) { el.classList.add('done','ticking'); if (navigator.vibrate) navigator.vibrate(10); }
+    if (nowDone && el) { el.classList.add('done','ticking'); haptic(); }
     setTimeout(() => renderSystems(), nowDone ? 260 : 0);
   },
   toggleHabit(d) {
@@ -3716,7 +3763,7 @@ const ACT = {
     const amt = num(val('mg_' + d.id)); if (!amt) return toast('Type an amount');
     g.saved = (g.saved||0) + amt;
     save(); renderMoney();
-    toast(g.saved >= g.target ? `${g.name}: goal reached! 🎉` : `+${AUD(amt,0)} to ${g.name}`);
+    toast(g.saved >= g.target ? `${g.name}: goal reached` : `+${AUD(amt,0)} to ${g.name}`);
   },
 };
 
@@ -3822,9 +3869,9 @@ function checkHabitReminders() {
     if (h.doneDays && h.doneDays[todayISO()]) return;         // already done today
     if (h.time <= hm && hm <= addMinutes(h.time, 10)) {        // fire within a 10-min window
       if ('Notification' in window && Notification.permission === 'granted') {
-        try { new Notification('⏰ ' + h.text, { body: `It's ${h.time} — time for ${h.text.toLowerCase()}`, icon: 'icons/icon-192.png', tag: 'habit-' + h.id }); } catch (e) {}
+        notify(h.text, { body: `It's ${h.time} — time for ${h.text.toLowerCase()}`, icon: 'icons/icon-192.png', tag: 'habit-' + h.id });
       }
-      toast(`⏰ ${h.time} — ${h.text}`);
+      toast(`${h.time} — ${h.text}`);
       fired.push(h.id);
     }
   });
@@ -3841,7 +3888,7 @@ async function checkReminders() {
   const done = JSON.parse(localStorage.getItem(key) || '[]');
   upcomingBills().forEach(b => {
     if (b.status !== 'ok' && !done.includes(b.id)) {
-      new Notification('Bill due: ' + b.name, { body: `${AUD(b.amount)} · ${b.dd<0?`${-b.dd}d overdue`:b.dd===0?'due today':`in ${b.dd} days`}`, icon: 'icons/icon-192.png' });
+      notify('Bill due: ' + b.name, { body: `${AUD(b.amount)} · ${b.dd<0?`${-b.dd}d overdue`:b.dd===0?'due today':`in ${b.dd} days`}`, icon: 'icons/icon-192.png', tag: 'bill-' + b.id });
       done.push(b.id);
     }
   });
@@ -3867,9 +3914,10 @@ function openSettings() {
     <p class="desc">Same data on every device. Enter the sync URL of your deployed app and your secret key (from Vercel). Leave key blank to stay local-only.</p>
     ${field('Sync URL','set_surl',{val:syncCfg.url,ph:location.origin+'/api/sync'})}
     ${field('Secret key','set_skey',{val:syncCfg.key,ph:'your SYNC_SECRET'})}
+    ${syncEnabled() ? `<button class="btn" data-act="syncNowBtn">${ic('repeat')} Sync now</button>` : ''}
 
     <div class="section-head" style="margin:14px 2px 8px"><h3>Reminders</h3></div>
-    <button class="btn" data-act="enableNotify">${S.settings.notify?'✅ Notifications on':'🔔 Enable bill notifications'}</button>
+    <button class="btn" data-act="enableNotify">${S.settings.notify?ic('check')+' Notifications on':ic('bell')+' Enable notifications'}</button>
 
     <div class="section-head" style="margin:14px 2px 8px"><h3>Security</h3></div>
     <button class="btn" data-act="changePin">${S.settings.pinHash?'Change passcode':'Set a passcode'}</button>
@@ -3931,18 +3979,26 @@ ACT.resetData = function () {
    Event wiring
    ============================================================ */
 document.addEventListener('click', e => {
-  const go = e.target.closest('[data-tab-go]');
-  if (go) { render(go.dataset.tabGo); return; }
+  const a = e.target.closest('[data-act]');
+  const g = e.target.closest('[data-go]');
+  if (g && (!a || g.contains(a) === false || a === g)) { const [tab, sec] = g.dataset.go.split(':'); closeSheet(); go(tab, sec); return; }
+  const tg = e.target.closest('[data-tab-go]');
+  if (tg && !a) { go(tg.dataset.tabGo); return; }
   const seg = e.target.closest('[data-cal]');
   if (seg) { calView = seg.dataset.cal; renderCalendar(); return; }
-  const a = e.target.closest('[data-act]');
-  if (a) { const fn = ACT[a.dataset.act]; if (fn) fn(a.dataset, a); }
+  if (a) {
+    const fn = ACT[a.dataset.act]; if (!fn) return;
+    const before = undoStack.length, tc = toastCount;
+    fn(a.dataset, a);
+    // deletes always confirm with an Undo
+    if (/^del[A-Z]/.test(a.dataset.act) && undoStack.length > before && toastCount === tc) toast('Deleted', { undo: true });
+  }
 });
 $$('.nav button').forEach(b => b.addEventListener('click', () => render(b.dataset.tab)));
 $('#btnSettings').addEventListener('click', openSettings);
-$('#btnSync').addEventListener('click', syncNow);
-$('#btnUndo').addEventListener('click', undo);
-$('#btnRedo').addEventListener('click', redo);
+$('#btnSearch').addEventListener('click', () => ACT.search());
+$('#btnAdd').addEventListener('click', () => ACT.quickAdd());
+$('#fab').addEventListener('click', () => { haptic(); ACT.quickAdd(); });
 document.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
 });
@@ -4041,7 +4097,7 @@ document.addEventListener('touchstart', e => {
   if (!arranging) return;
   const sec = e.target.closest('.sec.arrangeable'); if (!sec) return;
   dragSec = sec; sec.classList.add('sec-dragging');
-  if (navigator.vibrate) navigator.vibrate(12);
+  haptic();
 }, { passive: true });
 document.addEventListener('touchmove', e => {
   if (!arranging || !dragSec) return;
@@ -4083,7 +4139,7 @@ document.addEventListener('touchstart', e => {
   const hit = dragTargetOf(e.target); if (!hit) return;
   pressTimer = setTimeout(() => {
     pressTimer = null;
-    if (navigator.vibrate) navigator.vibrate(15);
+    haptic();
     enterMoveMode(hit.item, hit.chip);
   }, 450);
 }, { passive: true });
@@ -4100,9 +4156,217 @@ document.addEventListener('click', e => {
   else if (!row) toast('Move cancelled');
 }, true);
 
+
+/* ============================================================
+   Quality of life
+   ============================================================ */
+let homeDoneOpen = false;
+const emptyState = (text, act, label, extra = '') =>
+  `<div class="empty">${text}${act ? `<br><button class="btn sm primary" data-act="${act}" ${extra}>${label}</button>` : ''}</div>`;
+
+// Haptics: Android has vibrate(); iPhone Safari doesn't, but toggling a native
+// switch control fires the Taptic Engine (Safari 18+), so tick one off-screen.
+const hapEl = (() => {
+  const l = document.createElement('label');
+  l.innerHTML = '<input type="checkbox" switch tabindex="-1">';
+  l.style.cssText = 'position:fixed;left:-99px;top:0;opacity:0;pointer-events:none';
+  l.setAttribute('aria-hidden', 'true');
+  document.body.appendChild(l); return l;
+})();
+function haptic(n = 1) {
+  if (navigator.vibrate) { navigator.vibrate(n > 1 ? [12, 60, 12] : 10); return; }
+  for (let i = 0; i < n; i++) setTimeout(() => hapEl.click(), i * 90);
+}
+
+// iOS home-screen apps can't use `new Notification` — go through the service worker
+async function notify(title, opts) {
+  try {
+    const reg = navigator.serviceWorker && await navigator.serviceWorker.getRegistration();
+    if (reg && reg.showNotification) return reg.showNotification(title, opts);
+    new Notification(title, opts);
+  } catch (e) {}
+}
+// the number on the home-screen icon = what's still due today
+function updateAppBadge() {
+  if (!navigator.setAppBadge) return;
+  const dp = dayProgress();
+  const n = (dp ? dp.total - dp.done : 0) + upcomingBills().filter(b => b.dd <= 0).length;
+  (n ? navigator.setAppBadge(n) : navigator.clearAppBadge()).catch(() => {});
+}
+
+// Small, earned celebrations — once each
+function celebrate(msg) {
+  haptic(2);
+  toast(msg, { undo: false });
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const box = document.createElement('div'); box.className = 'confetti';
+  const cols = ['var(--accent)', 'var(--pos)', 'var(--warn)', 'var(--text-2)'];
+  box.innerHTML = Array.from({ length: 28 }, (_, i) =>
+    `<i style="--x:${(Math.random() * 2 - 1) * 46}vw;--r:${Math.random() * 720 - 360}deg;--d:${0.9 + Math.random() * 0.7}s;left:${46 + Math.random() * 8}%;background:${cols[i % 4]}"></i>`).join('');
+  document.body.appendChild(box); setTimeout(() => box.remove(), 1800);
+}
+function checkMilestones() {
+  const iso = todayISO(), done = (S.systems.celebrated || (S.systems.celebrated = {}));
+  const once = (key, msg) => { if (done[key]) return; done[key] = 1; save(false); celebrate(msg); };
+  const dp = dayProgress();
+  if (dp && dp.total >= 3 && dp.pct >= 1) once(iso + ':day', `Day cleared — ${dp.done}/${dp.total}`);
+  (S.systems.habits || []).forEach(h => {
+    if (!(h.doneDays && h.doneDays[iso])) return;
+    const n = habitStreak(h);
+    if ([3, 7, 14, 30, 50, 100].includes(n)) once(`${h.id}:streak:${n}`, `${n}-day streak — ${h.text}`);
+  });
+  const w = S.health.water.log[iso] || 0;
+  if (w >= S.health.water.goalMl) once(iso + ':water', 'Water goal reached');
+  const g = FOOD().goals, t = dayTotals(iso);
+  if (g.protein && t.p >= g.protein) once(iso + ':protein', `Protein goal hit — ${Math.round(t.p)} g`);
+  // forget old keys so the store doesn't grow forever
+  const cut = shiftISO(iso, -14);
+  Object.keys(done).forEach(k => { if (/^\d{4}-\d\d-\d\d:/.test(k) && k.slice(0, 10) < cut) delete done[k]; });
+}
+
+/* ---------- quick add: one sheet for the things you log most ---------- */
+function quickAddSheet() {
+  const iso = todayISO();
+  foodDate = iso; foodMeal = mealForNow(); foodPick = false;
+  const rec = recentFoods(6);
+  const hb = habitsToday().filter(h => !(h.doneDays && h.doneDays[iso]));
+  openSheet(`<h3>Add</h3>
+    <div class="qa-task">
+      <input id="qa_task" type="text" placeholder="New task for today…" autocapitalize="sentences" enterkeyhint="done">
+      <button class="btn primary sm" data-act="qaSaveTask">Add</button>
+    </div>
+    <div class="qa-grid">
+      <button class="qa-tile" data-act="addFood">${ic('utensils')}<span>Food</span></button>
+      <button class="qa-tile" data-act="scanBarcode">${ic('barcode')}<span>Scan</span></button>
+      <button class="qa-tile" data-act="addTxn">${ic('card')}<span>Expense</span></button>
+      <button class="qa-tile" data-act="addEventOn" data-d="${iso}">${ic('calendar')}<span>Event</span></button>
+      <button class="qa-tile" data-act="addSleep">${ic('moon')}<span>Sleep</span></button>
+      <button class="qa-tile" data-act="addRun">${ic('footprints')}<span>Run</span></button>
+      <button class="qa-tile" data-act="addNote">${ic('note')}<span>Note</span></button>
+      <button class="qa-tile" data-act="addHabit">${ic('repeat')}<span>Habit</span></button>
+    </div>
+    <div class="card-label" style="margin:16px 0 8px">Water</div>
+    <div class="qa-chips">${[250, 500, 750].map(ml => `<button class="chip qa-chip" data-act="qaWater" data-ml="${ml}">${ic('droplet')} +${ml} ml</button>`).join('')}</div>
+    ${rec.length ? `<div class="card-label" style="margin:16px 0 8px">Log again · ${foodMeal}</div>
+      <div class="qa-chips">${rec.map(f => `<button class="chip qa-chip" data-act="qaFood" data-fid="${f.id}">${ic('plus')} ${esc(f.name)}</button>`).join('')}</div>` : ''}
+    ${hb.length ? `<div class="card-label" style="margin:16px 0 8px">Habits left today</div>
+      <div class="qa-chips">${hb.map(h => `<button class="chip qa-chip" data-act="qaHabit" data-id="${h.id}">${ic('check')} ${esc(h.text)}</button>`).join('')}</div>` : ''}`);
+  const inp = $('#qa_task');
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); ACT.qaSaveTask(); } });
+  inp.focus({ preventScroll: true });
+}
+
+/* ---------- search everything ---------- */
+function searchSheet() {
+  openSheet(`<h3>Search</h3>
+    <input id="sr_q" type="search" placeholder="Tasks, events, notes, bills, food…" autocomplete="off" enterkeyhint="search" style="margin:8px 0 6px">
+    <div id="sr_res"><div class="empty">Search across everything in Compass.</div></div>`);
+  const q = $('#sr_q');
+  q.addEventListener('input', () => renderSearch(q.value));
+  q.focus({ preventScroll: true });
+}
+function renderSearch(q) {
+  const k = nameKey(q), res = $('#sr_res'); if (!res) return;
+  if (k.length < 2) { res.innerHTML = '<div class="empty">Search across everything in Compass.</div>'; return; }
+  const hit = (...xs) => xs.some(x => nameKey(x).includes(k));
+  const groups = [
+    ['Events', 'calendar', S.calendar.events.filter(e => hit(e.title, e.notes)).slice(0, 8).map(e => ({ t: e.title, s: [e.recurring ? 'Weekly' : fmtDay(e.date || todayISO()), evTime(e)].filter(Boolean).join(' · '), act: `data-act="editEvent" data-id="${e.id}"` }))],
+    ['Tasks', 'check-circle', TASKS().filter(t => hit(t.text, t.cat)).slice(0, 8).map(t => ({ t: t.text, s: [t.date ? fmtDay(t.date) : t.scope, t.cat].filter(Boolean).join(' · '), act: `data-act="editTask" data-id="${t.id}"` }))],
+    ['Habits', 'repeat', (S.systems.habits || []).filter(h => hit(h.text)).map(h => ({ t: h.text, s: h.time || '', act: `data-act="editHabit" data-id="${h.id}"` }))],
+    ['Notes', 'note', S.systems.notes.filter(n => hit(n.title, n.body)).slice(0, 8).map(n => ({ t: n.title || 'Untitled', s: (n.body || '').slice(0, 60), act: `data-act="openNote" data-id="${n.id}"` }))],
+    ['Bills', 'receipt', S.money.bills.filter(b => hit(b.name)).map(b => ({ t: b.name, s: AUD(b.amount), act: `data-act="editBill" data-id="${b.id}"` }))],
+    ['Money', 'card', S.money.transactions.filter(t => hit(t.desc, t.category)).slice(-8).reverse().map(t => ({ t: t.desc, s: `${t.dir === 'in' ? '+' : '−'}${AUD(t.amount)} · ${t.date}`, act: `data-act="editTxn" data-id="${t.id}"` }))],
+    ['Food', 'utensils', [...MEALS_LIB().map(mealAsFood), ...FOOD().foods].filter(f => hit(f.name)).slice(0, 6).map(f => ({ t: f.name, s: foodLine(f), act: `data-act="pickFood" data-fid="${f.id}"` }))],
+  ].filter(g => g[2].length);
+  res.innerHTML = groups.map(([name, icon, rows]) => `<div class="card-label" style="margin:16px 0 4px">${name}</div>
+    <div class="list">${rows.map(r => `<div class="item tap" ${r.act}><span class="att-ic">${ic(icon)}</span>
+      <div class="body"><div class="t">${esc(r.t)}</div>${r.s ? `<div class="s">${esc(r.s)}</div>` : ''}</div></div>`).join('')}</div>`).join('')
+    || `<div class="empty">Nothing matches “${esc(q)}”.</div>`;
+}
+
+/* ---------- pull down at the top to sync, refresh prices and weather ---------- */
+function initPullToRefresh() {
+  const ptr = $('#ptr'); let y0 = null, dy = 0, busy = false;
+  document.addEventListener('touchstart', e => {
+    if (busy || window.scrollY > 0 || $('#scrim').classList.contains('open') || $('#scanner') || e.target.closest('.hg-scroll, .weekstrip')) return;
+    y0 = e.touches[0].clientY; dy = 0;
+  }, { passive: true });
+  document.addEventListener('touchmove', e => {
+    if (y0 == null) return;
+    dy = e.touches[0].clientY - y0;
+    if (dy <= 0 || window.scrollY > 0) { ptr.style.transform = ''; ptr.classList.remove('ready'); return; }
+    const p = Math.min(dy, 110);
+    ptr.style.transform = `translate(-50%, ${p * 0.7}px)`; ptr.style.opacity = Math.min(1, p / 70);
+    ptr.classList.toggle('ready', dy > 80);
+  }, { passive: true });
+  document.addEventListener('touchend', async () => {
+    if (y0 == null) return;
+    const go = dy > 80; y0 = null;
+    if (!go) { ptr.style.transform = ''; ptr.style.opacity = 0; return; }
+    busy = true; haptic(); ptr.classList.add('spin');
+    await Promise.allSettled([syncNow(), refreshPrices(), fetchWeather()]);
+    if (stravaLinked()) stravaImport(false);
+    ptr.classList.remove('spin', 'ready'); ptr.style.transform = ''; ptr.style.opacity = 0; busy = false;
+    renderAll(); toast('Up to date', { undo: false });
+  });
+}
+
+/* ---------- swipe a row left to delete (with Undo), right to tick ---------- */
+function initSwipeRows() {
+  const SEL = '.food-entry, .check.task, .item[data-act="editTxn"]';
+  let row = null, x0 = 0, y0 = 0, dx = 0, locked = null;
+  document.addEventListener('touchstart', e => {
+    const r = e.target.closest(SEL);
+    if (!r || arranging || dragItem) return;
+    row = r; x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; dx = 0; locked = null;
+  }, { passive: true });
+  document.addEventListener('touchmove', e => {
+    if (!row) return;
+    const mx = e.touches[0].clientX - x0, my = e.touches[0].clientY - y0;
+    if (locked == null && (Math.abs(mx) > 10 || Math.abs(my) > 10)) locked = Math.abs(mx) > Math.abs(my) * 1.4 ? 'x' : 'y';
+    if (locked !== 'x') return;
+    if (typeof pressTimer !== 'undefined') clearTimeout(pressTimer);
+    dx = mx; row.style.transform = `translateX(${dx}px)`; row.style.transition = 'none';
+    row.classList.toggle('swipe-del', dx < -80); row.classList.toggle('swipe-done', dx > 80 && row.matches('.check.task'));
+  }, { passive: true });
+  document.addEventListener('touchend', () => {
+    if (!row) return;
+    const r = row; row = null;
+    r.style.transition = 'transform .2s ease';
+    if (locked === 'x' && dx < -80) {
+      r.style.transform = 'translateX(-110%)';
+      const id = r.dataset.id || r.querySelector('[data-id]')?.dataset.id;
+      setTimeout(() => {
+        if (r.matches('.food-entry')) ACT.delFoodEntry({ id });
+        else if (r.matches('.check.task')) ACT.delTask({ id: r.querySelector('[data-act="toggleTask"]').dataset.id });
+        else ACT.delTxn({ id });
+        if (!$('#toast').classList.contains('show')) toast('Deleted', { undo: true });
+        haptic();
+      }, 160);
+    } else if (locked === 'x' && dx > 80 && r.matches('.check.task')) {
+      r.style.transform = ''; const b = r.querySelector('[data-act="toggleTask"]');
+      ACT.toggleTask(b.dataset, b);
+    } else r.style.transform = '';
+    r.classList.remove('swipe-del', 'swipe-done');
+  });
+}
+
 /* toast */
-let toastTimer;
-function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(()=>t.classList.remove('show'), 2200); }
+let toastTimer, toastCount = 0, lastChangeAt = 0;
+// any toast straight after a change offers Undo
+function toast(msg, opts = {}) {
+  const t = $('#toast'); toastCount++;
+  const canUndo = opts.undo !== false && (opts.undo || Date.now() - lastChangeAt < 1200) && undoStack.length;
+  t.innerHTML = `<span>${esc(msg)}</span>${canUndo ? '<button class="toast-undo">Undo</button>' : ''}`;
+  t.style.pointerEvents = canUndo ? 'auto' : 'none';
+  t.classList.add('show'); clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), canUndo ? 4500 : 2200);
+}
+$('#toast').addEventListener('click', e => {
+  if (!e.target.closest('.toast-undo')) return;
+  undo(); haptic(); $('#toast').classList.remove('show');
+  if ($('#scrim').classList.contains('open')) closeSheet();
+});
 
 /* theme */
 function applyTheme() {
@@ -4171,7 +4435,7 @@ $('#forgotPin').addEventListener('click', () => {
    Boot
    ============================================================ */
 function startApp() {
-  $('#app').hidden = false; $('#nav').hidden = false;
+  $('#app').hidden = false; $('#nav').hidden = false; $('#fab').hidden = false;
   applyTheme();
   render('home');
   setSyncDot(syncEnabled() ? 'ok' : 'off');
@@ -4191,6 +4455,9 @@ function startApp() {
   setInterval(refreshPrices, 5 * 60 * 1000);
   setInterval(pull, 60 * 1000);
   setInterval(checkHabitReminders, 30 * 1000);
+  updateAppBadge();
+  initPullToRefresh();
+  initSwipeRows();
 }
 
 // One-time import of Tyson's recurring bills (from the old dashboard). Dedupes by name; runs once per device.
