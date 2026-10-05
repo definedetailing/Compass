@@ -13,7 +13,7 @@ const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
 const ic = (n, cls = '') => `<svg class="ic ${cls}" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 
-const AUD = (n, dp = 2) => '$' + (Number(n) || 0).toLocaleString('en-AU', { minimumFractionDigits: dp, maximumFractionDigits: dp });
+const AUD = (n, dp = 2) => { const v = Number(n) || 0; return (v < 0 ? '−' : '') + '$' + Math.abs(v).toLocaleString('en-AU', { minimumFractionDigits: dp, maximumFractionDigits: dp }); };
 const num = (v, d = 0) => { const n = parseFloat(v); return isNaN(n) ? d : n; };
 
 const todayISO = (d = new Date()) => {
@@ -23,7 +23,7 @@ const todayISO = (d = new Date()) => {
 const parseISO = (s) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
 const DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 const MON = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-const fmtDay = (iso) => { const d = parseISO(iso); return `${DOW[d.getDay()]} ${d.getDate()} ${MON[d.getMonth()].slice(0,3)}`; };
+const fmtDay = (iso) => { if (!iso) return ''; const d = parseISO(iso); return `${DOW[d.getDay()]} ${d.getDate()} ${MON[d.getMonth()].slice(0,3)}${d.getFullYear() !== new Date().getFullYear() ? ' ' + d.getFullYear() : ''}`; };
 function fmtAgo(ms) {
   const s = Math.max(0, (Date.now() - ms) / 1000);
   if (s < 90) return 'just now';
@@ -325,14 +325,17 @@ function save(touch = true) {
     updateHistoryButtons();
     S.updatedAt = Date.now();
     lastChangeAt = Date.now();
+    saveSeq++;
   }
   lastSavedJSON = JSON.stringify(S);
-  localStorage.setItem(LS_KEY, JSON.stringify(S));
+  localStorage.setItem(LS_KEY, lastSavedJSON);
   clearTimeout(saveTimer);
   if (touch) { schedulePush(); queueMicrotask(checkMilestones); updateAppBadge(); }
 }
 function applyState(json) {
+  const celebrated = S.systems.celebrated;   // "once" means once, even across undo
   S = deepMerge(defaultState(), JSON.parse(json));
+  if (celebrated) S.systems.celebrated = celebrated;
   S.updatedAt = Date.now();
   lastSavedJSON = JSON.stringify(S);
   localStorage.setItem(LS_KEY, JSON.stringify(S));
@@ -344,13 +347,13 @@ function undo() {
   if (!undoStack.length) return;
   redoStack.push(lastSavedJSON);
   applyState(undoStack.pop());
-  toast('Undone');
+  toast('Undone', { undo: false });
 }
 function redo() {
   if (!redoStack.length) return;
   undoStack.push(lastSavedJSON);
   applyState(redoStack.pop());
-  toast('Redone');
+  toast('Redone', { undo: false });
 }
 function updateHistoryButtons() {
   const u = $('#btnUndo'), r = $('#btnRedo');
@@ -389,6 +392,7 @@ async function pull() {
     // (prevents a fresh/blank device from clobbering good cloud data)
     if (remote && remote.state && ((remote.state.updatedAt || 0) > (S.updatedAt || 0) || localIsEmpty())) {
       S = deepMerge(defaultState(), remote.state);
+      undoStack = []; redoStack = []; updateHistoryButtons();   // never undo back over another device's data
       lastSavedJSON = JSON.stringify(S);
       save(false);
       renderAll();
@@ -853,7 +857,7 @@ function foodStats(days) {
   const list = FOOD().log.filter(e => e.date >= start && e.date <= end);
   const byDay = [];
   for (let i = 0; i < days; i++) { const iso = shiftISO(start, i); byDay.push({ iso, ...sumEntries(list.filter(e => e.date === iso)) }); }
-  const logged = byDay.filter(d => d.n);
+  const logged = byDay.filter(d => d.n && (d.iso !== end || byDay.filter(x => x.n).length === 1));
   const tot = sumEntries(list);
   const byMeal = MEALS.map(m => ({ meal: m, ...sumEntries(list.filter(e => e.meal === m)) }));
   const byFood = {};
@@ -898,6 +902,8 @@ function updateWaterUI(ml, added) {
   const p = $('#waterPct'); if (p) p.textContent = Math.round(pct * 100) + '%';
   const a = $('#waterAmt'); if (a) a.innerHTML = `${(ml / 1000).toFixed(2)} <small>/ ${(g / 1000).toFixed(1)} L</small>`;
   const s = $('#waterSub'); if (s) s.textContent = waterSubText(ml);
+  const tile = $('.hs-item[data-go="health:water"]');
+  if (tile) tile.innerHTML = `<span class="hs-v">${(ml / 1000).toFixed(2)}L</span><span class="hs-l">${ic('droplet')} ${Math.round(pct * 100)}%</span>`;
   tank.classList.remove('pour', 'drain');
   void tank.offsetWidth;                        // restart the animation
   tank.classList.add(added >= 0 ? 'pour' : 'drain');
@@ -1138,10 +1144,12 @@ function barChart(items, opts = {}) {   // items: [{label, v}]
   return `<svg class="chart" viewBox="0 0 100 ${h}" height="${h}" preserveAspectRatio="none">
     ${items.map((it, i) => {
       const bh = frac(it.v) * (h - 22);
-      const x = i * bw + bw * 0.18, ww = bw * 0.64;
+      const x = i * bw + bw * 0.28, ww = bw * 0.44;
       const short = opts.goal && it.v < opts.goal;
       const over = opts.cap && it.v > opts.cap;
-      return `<rect x="${x}" y="${h - 18 - bh}" width="${ww}" height="${Math.max(bh, 0.5)}" rx="1.5" fill="${over ? 'var(--neg)' : short ? 'var(--border-strong)' : 'var(--accent)'}"/>`;
+      const last = i === n - 1;
+      const fill = over ? 'var(--neg)' : last ? 'var(--accent)' : short ? 'var(--border-strong)' : 'color-mix(in srgb, var(--accent) 38%, var(--surface))';
+      return `<rect x="${x}" y="${h - 18 - bh}" width="${ww}" height="${Math.max(bh, 0.5)}" rx="1.5" fill="${fill}"/>`;
     }).join('')}
     ${gy !== null ? `<line x1="0" y1="${gy.toFixed(1)}" x2="100" y2="${gy.toFixed(1)}" stroke="var(--text-3)" stroke-width="1" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>` : ''}
   </svg>
@@ -1449,7 +1457,8 @@ let arranging = false;   // section-reorder mode
    Each tab renders named blocks; the user's saved order wins, and any block
    added by a future update just appends at the end. */
 function orderBlocks(tab, blocks) {   // `tab` is the order key (tab, or tab.subtab)
-  const saved = (S.settings.order && S.settings.order[tab]) || [];
+  const o = S.settings.order || {};
+  const saved = o[tab] || o[tab.split('.')[0]] || [];
   const byKey = Object.fromEntries(blocks.map(b => [b.key, b]));
   const out = [];
   saved.forEach(k => { if (byKey[k]) { out.push(byKey[k]); delete byKey[k]; } });
@@ -1466,8 +1475,9 @@ function renderBlocks(tab, blocks, okey = tab) {
   // `grow`  — stretch to the row but never scroll; always contributes its full height
   const one = (b) => `<div class="sec ${b.fill?'fill':''} ${b.grow?'grow':''} ${arranging?'arrangeable':''}" data-sec="${b.key}" data-tab="${okey}" ${arranging?'draggable="true"':''}>
     ${arranging ? `<div class="arrange-bar">
-      <span class="grip">⠿</span><span class="an">${esc(b.name)}</span>
-      <span class="small muted">drag to move</span></div>` : ''}
+      <span class="grip" aria-hidden="true">${ic('list-checks')}</span><span class="an">${esc(b.name)}</span>
+      <button class="iconbtn sm" data-act="moveSec" data-okey="${okey}" data-key="${b.key}" data-dir="-1" aria-label="Move up">${ic('chevron-left', 'up')}</button>
+      <button class="iconbtn sm" data-act="moveSec" data-okey="${okey}" data-key="${b.key}" data-dir="1" aria-label="Move down">${ic('chevron', 'down')}</button></div>` : ''}
     ${b.html}
   </div>`;
   // One real grid rather than two independent stacks: on desktop `grid-auto-flow:
@@ -1483,9 +1493,11 @@ function reorderSection(tab, key, beforeKey) {
   const cur = (currentBlockKeys[tab] || []).slice();
   const i = cur.indexOf(key);
   if (i < 0 || key === beforeKey) return false;
+  const target = beforeKey ? cur.indexOf(beforeKey) : -1;
   cur.splice(i, 1);
-  const j = beforeKey ? cur.indexOf(beforeKey) : -1;
-  if (j < 0) cur.push(key); else cur.splice(j, 0, key);
+  let j = beforeKey ? cur.indexOf(beforeKey) : -1;
+  if (j >= 0 && target > i) j++;          // dragging down: land after the section you dropped on
+  if (j < 0 || j > cur.length) cur.push(key); else cur.splice(j, 0, key);
   S.settings.order = S.settings.order || {};
   S.settings.order[tab] = cur;
   save();
@@ -1497,7 +1509,7 @@ function arrangeHeader(tab) {
   return `<button class="link" data-act="toggleArrange" data-tab="${tab}">${arranging ? 'Done' : 'Arrange'}</button>`;
 }
 
-function renderAll() { render(currentTab); refreshBadges(); }
+function renderAll() { render(currentTab); refreshBadges(); updateAppBadge(); }
 const TAB_TITLE = { home: 'Today', calendar: 'Calendar', health: 'Health', money: 'Money', systems: 'Systems' };
 const tabScroll = {};   // each tab remembers where you were
 function render(tab) {
@@ -1511,7 +1523,7 @@ function render(tab) {
   $$('.nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
   const bn = $('#brandName'); if (bn) bn.textContent = TAB_TITLE[tab] || 'Compass';
   ({ home: renderHome, calendar: renderCalendar, health: renderHealth, money: renderMoney, systems: renderSystems }[tab])();
-  if (switching) window.scrollTo({ top: tabScroll[tab] || 0, behavior: 'instant' in window ? 'instant' : 'auto' });
+  if (switching) window.scrollTo({ top: tabScroll[tab] || 0, behavior: 'instant' });
 }
 // jump straight to a section, switching tab and sub-tab first
 function go(tab, sec) {
@@ -1521,8 +1533,10 @@ function go(tab, sec) {
   render(tab);
   if (!sec) return;
   requestAnimationFrame(() => {
-    const el = $(`#view-${tab} .sec[data-sec="${sec}"]`);
-    if (el) window.scrollTo({ top: el.getBoundingClientRect().top + window.scrollY - 64, behavior: 'smooth' });
+    const el = $(`#view-${tab} .sec[data-sec="${sec}"]`) || $('#' + sec); if (!el) return;
+    const sb = $(`#view-${tab} .segbar`);
+    const off = $('.topbar').getBoundingClientRect().bottom + (sb ? sb.offsetHeight : 0) + 8;
+    window.scrollTo({ top: el.getBoundingClientRect().top + window.scrollY - off, behavior: 'smooth' });
   });
 }
 
@@ -1533,7 +1547,7 @@ const SEGS = {
   systems: [['habits', 'Habits'], ['goals', 'Goals'], ['review', 'Review']],
 };
 const SEG_OF = {
-  health:  { food: 'food', foodStats: 'food', water: 'body', sleep: 'body', split: 'train', runs: 'train' },
+  health:  { food: 'food', foodStats: 'food', water: 'body', sleep: 'body', split: 'train', runs: 'train', pbs: 'train' },
   money:   { tracker: 'spend', budgets: 'spend', bills: 'bills', value: 'wealth', chart: 'wealth', holdings: 'wealth', goals: 'wealth' },
   systems: { habits: 'habits', badday: 'habits', focus: 'goals', goals: 'goals', weekly: 'goals', review: 'review', notes: 'review' },
 };
@@ -1572,15 +1586,15 @@ function renderHome() {
       'Calories', `<button class="hr-act" data-act="addFood">${ic('plus')} Food</button>`)}
     ${ringCell('health:water', ring(clamp(water / wGoal, 0, 1), { size: 68, sw: 6, label: (water / 1000).toFixed(1), caption: `of ${(wGoal / 1000).toFixed(1)} L` }),
       'Water', `<button class="hr-act" data-act="water" data-ml="250">${ic('plus')} 250</button>`)}
-    ${ringCell('calendar', ring(dp ? dp.pct : 0, { size: 68, sw: 6, label: dp ? `${dp.done}/${dp.total}` : '0', caption: 'done', color: dp && dp.pct >= 1 ? 'var(--pos)' : '' }),
-      'To-dos', `<button class="hr-act" data-act="addTask" data-scope="day" data-d="${iso}">${ic('plus')} Task</button>`)}
+    ${ringCell('home:upnext', ring(dp ? dp.pct : 0, { size: 68, sw: 6, label: dp ? `${dp.done}/${dp.total}` : '0', caption: 'done', color: dp && dp.pct >= 1 ? 'var(--pos)' : '' }),
+      'To-dos', `<button class="hr-act" data-act="quickAdd">${ic('plus')} Add</button>`)}
     ${ringCell('health:sleep', ring(lastN ? clamp(lastN.hours / sleepGoal(), 0, 1) : 0, { size: 68, sw: 6, label: lastN ? lastN.hours.toFixed(1) : '—', caption: 'hrs' }),
       'Sleep', sleptToday ? `<span class="hr-act muted">${esc(SLEEP_QUALITY[lastN.quality] || 'Logged')}</span>` : `<button class="hr-act" data-act="addSleep">${ic('plus')} Log</button>`)}
   </div>`;
 
   // ---- up next: everything for today in time order; finished items fold away ----
   const rowsAll = [
-    ...eventsForDate(iso).map(e => ({ time: e.start || e.time || '', done: false, html: `
+    ...eventsForDate(iso).map(e => ({ time: e.start || e.time || '', done: !!(e.end && e.end <= `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`), html: `
       <div class="item agenda tap" data-act="editEvent" data-id="${e.id}">
         <span class="ag-time">${esc(e.start || e.time || 'All day')}</span>
         <div class="body"><div class="t">${esc(e.title)}${e.source === 'email' ? ` <span class="chip src" title="added from your email">${ic('mail')}</span>` : ''}</div>
@@ -1588,10 +1602,10 @@ function renderHome() {
         ${e.cost > 0 ? `<div class="trail">${AUD(e.cost, 0)}</div>` : ''}
       </div>` })),
     ...habitsToday().map(h => { const done = !!(h.doneDays && h.doneDays[iso]); return { time: h.time || '', done, html: `
-      <div class="item agenda ${done ? 'done hab-done' : ''}">
+      <div class="item agenda tap ${done ? 'done hab-done' : ''}" data-act="toggleHabit" data-id="${h.id}">
         <span class="ag-time">${esc(h.time || '')}</span>
         <div class="body"><div class="t">${esc(h.text)}</div><div class="s">${ic('repeat', 'xs')} Habit${habitStreak(h) > 1 ? ` · ${habitStreak(h)}-day streak` : ''}</div></div>
-        <span class="box tap" data-act="toggleHabit" data-id="${h.id}">${TICK}</span>
+        <span class="box">${TICK}</span>
       </div>` }; }),
     ...tasksForDate(iso).map(t => { const done = taskDone(t, iso); return { time: taskTime(t) || '99:99', done, html: `
       <div class="item agenda ${done ? 'done hab-done' : ''}">
@@ -1631,7 +1645,7 @@ function renderHome() {
   $('#view-home').innerHTML = `
     <div class="today-head">
       <div class="th-meta"><span>${dateStr}</span>${wx ? `<span class="th-wx">${wxIcon(wx.code)} ${wx.temp}° ${esc(wxText(wx.code))}</span>` : ''}</div>
-      <button class="th-focus tap ${S.systems.focus ? '' : 'empty'}" data-act="editFocus">${S.systems.focus ? esc(S.systems.focus) : 'Set a focus for today'}</button>
+      <button class="th-focus tap ${S.systems.focus ? '' : 'empty'} ${(S.systems.focus || '').length > 38 ? 'long' : ''}" data-act="editFocus">${S.systems.focus ? esc(S.systems.focus) : 'Set a focus for today'}</button>
     </div>
 
     ${rough ? (() => {
@@ -1648,11 +1662,13 @@ function renderHome() {
             </div>`).join('') || emptyState('No minimums yet', 'addBadDay', 'Add one')}
         </div>
         ${p.pct >= 1 ? '<div class="rough-done">That\'s the whole list. Well done.</div>' : ''}
-      </div>`;
+      </div>
+      ${eventsForDate(iso).length ? `<div class="section-head"><h3>Still on today</h3></div>
+        <div class="card list-card"><div class="list">${rowsAll.filter(r => r.html.includes('editEvent')).map(r => r.html).join('')}</div></div>` : ''}`;
     })() : `
     ${rings}
 
-    <div class="section-head"><h3>${hourNow >= 18 ? 'Rest of today' : 'Up next'}</h3>
+    <div class="section-head" id="upnext"><h3>${hourNow >= 18 ? 'Rest of today' : 'Up next'}</h3>
       <button class="link" data-act="toggleRoughDay">Rough day?</button></div>
     <div class="card list-card">
       <div class="list">
@@ -1666,11 +1682,13 @@ function renderHome() {
     ${attention.length || imports ? `<div class="section-head"><h3>Needs attention</h3></div>
       <div class="card list-card"><div class="list">${attention.join('')}</div>${imports}</div>` : ''}
 
-    ${(S.systems.weekly || []).length ? `<div class="section-head"><h3>This week</h3><span class="small muted">${(S.systems.weekly || []).length - mustDo.length} of ${(S.systems.weekly || []).length} done</span></div>
+    ${(S.systems.weekly || []).length && !rough ? `<div class="section-head"><h3>This week</h3><span class="small muted">${(S.systems.weekly || []).length - mustDo.length} of ${(S.systems.weekly || []).length} done</span></div>
     <div class="card list-card"><div class="list">
       ${mustDo.length ? mustDo.map(m => `
         <div class="check tap" data-act="toggleWeekly" data-id="${m.id}"><span class="box">${TICK}</span><span class="txt">${esc(m.text)}</span></div>`).join('')
         : `<div class="empty">All done for this week.</div>`}
+      ${(S.systems.weekly || []).filter(m => m.weeks[wk]).map(m => `
+        <div class="check done tap" data-act="toggleWeekly" data-id="${m.id}"><span class="box">${TICK}</span><span class="txt">${esc(m.text)}</span></div>`).join('')}
     </div></div>` : ''}
 
     ${brief}
@@ -1702,6 +1720,7 @@ function renderCalendar() {
 }
 function renderCalBody() {
   const b = $('#calBody');
+  const tl = $('[data-act="calToday"]'); if (tl) tl.hidden = atToday();
   if (calEditing) b.innerHTML = calEditPanel();
   else if (calView === 'month') b.innerHTML = calMonth();
   else if (calView === 'week') b.innerHTML = calWeek();
@@ -1775,12 +1794,12 @@ function calWeek() {
                   <span class="tbox">${TICK}</span>
                   <span class="tt">${esc(h.text)}${h.time?`<span class="ts">${esc(h.time)}</span>`:''}</span></button>` })),
               ...tks.map(t => ({ k: timeKey(taskTime(t)), html:
-                `<button class="tchip ${taskDone(t,iso)?'done':''}" draggable="true" data-task="${t.id}" data-act="toggleTask" data-id="${t.id}" data-d="${iso}" style="border-left:3px solid ${taskColor(t.cat)}">
+                `<button class="tchip ${taskDone(t,iso)?'done':''}" draggable="true" data-task="${t.id}" data-act="toggleTask" data-id="${t.id}" data-d="${iso}">
                   <span class="tbox">${TICK}</span>
                   <span class="tt">${esc(t.text)}${taskSlot(t)?`<span class="ts">${esc(taskSlot(t))}</span>`:''}</span></button>` })),
             ].sort((a,b) => a.k.localeCompare(b.k)).map(x => x.html).join('')}
           </div>
-          <div class="dadd">
+          <div class="dadd" ${iso === calSel ? '' : 'hidden'}>
             ${showEvents()?`<button class="devempty tap" data-act="addEventOn" data-d="${iso}">+ event</button>`:''}
             ${showTasks()?`<button class="devempty tap" data-act="addTask" data-scope="day" data-d="${iso}">+ task</button>`:''}
             ${calFilter==='habits'?`<button class="devempty tap" data-act="addHabit">+ habit</button>`:''}
@@ -1800,7 +1819,7 @@ function calDay() {
         <button class="iconbtn" data-act="dayNext"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></button>
       </div>
     </div>
-    ${showEvents() ? `<div class="section-head"><h3>Events</h3></div>${dayList(evs)}` : ''}
+    ${showEvents() ? `<div class="section-head"><h3>Events</h3><button class="link" data-act="addEventOn" data-d="${calSel}">+ Event</button></div>${dayList(evs)}` : ''}
     ${showHabits() ? habitsCard(calSel) : ''}
     ${showTasks() ? tasksCard('day', calSel, 'Nothing to tick off — add a task') : ''}
     ${calSummaryCard()}`;
@@ -1828,7 +1847,7 @@ function habitsCard(iso) {
     </div>`;
 }
 function dayList(evs) {
-  if (!evs.length) return `<div class="card"><div class="empty">No events. Tap “Event” to add one.</div></div>`;
+  if (!evs.length) return `<div class="card">${emptyState('No events this day.', 'addEventOn', 'Add an event', `data-d="${calSel}"`)}</div>`;
   return `<div class="card"><div class="list">${evs.map(e => `
     <div class="catrow item tap" data-act="editEvent" data-id="${e.id}" style="--cat:${catColor(e.category)}">
       <div class="body"><div class="t">${esc(e.title)}${e.recurring?` <span class="chip" style="padding:1px 6px;font-size:11px">${ic('repeat')} weekly</span>`:''}${e.source==='email'?` <span class="chip src" title="added from your email">${ic('mail')}</span>`:''}</div>
@@ -1892,7 +1911,8 @@ function renderHealth() {
         <button class="fd-label" data-act="foodToday">${foodDayLabel(foodDate)}</button>
         <button class="icon-btn" data-act="foodNext" aria-label="Next day" ${foodDate >= todayISO() ? 'disabled' : ''}>${ic('chevron')}</button>
       </div>
-      ${!ft.n && foodEntries(shiftISO(foodDate, -1)).length ? `<button class="btn sm copy-day" data-act="copyDay">${ic('repeat')} Copy everything from ${foodDate === todayISO() ? 'yesterday' : fmtDay(shiftISO(foodDate, -1))}</button>` : ''}
+      ${!ft.n && foodEntries(shiftISO(foodDate, -1)).length ? `<button class="btn sm copy-day" data-act="copyDay">${ic('repeat')} Copy everything from ${foodDate === todayISO() ? 'yesterday' : fmtDay(shiftISO(foodDate, -1))}</button>`
+        : Date.now() - copiedAt < 4000 ? `<button class="btn sm copy-day" disabled>${ic('check')} Copied</button>` : ''}
       <div class="food-actions">
         <button class="btn sm primary" data-act="addFood">${ic('plus')} Add food</button>
         <button class="btn sm" data-act="scanBarcode">${ic('barcode')} Scan</button>
@@ -1969,7 +1989,7 @@ function renderHealth() {
   // fill the row beside Runs instead of each leaving a gap
   // only take over the row once there are enough PBs to actually fill it —
   // below that it sits at its natural height rather than padding itself out
-  B.push({ key:'water', name:'Water & personal bests', fill: S.health.pbs.length >= PB_WINDOW, html: `
+  B.push({ key:'water', name:'Water', html: `
     <div class="section-head"><h3>Water</h3><button class="link" data-act="editWaterGoal">Goal</button></div>
     <div class="card">
       <div class="tank-wrap">
@@ -1988,12 +2008,13 @@ function renderHealth() {
           </div>
         </div>
       </div>
-    </div>
+    </div>` });
+  B.push({ key:'pbs', name:'Personal bests', html: `
     <div class="section-head"><h3>Personal bests</h3><button class="link" data-act="addPB">+ PB</button></div>
     <div class="card"><div class="list pb-list">
       ${S.health.pbs.map(p => `
         <div class="item tap" data-act="editPB" data-id="${p.id}">
-          <div class="body"><div class="t">${esc(p.lift)}</div><div class="s">${esc(p.date)}</div></div>
+          <div class="body"><div class="t">${esc(p.lift)}</div><div class="s">${esc(fmtDay(p.date))}</div></div>
           <div class="trail">${p.weight} kg${p.reps>1?` ×${p.reps}`:''}</div>
         </div>`).join('') || '<div class="empty">No PBs yet</div>'}
     </div></div>` });
@@ -2024,14 +2045,14 @@ function renderHealth() {
   const kmWeek = runsWeek.reduce((a, r) => a + (r.distanceKm || 0), 0);
   const minWeek = runsWeek.reduce((a, r) => a + (r.timeMin || 0), 0);
   const pace = (r) => r.timeMin && r.distanceKm ? r.timeMin / r.distanceKm : 0;
-  const paceStr = (p) => p ? `${Math.floor(p)}:${String(Math.round((p % 1) * 60)).padStart(2,'0')} /km` : '';
+  const paceStr = (p) => { if (!p) return ''; const t = Math.round(p * 60); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')} /km`; };
 
   B.push({ key:'runs', name:'Runs', grow:true, html: `
     <div class="section-head"><h3>Runs</h3>
       <span style="display:inline-flex;gap:12px;align-items:center">
         ${stravaLinked()
-          ? `<button class="link" data-act="stravaSync">↻ Sync</button>`
-          : `<button class="link" data-act="stravaConnect" style="color:#fc4c02">Connect Strava</button>`}
+          ? `<button class="link" data-act="stravaSync">${ic('repeat', 'sm')} Sync</button>`
+          : `<button class="link" data-act="stravaConnect">Connect Strava</button>`}
         <button class="link" data-act="addRun">+ Run</button>
       </span></div>
     <div class="card">
@@ -2115,14 +2136,14 @@ function renderHealth() {
 
       <div class="card-label" style="margin:16px 0 8px">Recent nights · tap to edit</div>
       <div class="list sleep-list">
-        ${winNights.slice().reverse().map(s => `
+        ${winNights.slice().reverse().slice(0, sleepAll ? 9999 : 7).map(s => `
           <div class="item tap" data-act="editSleep" data-d="${s.date}">
             <div class="body"><div class="t">${s.hours.toFixed(1)} hrs${s.hours >= goal ? ' <span class="chip good" style="padding:1px 7px;font-size:10px">goal</span>' : ''}</div>
               <div class="s">${[fmtDay(s.date), s.bed && s.wake ? `${s.bed}–${s.wake}` : '', s.quality ? SLEEP_QUALITY[s.quality] : ''].filter(Boolean).map(esc).join(' · ')}</div>
               ${s.notes ? `<div class="s">${esc(s.notes)}</div>` : ''}</div>
-            <span class="edit-hint">Edit</span>
           </div>`).join('') || '<div class="empty">Nothing logged in this range</div>'}
       </div>
+      ${winNights.length > 7 ? `<button class="more-link" data-act="toggleSleepAll">${sleepAll ? 'Show less' : `Show all ${winNights.length} nights`}</button>` : ''}
     </div>` });
 
   B.splice(1, 0, foodStatsBlock);   // Food sub-tab: diary, then the trends
@@ -2136,7 +2157,7 @@ function renderHealth() {
       ${tile('food', 'flame', kcalStr(Math.abs(kLeft)), kLeft >= 0 ? 'kcal left' : 'kcal over', kLeft < 0 ? 'neg' : '')}
       ${tile('food', 'dumbbell', Math.round(td.p) + 'g', fg.protein ? `of ${fg.protein}g` : 'protein', fg.protein && td.p >= fg.protein ? 'pos' : '')}
       ${tile('foodStats', 'wallet', AUD(td.cost, td.cost >= 100 ? 0 : 2), fg.budget ? `of ${AUD(fg.budget, 0)}` : 'food', fg.budget && td.cost > fg.budget ? 'neg' : '')}
-      ${tile('water', 'droplet', (water / 1000).toFixed(1) + 'L', `${Math.round(wp * 100)}%`)}
+      ${tile('water', 'droplet', (water / 1000).toFixed(2) + 'L', `${Math.round(wp * 100)}%`)}
       ${tile('sleep', 'moon', lastN ? lastN.hours.toFixed(1) + 'h' : '—', lastN && lastN.date === iso ? 'slept' : 'sleep')}
     </div>`;
 
@@ -2174,7 +2195,7 @@ function renderMoney() {
     </div>` });
 
   B.push({ key:'holdings', name:'Holdings', grow:true, html: `
-    <div class="section-head"><h3>Holdings</h3><div class="pill-row"><button class="link" data-act="refreshPrices">↻ Prices</button><button class="link" data-act="addHolding">+ Add</button></div></div>
+    <div class="section-head"><h3>Holdings</h3><div class="pill-row"><button class="link" data-act="refreshPrices">${ic('repeat', 'sm')} Prices</button><button class="link" data-act="addHolding">+ Add</button></div></div>
     <div class="card"><div class="list">
       ${S.money.holdings.map(h => {
         const sym = h.symbol.toUpperCase();
@@ -2242,24 +2263,24 @@ function renderMoney() {
       <div class="list">
       ${(billsOpen ? bills : bills.slice(0, BILLS_SHOWN)).map(b => `
         <div class="item">
-          <span class="dot" style="background:${b.status==='over'?'var(--red)':b.status==='soon'?'var(--amber)':'var(--primary)'}"></span>
+          <span class="dot" style="background:${b.status==='over'?'var(--neg)':b.status==='soon'?'var(--warn)':'transparent'}"></span>
           <div class="body tap" data-act="editBill" data-id="${b.id}"><div class="t">${esc(b.name)} <span class="muted small">· ${FREQ_LABEL[b.freq||'monthly']}</span></div>
             <div class="s">${AUD(b.amount)}${(b.freq||'monthly')!==(wk?'weekly':'monthly') && b.freq!=='once' ? ` <span class="muted">(${AUD(billPer(b, wk?'weekly':'monthly'),2)}/${wk?'wk':'mo'})</span>` : ''} · ${b.dd<0?`${-b.dd}d overdue`:b.dd===0?'due today':`in ${b.dd}d`} (${b.due.getDate()} ${MON[b.due.getMonth()].slice(0,3)})</div></div>
-          <button class="btn sm ${b.status==='ok'?'ghost':'primary'}" data-act="payBill" data-id="${b.id}">Paid</button>
+          <button class="btn sm ${b.status==='ok'?'ghost':'primary'}" data-act="payBill" data-id="${b.id}">Mark paid</button>
         </div>`).join('') || `<div class="empty">Add a bill to get reminders</div>`}
       </div>
       ${bills.length > BILLS_SHOWN ? `<button class="more-link" data-act="toggleBills">${billsOpen ? 'Show less' : `Show all ${bills.length} bills`}</button>` : ''}
     </div>` });
 
   B.push({ key:'tracker', name:'Money tracker', grow:true, html: `
-    <div class="section-head"><h3>Money tracker</h3><div class="pill-row"><span class="chip ${bal>=0?'good':'bad'}">Balance ${AUD(bal,2)}</span><button class="link" data-act="addTxn">+ Entry</button></div></div>
+    <div class="section-head"><h3>Money tracker</h3><div class="pill-row"><span class="small muted nowrap">Balance <b class="${bal >= 0 ? '' : 'neg'}">${AUD(bal, 2)}</b></span><button class="link" data-act="addTxn">+ Entry</button></div></div>
     <div class="card"><div class="list">
-      ${S.money.transactions.slice().reverse().slice(0,12).map(t => `
+      ${S.money.transactions.slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, trackerAll ? 9999 : 10).map(t => `
         <div class="item tap" data-act="editTxn" data-id="${t.id}">
-          <div class="body"><div class="t">${esc(t.desc)}${t.source==='email'?` <span class="chip src" title="added from your email">${ic('mail')}</span>`:''}${t.foodDay?' <span class="chip food-mine" title="from your Food diary">🍽</span>':''}</div><div class="s">${esc(t.category||'—')} · ${esc(t.date)}</div></div>
+          <div class="body"><div class="t">${esc(t.desc)}${t.source==='email'?` <span class="chip src" title="added from your email">${ic('mail')}</span>`:''}${t.foodDay ? ` <span class="muted" title="from your Food diary">${ic('utensils', 'xs')}</span>` : ''}${t.eventId ? ` <span class="muted" title="from your Calendar">${ic('calendar', 'xs')}</span>` : ''}</div><div class="s">${esc(t.category||'—')} · ${esc(fmtDay(t.date))}</div></div>
           <div class="trail ${t.dir==='in'?'pos':'neg'}">${t.dir==='in'?'+':'−'}${AUD(t.amount)}</div>
-        </div>`).join('') || `<div class="empty">Log income & expenses</div>`}
-    </div></div>` });
+        </div>`).join('') || emptyState('Log income and expenses here.', 'addTxn', 'Add an entry')}
+    </div>${S.money.transactions.length > 10 ? `<button class="more-link" data-act="toggleTracker">${trackerAll ? 'Show less' : `Show all ${S.money.transactions.length}`}</button>` : ''}</div>` });
 
   $('#view-money').innerHTML = segBar('money') + segBlocks('money', B);
 }
@@ -2313,9 +2334,9 @@ function renderSystems() {
   const gridRows = hSorted.slice().sort((a,b) => (a.time||'').localeCompare(b.time||''));
   const habitGrid = `
     <div class="hg-head">
-      <button class="iconbtn sm" data-act="habitWeekPrev">‹</button>
+      <button class="iconbtn sm" data-act="habitWeekPrev" aria-label="Previous week">${ic('chevron-left')}</button>
       <span class="hg-range">${habitWeekLabel()}</span>
-      <button class="iconbtn sm" data-act="habitWeekNext">›</button>
+      <button class="iconbtn sm" data-act="habitWeekNext" aria-label="Next week">${ic('chevron')}</button>
       <span style="flex:1"></span>
       <div class="seg sm">
         <button data-act="setHabitGridMode" data-m="track" class="${planning?'':'on'}">Track</button>
@@ -2364,7 +2385,7 @@ function renderSystems() {
   B.push({ key:'badday', name:'Bad-day minimums', html: `
     <div class="section-head"><h3>Bad-day minimums</h3>
       <span style="display:inline-flex;gap:12px;align-items:center">
-        <button class="link ${roughOn?'on':''}" data-act="toggleRoughDay">${roughOn ? 'Rough day on' : 'Start a rough day'}</button>
+        <button class="link ${roughOn?'on':''}" data-act="toggleRoughDay">${roughOn ? 'Rough day on' : 'Rough day'}</button>
         <button class="link" data-act="addBadDay">+ Add</button>
       </span></div>
     <div class="card">
@@ -2437,18 +2458,24 @@ function openSheet(html) {
   sheetDirty = false; discardArmed = 0;
 }
 function closeSheet() { $('#scrim').classList.remove('open'); sheetDirty = false; }
-// tapping outside a half-filled form asks once before throwing it away
-$('#scrim').addEventListener('click', e => {
-  if (e.target.id !== 'scrim') return;
+// closing by gesture: if a form is half-filled, ask once first
+function requestClose() {
   if (sheetDirty && Date.now() - discardArmed > 2500) {
     discardArmed = Date.now();
     const sh = $('#sheet'); sh.classList.remove('shake'); void sh.offsetWidth; sh.classList.add('shake');
-    toast('Tap outside again to discard');
-    return;
+    sh.style.transform = '';
+    toast('Tap outside again to discard', { undo: false });
+    return false;
   }
-  closeSheet();
+  closeSheet(); return true;
+}
+// tapping outside a half-filled form asks once before throwing it away
+$('#scrim').addEventListener('click', e => {
+  if (e.target.id !== 'scrim') return;
+  requestClose();
 });
-$('#sheetBody').addEventListener('input', () => { sheetDirty = true; });
+// only forms count as "unsaved work" — not a search box or the quick-add field
+$('#sheetBody').addEventListener('input', e => { if ($('#sheetBody .sheet-actions') && !e.target.matches('#fd_q, #sr_q, #qa_task')) sheetDirty = true; });
 // Return in a one-line field saves the form; Escape closes
 $('#sheetBody').addEventListener('keydown', e => {
   if (e.key === 'Enter' && e.target.matches('input:not([type=checkbox]):not(#fd_q):not(.md-qty)') && !e.isComposing) {
@@ -2456,13 +2483,13 @@ $('#sheetBody').addEventListener('keydown', e => {
     if (btn) { e.preventDefault(); btn.click(); }
   }
 });
-document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('#scrim').classList.contains('open')) closeSheet(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('#scrim').classList.contains('open')) requestClose(); });
 // drag the handle down to close
 (() => {
   const sh = $('#sheet'); let y0 = null, dy = 0;
   sh.addEventListener('touchstart', e => { if (sh.scrollTop > 0 || !e.target.closest('.handle, h3, .desc')) return; y0 = e.touches[0].clientY; dy = 0; }, { passive: true });
   sh.addEventListener('touchmove', e => { if (y0 == null) return; dy = Math.max(0, e.touches[0].clientY - y0); sh.style.transform = `translateY(${dy}px)`; }, { passive: true });
-  sh.addEventListener('touchend', () => { if (y0 == null) return; sh.style.transition = 'transform .2s'; if (dy > 110) closeSheet(); sh.style.transform = ''; setTimeout(() => { sh.style.transition = ''; }, 220); y0 = null; });
+  sh.addEventListener('touchend', () => { if (y0 == null) return; sh.style.transition = 'transform .2s'; if (dy > 110) requestClose(); sh.style.transform = ''; setTimeout(() => { sh.style.transition = ''; }, 220); y0 = null; });
 })();
 
 function field(label, id, opts = {}) {
@@ -2516,7 +2543,7 @@ function logFood(f, qty, meal) {
       kcal: num(f.kcal), p: num(f.p), c: num(f.c), f: num(f.f), cost: num(f.cost), foodId: null, mealId: f.mealId, parts: f.parts, at: Date.now() });
     syncFoodMoney(foodDate);
     save();
-    if (currentTab === 'health') renderHealth();
+    render(currentTab);
     return;
   }
   const saved = rememberFood(f);
@@ -2524,7 +2551,7 @@ function logFood(f, qty, meal) {
     kcal: saved.kcal, p: saved.p, c: saved.c, f: saved.f, cost: saved.cost, foodId: saved.id, at: Date.now() });
   syncFoodMoney(foodDate);
   save();
-  if (currentTab === 'health') renderHealth();
+  render(currentTab);
 }
 // One sheet for "how much of this?" — logging a new food, or editing a logged entry.
 // Nutrition and price are editable here, so a correction sticks to My foods too.
@@ -2635,6 +2662,7 @@ function mealEditorSheet() {
   const refresh = () => { $('#md_sum').innerHTML = mealDraftSummary(); };
   $('#md_name').addEventListener('input', e => { mealDraft.name = e.target.value; });
   $('#md_serv').addEventListener('input', e => { mealDraft.servings = Math.min(Math.max(Math.round(num(e.target.value, 1)), 1), 100); refresh(); });
+  $('#md_serv').addEventListener('change', e => { e.target.value = mealDraft.servings; });
   $$('.md-qty').forEach(inp => inp.addEventListener('input', () => {
     const it = mealDraft.items[+inp.dataset.k]; if (!it) return;
     it.qty = Math.max(num(inp.value, 0), 0);
@@ -2658,7 +2686,7 @@ function mealListSheet() {
     </div>
     <div class="sheet-actions">
       <button class="btn ghost" data-act="addFood" data-meal="${foodMeal}">Back</button>
-      <button class="btn primary" data-act="newMeal">+ New meal / recipe</button>
+      <button class="btn primary" data-act="newMeal">${ic('plus')} New meal</button>
     </div>`);
   foodPick = false;
 }
@@ -2690,7 +2718,7 @@ document.addEventListener('visibilitychange', () => {
   if (t !== foodToday) {
     if (foodDate === foodToday) foodDate = t;
     foodToday = t;
-    if (currentTab === 'health' && !$('#scrim').classList.contains('open')) renderHealth();
+    if (!$('#scrim').classList.contains('open')) renderAll();
   }
 });
 function scanMsg(text, bad) { const m = $('#scanMsg'); if (m) { m.textContent = text; m.classList.toggle('bad', !!bad); } }
@@ -2773,7 +2801,12 @@ async function foundBarcode(code) {
    ============================================================ */
 const ACT = {
   /* nav-ish */
-  editFocus() { render('systems'); setTimeout(()=>{ const f=$('#focusInput'); if(f){f.focus();} }, 80); },
+  editFocus() {
+    sheetForm('Focus', 'One line for what matters most right now. It heads your Today screen.',
+      field('Focus', 'fo_text', { val: S.systems.focus, ph: 'e.g. Book 5 details this week' }), { save: 'saveFocus', noFocus: false });
+    $('#fo_text')?.focus({ preventScroll: true });
+  },
+  saveFocus() { S.systems.focus = val('fo_text'); save(); closeSheet(); render(currentTab); },
   toggleBrief() { briefOpen = !briefOpen; renderHome(); },
   dropImport(d) {
     if (d.kind === 'event') {
@@ -2782,9 +2815,9 @@ const ACT = {
     }
     if (d.kind === 'bill') S.money.bills = S.money.bills.filter(x => x.id !== d.id);
     if (d.kind === 'txn')  S.money.transactions = S.money.transactions.filter(x => x.id !== d.id);
-    save(); renderHome(); refreshBadges(); toast('Removed — it won\'t come back');
+    save(); renderHome(); refreshBadges(); toast('Removed — it won\'t come back', { undo: true });
   },
-  toggleBills() { billsOpen = !billsOpen; renderMoney(); },
+  toggleBills() { billsOpen = !billsOpen; render(currentTab); },
   toggleArrange(d) { arranging = !arranging; render(d.tab); if (arranging) toast('Drag sections to reorder, then Done'); },
 
   /* ----- calendar ----- */
@@ -2874,7 +2907,7 @@ const ACT = {
     if (d.id) { ev = S.calendar.events.find(x=>x.id===d.id); Object.assign(ev, rec); }
     else { ev = { id: uid(), ...rec }; S.calendar.events.push(ev); }
     syncEventCost(ev);
-    save(); closeSheet(); if (!recurring) setCalSel(date); render('calendar');
+    save(); closeSheet(); if (!recurring) setCalSel(date); render(currentTab);
     const pay = eventPay(rec);
     toast(recurring ? 'Saved'
       : pay > 0 ? `Saved · ${AUD(pay)} logged to Money`
@@ -2883,7 +2916,7 @@ const ACT = {
   delEvent(d) {
     S.calendar.events = S.calendar.events.filter(x=>x.id!==d.id);
     S.money.transactions = S.money.transactions.filter(t=>t.eventId!==d.id);
-    save(); closeSheet(); render('calendar');
+    save(); closeSheet(); render(currentTab);
   },
 
   /* ----- calendar: tasks ----- */
@@ -2982,7 +3015,7 @@ const ACT = {
     if (scope === 'day') setCalSel(date);
     render(currentTab);
     toast(repeat === 'none' ? (d.id ? 'Saved' : 'Task added')
-      : `Repeats ${taskRepeatLabel({ repeat, days })} — next on ${fmtDay(date)}`);
+      : `Repeats ${taskRepeatLabel({ repeat, days })} — next on ${fmtDay(date)}`, { undo: true });
   },
   toggleTask(d, el) {
     const t = TASKS().find(x => x.id === d.id); if (!t) return;
@@ -3020,15 +3053,18 @@ const ACT = {
     save();
     haptic();
     if (currentTab !== 'health') render(currentTab);
-    else if (!updateWaterUI(next, add)) renderHealth();
-    if (wasShort && next >= S.health.water.goalMl) toast('Water goal reached');
+    else if (!updateWaterUI(next, add)) render(currentTab);
   },
   editWaterGoal() {
     sheetForm('Water goal','Daily target in litres.',
       field('Goal (L)','wg',{type:'number',step:'0.1',val:S.health.water.goalMl/1000,inputmode:'decimal'}),
       { save:'saveWaterGoal' });
   },
-  saveWaterGoal() { S.health.water.goalMl = Math.round(num(val('wg'),3)*1000); save(); closeSheet(); renderHealth(); },
+  saveWaterGoal() {
+    const l = num(val('wg'));
+    if (!(l >= 0.5 && l <= 10)) return toast('Water goal should be 0.5 – 10 L');
+    S.health.water.goalMl = Math.round(l * 1000); save(); closeSheet(); render(currentTab);
+  },
 
   /* ----- splits ----- */
   addSplit() { ACT.editSplit({ id:'' }); },
@@ -3048,9 +3084,9 @@ const ACT = {
     });
     if (d.id) Object.assign(S.health.splits.find(x=>x.id===d.id), { name, ex });
     else S.health.splits.push({ id: uid(), name, ex });
-    save(); closeSheet(); renderHealth(); toast('Saved');
+    save(); closeSheet(); render(currentTab); toast('Saved');
   },
-  delSplit(d) { S.health.splits = S.health.splits.filter(x=>x.id!==d.id); save(); closeSheet(); renderHealth(); },
+  delSplit(d) { S.health.splits = S.health.splits.filter(x=>x.id!==d.id); save(); closeSheet(); render(currentTab); },
 
   /* ----- PBs ----- */
   addPB() { ACT.editPB({ id:'' }); },
@@ -3064,12 +3100,15 @@ const ACT = {
   },
   savePB(d) {
     const lift = val('pb_lift'); if (!lift) return toast('Add a lift');
+    if (!(num(val('pb_w')) > 0 && num(val('pb_w')) <= 1000)) return toast('Weight should be above 0 kg');
+    if (!(num(val('pb_r'), 1) >= 1 && num(val('pb_r'), 1) <= 100)) return toast('Reps should be 1 – 100');
+    if ((val('pb_date') || '') > todayISO()) return toast("A PB can't be in the future");
     const rec = { lift, weight: num(val('pb_w')), reps: num(val('pb_r'),1), date: val('pb_date')||todayISO() };
     if (d.id) Object.assign(S.health.pbs.find(x=>x.id===d.id), rec);
     else S.health.pbs.push({ id: uid(), ...rec });
-    save(); closeSheet(); renderHealth(); toast('PB saved');
+    save(); closeSheet(); render(currentTab); toast('PB saved');
   },
-  delPB(d) { S.health.pbs = S.health.pbs.filter(x=>x.id!==d.id); save(); closeSheet(); renderHealth(); },
+  delPB(d) { S.health.pbs = S.health.pbs.filter(x=>x.id!==d.id); save(); closeSheet(); render(currentTab); },
 
   /* ----- runs ----- */
   addRun() { ACT.editRun({ id:'' }); },
@@ -3086,15 +3125,18 @@ const ACT = {
   },
   saveRun(d) {
     const dist = num(val('r_d')); if (!dist) return toast('Add distance');
+    if (!(dist > 0 && dist <= 300)) return toast('Distance should be 0.1 – 300 km');
+    if (num(val('r_t')) < 0 || num(val('r_t')) > 3000) return toast('Time should be in minutes, 0 – 3000');
+    if ((val('r_date') || '') > todayISO()) return toast("A run can't be in the future");
     const rec = { name: val('r_name'), distanceKm: dist, timeMin: num(val('r_t')),
       elevM: num(val('r_e')), avgHr: num(val('r_hr')),
       date: val('r_date')||todayISO(), notes: val('r_notes') };
     if (d.id) Object.assign(S.health.runs.find(x=>x.id===d.id), rec);
     else S.health.runs.push({ id: uid(), ...rec });
     S.health.runs.sort((a,b)=>a.date.localeCompare(b.date));
-    save(); closeSheet(); renderHealth(); toast('Run logged');
+    save(); closeSheet(); render(currentTab); toast('Run logged', { undo: true });
   },
-  delRun(d) { S.health.runs = S.health.runs.filter(x=>x.id!==d.id); save(); closeSheet(); renderHealth(); },
+  delRun(d) { S.health.runs = S.health.runs.filter(x=>x.id!==d.id); save(); closeSheet(); render(currentTab); },
 
   /* ----- runs: Strava ----- */
   stravaConnect() { stravaConnect(); },
@@ -3106,11 +3148,11 @@ const ACT = {
   },
   stravaDisconnectConfirm() {
     S.health.strava = { refreshToken:'', accessToken:'', expiresAt:0, athlete:null, lastSync:0, auto:true };
-    save(); closeSheet(); renderHealth(); toast('Strava disconnected');
+    save(); closeSheet(); render(currentTab); toast('Strava disconnected');
   },
 
   /* ----- sleep ----- */
-  setSleepRange(d) { sleepRange = d.r; renderHealth(); },
+  setSleepRange(d) { sleepRange = d.r; render(currentTab); },
   editSleepGoal() {
     sheetForm('Sleep goal','Hours a night you are aiming for.',
       field('Goal (hours)','sg',{type:'number',step:'0.25',val:sleepGoal(),inputmode:'decimal'}),
@@ -3119,7 +3161,7 @@ const ACT = {
   saveSleepGoal() {
     const g = num(val('sg')); if (!g) return toast('Set a goal');
     S.health.sleepGoal = clamp(g, 1, 14);
-    save(); closeSheet(); renderHealth();
+    save(); closeSheet(); render(currentTab);
   },
   addSleep() { ACT.editSleep({ d:'' }); },
   editSleep(d) {
@@ -3158,25 +3200,29 @@ const ACT = {
     const bed = val('sl_bed'), wake = val('sl_wake');
     const h = num(val('sl_h')) || sleepHoursFrom(bed, wake);
     if (!h) return toast('Add hours, or bed and wake times');
+    if (!(h > 0 && h <= 16)) return toast('Sleep should be 0 – 16 hours');
+    if (date > todayISO()) return toast("You can't log a night that hasn't happened");
+    if (S.health.sleep.some(s => s.date === date && s.date !== d.id)) return toast(`There's already a night on ${fmtDay(date)} — edit that one instead`);
     const qEl = $('#sl_q .dp.on');
     const rec = { date, hours: +h, bed, wake, quality: qEl ? num(qEl.dataset.q) : 0, notes: val('sl_notes') };
     const ex = S.health.sleep.find(s => s.date === (d.id || date));
     if (ex) Object.assign(ex, rec); else S.health.sleep.push(rec);
     S.health.sleep.sort((a,b)=>a.date.localeCompare(b.date));
-    save(); closeSheet(); renderHealth();
-    toast(h >= sleepGoal() ? 'Sleep logged — goal hit' : 'Sleep logged');
+    save(); closeSheet(); render(currentTab);
+    toast(h >= sleepGoal() ? 'Sleep logged — goal hit' : 'Sleep logged', { undo: true });
   },
   delSleep(d) {
     S.health.sleep = S.health.sleep.filter(s => s.date !== d.id);
-    save(); closeSheet(); renderHealth();
+    save(); closeSheet(); render(currentTab);
   },
 
   /* ----- health: food ----- */
-  foodPrev() { foodDate = shiftISO(foodDate, -1); renderHealth(); },
-  foodNext() { if (foodDate < todayISO()) { foodDate = shiftISO(foodDate, 1); renderHealth(); } },
-  foodToday() { foodDate = todayISO(); renderHealth(); },
-  setFoodRange(d) { foodRange = d.r; renderHealth(); },
+  foodPrev() { foodDate = shiftISO(foodDate, -1); render(currentTab); },
+  foodNext() { if (foodDate < todayISO()) { foodDate = shiftISO(foodDate, 1); render(currentTab); } },
+  foodToday() { foodDate = todayISO(); render(currentTab); },
+  setFoodRange(d) { foodRange = d.r; render(currentTab); },
   addFood(d) {
+    if (currentTab !== 'health' && !d.pick) foodDate = todayISO();   // from Today / quick add: always today
     foodPick = !!d.pick && !!mealDraft;
     if (!foodPick) foodMeal = d.meal || (foodDate === todayISO() ? mealForNow() : foodMeal);
     openSheet(`<h3>${foodPick ? 'Add an ingredient' : 'Add food'}</h3>
@@ -3190,12 +3236,12 @@ const ACT = {
       <div class="food-tools">
         ${foodPick ? `<button class="btn sm" data-act="openMealEditor">← Back to recipe</button>`
           : `<button class="btn sm" data-act="mealList">${ic('bookmark')} My meals</button><button class="btn sm" data-act="quickAddFood">${ic('zap')} Quick add</button>`}
-        <button class="btn sm" data-act="newFood">+ New food</button>
+        <button class="btn sm" data-act="newFood">${ic('plus')} New food</button>
         <button class="btn sm" data-act="foodOnline">${ic('search')} Online</button>
       </div>
       <div id="fd_res"></div>`);
     const q = $('#fd_q');
-    q.addEventListener('input', () => renderFoodResults(q.value));
+    q.addEventListener('input', () => { renderFoodResults(q.value); $('#sheetBody').classList.toggle('searching', !!q.value.trim()); });
     q.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); ACT.foodOnline(); } });
     renderFoodResults('');
     if (matchMedia('(pointer:fine)').matches) q.focus();
@@ -3246,15 +3292,15 @@ const ACT = {
     const lib = MEALS_LIB(), i = lib.findIndex(x => x.id === m.id);
     if (i >= 0) lib[i] = { ...lib[i], ...m }; else lib.push({ ...m, uses: 0, last: Date.now() });
     mealDraft = null; foodPick = false;
-    if (d.log) { logFood(findFood('meal:' + m.id), 1, foodMeal); closeSheet(); toast(`${m.name} saved and added to ${foodMeal}`); }
+    if (d.log) { logFood(findFood('meal:' + m.id), 1, foodMeal); closeSheet(); toast(`${m.name} saved and added to ${foodMeal}`, { undo: true }); }
     else { save(); toast(`${m.name} saved`); ACT.mealList(); }
-    renderHealth();
+    render(currentTab);
   },
   delMeal(d) {
     const m = MEALS_LIB().find(x => x.id === d.id); if (!m) return;
     FOOD().meals = MEALS_LIB().filter(x => x.id !== d.id);
     mealDraft = null; foodPick = false;
-    save(); toast(`${m.name} deleted — days you logged it keep their numbers`); ACT.mealList(); renderHealth();
+    save(); toast(`${m.name} deleted — days you logged it keep their numbers`, { undo: true }); ACT.mealList(); render(currentTab);
   },
   // turn what's logged under Breakfast (etc.) into a reusable meal
   saveAsMeal(d) {
@@ -3265,39 +3311,54 @@ const ACT = {
     foodMeal = d.meal; foodPick = false;
     mealEditorSheet();
   },
+  moveSec(d) {
+    const cur = (currentBlockKeys[d.okey] || []).slice(), i = cur.indexOf(d.key), j = i + num(d.dir);
+    if (i < 0 || j < 0 || j >= cur.length) return;
+    [cur[i], cur[j]] = [cur[j], cur[i]];
+    S.settings.order = S.settings.order || {}; S.settings.order[d.okey] = cur;
+    save(); render(currentTab);
+  },
+  toggleSleepAll() { sleepAll = !sleepAll; render(currentTab); },
+  toggleTracker() { trackerAll = !trackerAll; render(currentTab); },
   setSeg(d) { S.settings.seg = S.settings.seg || {}; S.settings.seg[d.tab] = d.seg; save(false); tabScroll[d.tab] = 0; arranging = false; render(d.tab); window.scrollTo(0, 0); },
   toggleHomeDone() { homeDoneOpen = !homeDoneOpen; renderHome(); },
   quickAdd() { quickAddSheet(); },
   search() { searchSheet(); },
   qaSaveTask() {
     const text = val('qa_task'); if (!text) { $('#qa_task')?.focus(); return; }
-    TASKS().push({ id: uid(), text, cat: 'Random', scope: 'day', date: todayISO(), repeat: 'none', done: false, doneDays: {} });
-    save(); haptic(); closeSheet(); render(currentTab); toast(`Added “${text}” to today`);
+    TASKS().push({ id: uid(), text, cat: '', scope: 'day', date: todayISO(), repeat: 'none', done: false, doneDays: {} });
+    save(); haptic(); closeSheet(); render(currentTab); toast(`Added “${text}” to today`, { undo: true });
   },
-  qaWater(d) { ACT.water(d); closeSheet(); toast(`+${d.ml} ml water`); },
-  qaFood(d) { const f = findFood(d.fid); if (!f) return; foodDate = todayISO(); logFood(f, 1, foodMeal); haptic(); closeSheet(); render(currentTab); toast(`${f.name} → ${foodMeal}`); },
+  qaWater(d) { ACT.water(d); closeSheet(); toast(`+${d.ml} ml water`, { undo: true }); },
+  qaFoodSheet() { foodDate = todayISO(); foodPick = false; ACT.addFood({ meal: mealForNow() }); },
+  qaScan() { foodDate = todayISO(); foodPick = false; foodMeal = mealForNow(); openScanner(); },
+  searchFood(d) { foodDate = todayISO(); foodPick = false; foodMeal = mealForNow(); ACT.pickFood(d); },
+  qaFood(d) { const f = findFood(d.fid); if (!f) return; foodDate = todayISO(); foodPick = false; foodMeal = mealForNow(); logFood(f, 1, foodMeal); haptic(); closeSheet(); render(currentTab); toast(`${f.name} → ${foodMeal}`, { undo: true }); },
   qaHabit(d) {
     const h = (S.systems.habits || []).find(x => x.id === d.id); if (!h) return;
     (h.doneDays || (h.doneDays = {}))[todayISO()] = true;
-    save(); haptic(); closeSheet(); render(currentTab); toast(`${h.text} — done`);
+    save(); haptic(); closeSheet(); render(currentTab); toast(`${h.text} — done`, { undo: true });
   },
   syncNowBtn() { syncNow(); toast('Syncing…', { undo: false }); },
   copyDay() {
     const from = shiftISO(foodDate, -1), src = foodEntries(from);
     if (!src.length) return toast('Nothing logged the day before');
     src.forEach(e => FOOD().log.push({ ...e, id: uid(), date: foodDate, at: Date.now() }));
-    syncFoodMoney(foodDate); save(); renderHealth(); toast(`Copied ${src.length} item${src.length > 1 ? 's' : ''} from ${foodDayLabel(from).toLowerCase()}`);
+    copiedAt = Date.now();
+    syncFoodMoney(foodDate); save(); render(currentTab); toast(`Copied ${src.length} item${src.length > 1 ? 's' : ''} from ${foodDayLabel(from).toLowerCase()}`, { undo: true });
   },
   healthJump(d) { go('health', d.sec); },
   pickFoodMeal(d, el) { foodMeal = d.m; $$('button', el.parentElement).forEach(b => b.classList.toggle('on', b === el)); },
   // the + on a result: log one serving straight away, MyFitnessPal-style
   quickLogFood(d, el) {
     const f = findFood(d.fid); if (!f) return;
+    if (el && Date.now() - (+el.dataset.at || 0) < 500) return;   // a double-tap isn't two servings
+    if (el) { el.dataset.at = Date.now(); el.dataset.n = (+el.dataset.n || 0) + 1; }
     if (foodPick && mealDraft) { addToDraft(f, 1); return ACT.openMealEditor(); }
     logFood(f, 1, foodMeal);
-    el.classList.add('added'); el.innerHTML = ic('check');
+    el.classList.add('added'); el.innerHTML = +el.dataset.n > 1 ? `×${el.dataset.n}` : ic('check');
     haptic();
-    toast(`${f.name} → ${foodMeal}${num(f.cost) > 0 ? '' : ' · tap it later to add a price'}`);
+    toast(`${f.name} → ${foodMeal}${num(f.cost) > 0 ? '' : ' · tap it later to add a price'}`, { undo: true });
   },
   pickFood(d) { const f = findFood(d.fid); if (f) foodPortionSheet(f, null); },
   editFoodEntry(d) {
@@ -3334,17 +3395,17 @@ const ACT = {
       if (e.foodId) { const lib = FOOD().foods.find(x => x.id === e.foodId); if (lib) Object.assign(lib, vals, { src: priceSrcFor(vals.name, vals.cost) }); }
       syncFoodMoney(oldDate);
       save();
-      closeSheet(); renderHealth(); toast('Saved');
+      closeSheet(); render(currentTab); toast('Saved');
     } else {
       logFood({ ...findFood(d.fid) || {}, ...vals }, qty, meal);
-      closeSheet(); renderHealth(); toast(`Added to ${meal}`);
+      closeSheet(); render(currentTab); toast(`Added to ${meal}`, { undo: true });
     }
   },
   delFoodEntry(d) {
     const e = FOOD().log.find(x => x.id === d.id); if (!e) return;
     FOOD().log = FOOD().log.filter(x => x.id !== d.id);
     syncFoodMoney(e.date);
-    save(); closeSheet(); renderHealth(); toast('Removed');
+    save(); closeSheet(); render(currentTab); toast('Removed', { undo: true });
   },
   quickAddFood() {
     sheetForm('Quick add', `Just the numbers — for a meal out or anything you can't be bothered looking up. Goes to ${foodMeal}.`,
@@ -3362,7 +3423,7 @@ const ACT = {
     FOOD().log.push({ id: uid(), date: foodDate, meal: foodMeal, name: val('qa_name') || 'Quick add', serving: 'quick add', qty: 1,
       ...chk.out, foodId: null, at: Date.now() });
     syncFoodMoney(foodDate);
-    save(); closeSheet(); renderHealth(); toast(`Added to ${foodMeal}`);
+    save(); closeSheet(); render(currentTab); toast(`Added to ${foodMeal}`, { undo: true });
   },
   newFood(d) {
     const q = $('#fd_q') ? $('#fd_q').value.trim() : '';
@@ -3371,10 +3432,12 @@ const ACT = {
   async foodOnline() {
     const qEl = $('#fd_q'); const q = qEl ? qEl.value.trim() : '';
     const res = $('#fd_res'); if (!res) return;
-    if (q.length < 2) { toast('Type a food or barcode first'); qEl && qEl.focus(); return; }
+    if (q.length < 2) { toast(q ? 'Type at least 2 letters' : 'Type a food or barcode first'); qEl && qEl.focus(); return; }
     res.innerHTML = `<div class="empty">Searching Open Food Facts…</div>`;
     try {
-      onlineFoods = (await searchOnline(q)).map((f, i) => ({ ...f, id: 'on:' + i }));
+      const got = (await searchOnline(q)).map((f, i) => ({ ...f, id: 'on:' + i }));
+      if (!$('#fd_q') || $('#fd_q').value.trim() !== q) return;   // you've typed something else since
+      onlineFoods = got;
       if (!$('#fd_res')) return;   // sheet closed while we waited
       res.innerHTML = onlineFoods.length
         ? `<div class="card-label" style="margin:14px 0 8px">Online · Open Food Facts — add your price when you log it</div>
@@ -3386,8 +3449,8 @@ const ACT = {
   },
   delFood(d) {
     FOOD().foods = FOOD().foods.filter(f => f.id !== d.id);
-    save(); closeSheet(); toast('Removed from My foods — your past logs are kept');
-    renderHealth();
+    save(); closeSheet(); toast('Removed from My foods — your past logs are kept', { undo: true });
+    render(currentTab);
   },
   copyMeal(d) {
     const from = shiftISO(foodDate, -1);
@@ -3395,7 +3458,7 @@ const ACT = {
     if (!src.length) return;
     src.forEach(e => FOOD().log.push({ ...e, id: uid(), date: foodDate, at: Date.now() }));
     syncFoodMoney(foodDate);
-    save(); renderHealth(); toast(`Copied ${src.length} item${src.length > 1 ? 's' : ''} to ${d.meal}`);
+    save(); render(currentTab); toast(`Copied ${src.length} item${src.length > 1 ? 's' : ''} to ${d.meal}`, { undo: true });
   },
   editFoodGoals() {
     const g = FOOD().goals;
@@ -3425,7 +3488,7 @@ const ACT = {
     const was = FOOD().toMoney;
     FOOD().toMoney = $('#fg_money').checked;
     if (was !== FOOD().toMoney) resyncAllFoodMoney();
-    save(); closeSheet(); renderHealth(); toast('Goals saved');
+    save(); closeSheet(); render(currentTab); toast('Goals saved');
   },
 
   /* ----- money: holdings ----- */
@@ -3443,14 +3506,14 @@ const ACT = {
     const rec = { symbol: sym, name: val('h_name'), shares: num(val('h_sh')), cost: num(val('h_cost')) };
     if (d.id) Object.assign(S.money.holdings.find(x=>x.id===d.id), rec);
     else S.money.holdings.push({ id: uid(), ...rec });
-    save(); closeSheet(); renderMoney(); toast('Fetching price…');
+    save(); closeSheet(); render(currentTab); toast('Fetching price…');
     await refreshPrices();
   },
-  delHolding(d) { S.money.holdings = S.money.holdings.filter(x=>x.id!==d.id); save(); closeSheet(); renderMoney(); },
+  delHolding(d) { S.money.holdings = S.money.holdings.filter(x=>x.id!==d.id); save(); closeSheet(); render(currentTab); },
   async refreshPrices() { await refreshPrices(); toast('Prices updated'); },
 
   /* ----- money: bills ----- */
-  setPeriod(d) { S.money.period = d.p; save(); renderMoney(); },
+  setPeriod(d) { S.money.period = d.p; save(); render(currentTab); },
   addBill() { ACT.editBill({ id:'' }); },
   editBill(d) {
     const b = S.money.bills.find(x=>x.id===d.id) || { name:'', amount:'', dueDay:1, remindDays:3, freq:'monthly', due:todayISO() };
@@ -3465,13 +3528,17 @@ const ACT = {
   saveBill(d) {
     const name = val('b_name'); if (!name) return toast('Add a name');
     const freq = ({ Weekly:'weekly', Monthly:'monthly', Quarterly:'quarterly', Yearly:'yearly', 'One-off':'once' })[val('b_freq')] || 'monthly';
-    const rec = { name, amount: num(val('b_amt')), freq, dueDay: clamp(num(val('b_day'),1),1,28), due: val('b_due')||todayISO(), remindDays: num(val('b_rem'),3) };
+    const amt = num(val('b_amt'));
+    if (!(amt > 0) || amt > 1e6) return toast('Enter an amount above $0');
+    const rec = { name, amount: Math.round(amt * 100) / 100, freq, dueDay: clamp(num(val('b_day'),1),1,28), due: val('b_due')||todayISO(), remindDays: num(val('b_rem'),3) };
     if (d.id) Object.assign(S.money.bills.find(x=>x.id===d.id), rec);
     else S.money.bills.push({ id: uid(), lastPaidMonth:'', paidUntil:'', done:false, ...rec });
-    save(); closeSheet(); renderMoney(); refreshBadges(); toast('Saved');
+    save(); closeSheet(); render(currentTab); refreshBadges(); toast('Saved');
   },
-  delBill(d) { S.money.bills = S.money.bills.filter(x=>x.id!==d.id); save(); closeSheet(); renderMoney(); refreshBadges(); },
+  delBill(d) { S.money.bills = S.money.bills.filter(x=>x.id!==d.id); save(); closeSheet(); render(currentTab); refreshBadges(); },
   payBill(d) {
+    if (Date.now() - payGuard < 800) return;   // the list re-sorts — a second tap would land on the next bill
+    payGuard = Date.now();
     const b = S.money.bills.find(x=>x.id===d.id); if (!b) return;
     const freq = b.freq || 'monthly';
     const due = billNextDue(b);
@@ -3480,7 +3547,7 @@ const ACT = {
     else if (freq === 'weekly') b.paidUntil = todayISO(due);
     else b.paidUntil = todayISO(due);
     S.money.transactions.push({ id: uid(), date: todayISO(), desc: b.name, category: 'Bills', amount: b.amount, dir: 'out' });
-    save(); renderMoney(); refreshBadges(); toast(`${b.name} marked paid`);
+    save(); render(currentTab); refreshBadges(); toast(`${b.name} marked paid`, { undo: true });
   },
 
   /* ----- money: budgets ----- */
@@ -3494,12 +3561,14 @@ const ACT = {
   },
   saveBudget(d) {
     const cat = val('bd_cat'); if (!cat) return toast('Add a category');
-    const rec = { category: cat, limit: num(val('bd_lim')) };
+    const lim = num(val('bd_lim'));
+    if (!(lim > 0) || lim > 1e7) return toast('Enter a limit above $0');
+    const rec = { category: cat, limit: Math.round(lim * 100) / 100 };
     if (d.id) Object.assign(S.money.budgets.find(x=>x.id===d.id), rec);
     else S.money.budgets.push({ id: uid(), ...rec });
-    save(); closeSheet(); renderMoney();
+    save(); closeSheet(); render(currentTab);
   },
-  delBudget(d) { S.money.budgets = S.money.budgets.filter(x=>x.id!==d.id); save(); closeSheet(); renderMoney(); },
+  delBudget(d) { S.money.budgets = S.money.budgets.filter(x=>x.id!==d.id); save(); closeSheet(); render(currentTab); },
 
   /* ----- money: transactions ----- */
   addTxn() { ACT.editTxn({ id:'' }); },
@@ -3515,13 +3584,19 @@ const ACT = {
   },
   saveTxn(d) {
     const desc = val('t_desc'); if (!desc) return toast('Add a description');
-    const rec = { desc, amount: num(val('t_amt')), category: val('t_cat'), date: val('t_date')||todayISO(),
+    const amt = num(val('t_amt'));
+    if (!(amt > 0) || amt > 1e7) return toast('Enter an amount above $0');
+    const rec = { desc, amount: Math.round(amt * 100) / 100, category: val('t_cat'), date: val('t_date')||todayISO(),
       dir: val('t_dir')==='Income'?'in':'out' };
     if (d.id) Object.assign(S.money.transactions.find(x=>x.id===d.id), rec);
     else S.money.transactions.push({ id: uid(), ...rec });
-    save(); closeSheet(); renderMoney();
+    save(); closeSheet(); render(currentTab);
   },
-  delTxn(d) { S.money.transactions = S.money.transactions.filter(x=>x.id!==d.id); save(); closeSheet(); renderMoney(); },
+  delTxn(d) {
+    const t = S.money.transactions.find(x => x.id === d.id);
+    if (t && (t.foodDay || t.eventId)) return toast(t.foodDay ? 'This comes from your Food diary — change the food there' : 'This comes from a Calendar event — edit the event');
+    S.money.transactions = S.money.transactions.filter(x=>x.id!==d.id); save(); closeSheet(); render(currentTab);
+  },
 
   /* ----- systems: goals ----- */
   addGoal() {
@@ -3531,11 +3606,11 @@ const ACT = {
     const text = val('g_text'); if (!text) return toast('Type a goal');
     if (d.id) S.systems.goals.find(g=>g.id===d.id).text = text;
     else S.systems.goals.push({ id: uid(), text, done:false });
-    save(); closeSheet(); renderSystems();
+    save(); closeSheet(); render(currentTab);
   },
   editGoal(d) { const g = S.systems.goals.find(x=>x.id===d.id); sheetForm('Edit goal','',field('Goal','g_text',{val:g.text}),{save:'saveGoal',id:d.id,del:'delGoal'}); },
   toggleGoal(d) { const g = S.systems.goals.find(x=>x.id===d.id); g.done=!g.done; save(); render(currentTab); },
-  delGoal(d) { S.systems.goals = S.systems.goals.filter(x=>x.id!==d.id); save(); closeSheet(); renderSystems(); },
+  delGoal(d) { S.systems.goals = S.systems.goals.filter(x=>x.id!==d.id); save(); closeSheet(); render(currentTab); },
 
   /* ----- systems: weekly ----- */
   addWeekly() { sheetForm('Weekly must-do','', field('Task','w_text',{ph:'e.g. Meal prep'}), { save:'saveWeekly' }); },
@@ -3543,11 +3618,11 @@ const ACT = {
     const text = val('w_text'); if (!text) return toast('Type a task');
     if (d.id) S.systems.weekly.find(w=>w.id===d.id).text = text;
     else S.systems.weekly.push({ id: uid(), text, weeks:{} });
-    save(); closeSheet(); renderSystems();
+    save(); closeSheet(); render(currentTab);
   },
   editWeekly(d) { const w = S.systems.weekly.find(x=>x.id===d.id); sheetForm('Edit must-do','',field('Task','w_text',{val:w.text}),{save:'saveWeekly',id:d.id,del:'delWeekly'}); },
-  toggleWeekly(d) { const w = S.systems.weekly.find(x=>x.id===d.id); const k = weekKey(); w.weeks[k]=!w.weeks[k]; save(); render(currentTab); },
-  delWeekly(d) { S.systems.weekly = S.systems.weekly.filter(x=>x.id!==d.id); save(); closeSheet(); renderSystems(); },
+  toggleWeekly(d) { const w = S.systems.weekly.find(x=>x.id===d.id); const k = weekKey(); w.weeks[k]=!w.weeks[k]; save(); haptic(); render(currentTab); if (w.weeks[k]) toast(`${w.text} — done this week`, { undo: true }); },
+  delWeekly(d) { S.systems.weekly = S.systems.weekly.filter(x=>x.id!==d.id); save(); closeSheet(); render(currentTab); },
 
   /* ----- systems: bad day / rough-day mode ----- */
   addBadDay() { ACT.editBadDay({ id:'' }); },
@@ -3627,29 +3702,31 @@ const ACT = {
     if (!rec.worked && !rec.change) return toast('Write a line in either box');
     const ex = list.find(x => x.week === week);
     if (ex) Object.assign(ex, rec); else list.push(rec);
-    save(); closeSheet(); renderSystems(); toast('Review saved');
+    save(); closeSheet(); render(currentTab); toast('Review saved');
   },
   delReview(d) {
     S.systems.reviews = (S.systems.reviews || []).filter(x => x.week !== d.id);
-    save(); closeSheet(); renderSystems();
+    save(); closeSheet(); render(currentTab);
   },
 
   /* ----- systems: notes ----- */
-  addNote() { const n = { id: uid(), title:'', body:'', updatedAt: Date.now() }; S.systems.notes.push(n); save(); ACT.openNote({ id: n.id }); },
+  addNote() { ACT.openNote({ id: '' }); },
   openNote(d) {
-    const n = S.systems.notes.find(x=>x.id===d.id);
+    const n = S.systems.notes.find(x=>x.id===d.id) || { title: '', body: '' };
     sheetForm('Note','',
       field('Title','n_title',{val:n.title,ph:'Title'}) +
       field('Body','n_body',{type:'textarea',val:n.body,ph:'Write…'}),
-      { save:'saveNote', id:d.id, del:'delNote' });
+      { save:'saveNote', id:d.id, del: d.id ? 'delNote' : '' });
     const t = $('#n_body'); if (t) t.style.minHeight = '200px';
   },
   saveNote(d) {
-    const n = S.systems.notes.find(x=>x.id===d.id);
+    if (!val('n_title') && !val('n_body')) { closeSheet(); return; }
+    let n = S.systems.notes.find(x=>x.id===d.id);
+    if (!n) { n = { id: uid() }; S.systems.notes.push(n); }
     n.title = val('n_title'); n.body = val('n_body'); n.updatedAt = Date.now();
-    save(); closeSheet(); renderSystems();
+    save(); closeSheet(); render(currentTab);
   },
-  delNote(d) { S.systems.notes = S.systems.notes.filter(x=>x.id!==d.id); save(); closeSheet(); renderSystems(); },
+  delNote(d) { S.systems.notes = S.systems.notes.filter(x=>x.id!==d.id); save(); closeSheet(); render(currentTab); },
 
   /* ----- systems: habit reminders ----- */
   addHabit() { ACT.editHabit({ id:'' }); },
@@ -3697,9 +3774,9 @@ const ACT = {
   // re-render whichever tab is actually on screen
   delHabit(d) { S.systems.habits = (S.systems.habits||[]).filter(x=>x.id!==d.id); save(); closeSheet(); render(currentTab); },
   /* ----- habit week grid ----- */
-  habitWeekPrev() { habitWeekOffset--; renderSystems(); },
-  habitWeekNext() { if (habitWeekOffset < 0) habitWeekOffset++; renderSystems(); },
-  setHabitGridMode(d) { habitGridMode = d.m; renderSystems(); },
+  habitWeekPrev() { habitWeekOffset--; render(currentTab); },
+  habitWeekNext() { if (habitWeekOffset < 0) habitWeekOffset++; render(currentTab); },
+  setHabitGridMode(d) { habitGridMode = d.m; render(currentTab); },
   habitCell(d, el) {
     const h = (S.systems.habits||[]).find(x => x.id === d.id); if (!h) return;
     const dow = num(d.dow);
@@ -3710,7 +3787,7 @@ const ACT = {
       days = days.includes(dow) ? days.filter(x => x !== dow) : days.concat(dow).sort();
       if (!days.length) return toast('A habit needs at least one day');
       h.days = days.length === 7 ? [] : days;
-      save(); renderSystems();
+      save(); render(currentTab);
       return;
     }
     if (d.d > todayISO()) return toast("Can't tick off a day that hasn't happened");
@@ -3735,7 +3812,8 @@ const ACT = {
       row.classList.add('completing');
       save();
       setTimeout(() => renderSystems(), 420);
-    } else { save(); render(currentTab); }
+    } else { save(); haptic(); render(currentTab); }
+    if (nowDone && currentTab !== 'systems') toast(`${h.text} — done`, { undo: true });
   },
 
   /* ----- money: goals ----- */
@@ -3755,14 +3833,16 @@ const ACT = {
     const rec = { name, target, saved: num(val('mg_saved')), by: val('mg_by') || '' };
     if (d.id) Object.assign(S.money.goals.find(x=>x.id===d.id), rec);
     else S.money.goals.push({ id: uid(), ...rec });
-    save(); closeSheet(); renderMoney();
+    save(); closeSheet(); render(currentTab);
   },
-  delMoneyGoal(d) { S.money.goals = (S.money.goals||[]).filter(x=>x.id!==d.id); save(); closeSheet(); renderMoney(); },
+  delMoneyGoal(d) { S.money.goals = (S.money.goals||[]).filter(x=>x.id!==d.id); save(); closeSheet(); render(currentTab); },
   addToMoneyGoal(d) {
     const g = (S.money.goals||[]).find(x=>x.id===d.id); if (!g) return;
     const amt = num(val('mg_' + d.id)); if (!amt) return toast('Type an amount');
+    if (Math.abs(amt) > 1e7) return toast('That amount looks too big');
+    if ((g.saved || 0) + amt < 0) return toast("Can't take out more than you've saved");
     g.saved = (g.saved||0) + amt;
-    save(); renderMoney();
+    save(); render(currentTab);
     toast(g.saved >= g.target ? `${g.name}: goal reached` : `+${AUD(amt,0)} to ${g.name}`);
   },
 };
@@ -3847,12 +3927,10 @@ function habitStreak(h) {
 function dayProgress() {
   const iso = todayISO(), wk = weekKey();
   const habits = habitsToday();
-  const weekly = S.systems.weekly || [];
   const tasks  = tasksForDate(iso);
-  const total = habits.length + weekly.length + tasks.length;
+  const total = habits.length + tasks.length;
   if (!total) return null;
   const done = habits.filter(h => h.doneDays && h.doneDays[iso]).length
-             + weekly.filter(m => m.weeks[wk]).length
              + tasks.filter(t => taskDone(t, iso)).length;
   return { done, total, pct: done / total };
 }
@@ -3979,6 +4057,7 @@ ACT.resetData = function () {
    Event wiring
    ============================================================ */
 document.addEventListener('click', e => {
+  if (!e.isTrusted && hapEl.contains(e.target)) return;
   const a = e.target.closest('[data-act]');
   const g = e.target.closest('[data-go]');
   if (g && (!a || g.contains(a) === false || a === g)) { const [tab, sec] = g.dataset.go.split(':'); closeSheet(); go(tab, sec); return; }
@@ -3988,13 +4067,13 @@ document.addEventListener('click', e => {
   if (seg) { calView = seg.dataset.cal; renderCalendar(); return; }
   if (a) {
     const fn = ACT[a.dataset.act]; if (!fn) return;
-    const before = undoStack.length, tc = toastCount;
+    const before = saveSeq, tc = toastCount;
     fn(a.dataset, a);
     // deletes always confirm with an Undo
-    if (/^del[A-Z]/.test(a.dataset.act) && undoStack.length > before && toastCount === tc) toast('Deleted', { undo: true });
+    if (/^del[A-Z]/.test(a.dataset.act) && saveSeq > before && toastCount === tc) toast('Deleted', { undo: true });
   }
 });
-$$('.nav button').forEach(b => b.addEventListener('click', () => render(b.dataset.tab)));
+$$('.nav button').forEach(b => b.addEventListener('click', () => { if (b.dataset.tab === currentTab) { window.scrollTo({ top: 0, behavior: 'smooth' }); return; } render(b.dataset.tab); }));
 $('#btnSettings').addEventListener('click', openSettings);
 $('#btnSearch').addEventListener('click', () => ACT.search());
 $('#btnAdd').addEventListener('click', () => ACT.quickAdd());
@@ -4021,8 +4100,9 @@ function moveEventToDate(id, iso) {
   const wd = parseISO(iso).getDay();
   if (e.recurring) { if (e.weekday === wd) return false; e.weekday = wd; }
   else { if (e.date === iso) return false; e.date = iso; e.weekday = wd; }
+  syncEventCost(e);
   save();
-  toast(`${e.title} → ${fmtDay(iso)}`);
+  toast(`${e.title} → ${fmtDay(iso)}`, { undo: true });
   return true;
 }
 function moveTaskToDate(id, iso) {
@@ -4032,7 +4112,7 @@ function moveTaskToDate(id, iso) {
   t.week = weekKey(parseISO(iso));
   t.month = iso.slice(0, 7);
   save();
-  toast(`${t.text} → ${fmtDay(iso)}${repeats(t) ? ' (repeat starts here)' : ''}`);
+  toast(`${t.text} → ${fmtDay(iso)}${repeats(t) ? ' (repeat starts here)' : ''}`, { undo: true });
   return true;
 }
 const moveItemToDate = (item, iso) => !item ? false
@@ -4094,7 +4174,7 @@ document.addEventListener('drop', e => {
 document.addEventListener('dragend', () => { if (dragSec) endSecDrag(null); });
 /* touch: press the section and drag it (works on phone) */
 document.addEventListener('touchstart', e => {
-  if (!arranging) return;
+  if (!arranging || !e.target.closest('.arrange-bar .grip')) return;
   const sec = e.target.closest('.sec.arrangeable'); if (!sec) return;
   dragSec = sec; sec.classList.add('sec-dragging');
   haptic();
@@ -4147,7 +4227,7 @@ document.addEventListener('touchmove', () => { clearTimeout(pressTimer); pressTi
 document.addEventListener('touchend', () => { clearTimeout(pressTimer); pressTimer = null; }, { passive: true });
 // while in move mode, the next tap on a day row places it (capture beats the edit handler)
 document.addEventListener('click', e => {
-  if (!dragItem) return;
+  if (!dragItem || !e.isTrusted) return;   // the haptic switch's synthetic click must not cancel a move
   const row = e.target.closest('.dayrow[data-day]');
   e.preventDefault(); e.stopPropagation();
   const item = dragItem, iso = row ? row.dataset.day : null;
@@ -4160,7 +4240,7 @@ document.addEventListener('click', e => {
 /* ============================================================
    Quality of life
    ============================================================ */
-let homeDoneOpen = false;
+let homeDoneOpen = false, sleepAll = false, trackerAll = false, payGuard = 0, copiedAt = 0;
 const emptyState = (text, act, label, extra = '') =>
   `<div class="empty">${text}${act ? `<br><button class="btn sm primary" data-act="${act}" ${extra}>${label}</button>` : ''}</div>`;
 
@@ -4168,7 +4248,8 @@ const emptyState = (text, act, label, extra = '') =>
 // switch control fires the Taptic Engine (Safari 18+), so tick one off-screen.
 const hapEl = (() => {
   const l = document.createElement('label');
-  l.innerHTML = '<input type="checkbox" switch tabindex="-1">';
+  l.innerHTML = '<input type="checkbox" switch aria-hidden="true">';
+  l.inert = true;
   l.style.cssText = 'position:fixed;left:-99px;top:0;opacity:0;pointer-events:none';
   l.setAttribute('aria-hidden', 'true');
   document.body.appendChild(l); return l;
@@ -4189,15 +4270,16 @@ async function notify(title, opts) {
 // the number on the home-screen icon = what's still due today
 function updateAppBadge() {
   if (!navigator.setAppBadge) return;
-  const dp = dayProgress();
-  const n = (dp ? dp.total - dp.done : 0) + upcomingBills().filter(b => b.dd <= 0).length;
+  const iso = todayISO();
+  const left = habitsToday().filter(h => !(h.doneDays && h.doneDays[iso])).length + tasksForDate(iso).filter(t => !taskDone(t, iso)).length;
+  const n = left + upcomingBills().filter(b => b.dd <= 0).length;
   (n ? navigator.setAppBadge(n) : navigator.clearAppBadge()).catch(() => {});
 }
 
 // Small, earned celebrations — once each
 function celebrate(msg) {
   haptic(2);
-  toast(msg, { undo: false });
+  toast(msg);
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
   const box = document.createElement('div'); box.className = 'confetti';
   const cols = ['var(--accent)', 'var(--pos)', 'var(--warn)', 'var(--text-2)'];
@@ -4208,8 +4290,8 @@ function celebrate(msg) {
 function checkMilestones() {
   const iso = todayISO(), done = (S.systems.celebrated || (S.systems.celebrated = {}));
   const once = (key, msg) => { if (done[key]) return; done[key] = 1; save(false); celebrate(msg); };
-  const dp = dayProgress();
-  if (dp && dp.total >= 3 && dp.pct >= 1) once(iso + ':day', `Day cleared — ${dp.done}/${dp.total}`);
+  const dayItems = [...habitsToday().map(h => !!(h.doneDays && h.doneDays[iso])), ...tasksForDate(iso).map(t => taskDone(t, iso))];
+  if (dayItems.length >= 3 && dayItems.every(Boolean)) once(iso + ':day', `Day cleared — ${dayItems.length}/${dayItems.length}`);
   (S.systems.habits || []).forEach(h => {
     if (!(h.doneDays && h.doneDays[iso])) return;
     const n = habitStreak(h);
@@ -4227,7 +4309,7 @@ function checkMilestones() {
 /* ---------- quick add: one sheet for the things you log most ---------- */
 function quickAddSheet() {
   const iso = todayISO();
-  foodDate = iso; foodMeal = mealForNow(); foodPick = false;
+  const qaMeal = mealForNow();
   const rec = recentFoods(6);
   const hb = habitsToday().filter(h => !(h.doneDays && h.doneDays[iso]));
   openSheet(`<h3>Add</h3>
@@ -4236,10 +4318,10 @@ function quickAddSheet() {
       <button class="btn primary sm" data-act="qaSaveTask">Add</button>
     </div>
     <div class="qa-grid">
-      <button class="qa-tile" data-act="addFood">${ic('utensils')}<span>Food</span></button>
-      <button class="qa-tile" data-act="scanBarcode">${ic('barcode')}<span>Scan</span></button>
+      <button class="qa-tile" data-act="qaFoodSheet">${ic('utensils')}<span>Food</span></button>
+      <button class="qa-tile" data-act="qaScan">${ic('barcode')}<span>Scan</span></button>
       <button class="qa-tile" data-act="addTxn">${ic('card')}<span>Expense</span></button>
-      <button class="qa-tile" data-act="addEventOn" data-d="${iso}">${ic('calendar')}<span>Event</span></button>
+      <button class="qa-tile" data-act="addEventOn" data-d="${currentTab === 'calendar' ? calSel : iso}">${ic('calendar')}<span>Event</span></button>
       <button class="qa-tile" data-act="addSleep">${ic('moon')}<span>Sleep</span></button>
       <button class="qa-tile" data-act="addRun">${ic('footprints')}<span>Run</span></button>
       <button class="qa-tile" data-act="addNote">${ic('note')}<span>Note</span></button>
@@ -4247,18 +4329,18 @@ function quickAddSheet() {
     </div>
     <div class="card-label" style="margin:16px 0 8px">Water</div>
     <div class="qa-chips">${[250, 500, 750].map(ml => `<button class="chip qa-chip" data-act="qaWater" data-ml="${ml}">${ic('droplet')} +${ml} ml</button>`).join('')}</div>
-    ${rec.length ? `<div class="card-label" style="margin:16px 0 8px">Log again · ${foodMeal}</div>
+    ${rec.length ? `<div class="card-label" style="margin:16px 0 8px">Log again · ${qaMeal}</div>
       <div class="qa-chips">${rec.map(f => `<button class="chip qa-chip" data-act="qaFood" data-fid="${f.id}">${ic('plus')} ${esc(f.name)}</button>`).join('')}</div>` : ''}
     ${hb.length ? `<div class="card-label" style="margin:16px 0 8px">Habits left today</div>
       <div class="qa-chips">${hb.map(h => `<button class="chip qa-chip" data-act="qaHabit" data-id="${h.id}">${ic('check')} ${esc(h.text)}</button>`).join('')}</div>` : ''}`);
   const inp = $('#qa_task');
   inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); ACT.qaSaveTask(); } });
-  inp.focus({ preventScroll: true });
+  if (matchMedia('(hover: hover)').matches) inp.focus({ preventScroll: true });   // on a phone the keyboard would hide the tiles
 }
 
 /* ---------- search everything ---------- */
 function searchSheet() {
-  openSheet(`<h3>Search</h3>
+  openSheet(`<h3 class="sr-sheet">Search</h3>
     <input id="sr_q" type="search" placeholder="Tasks, events, notes, bills, food…" autocomplete="off" enterkeyhint="search" style="margin:8px 0 6px">
     <div id="sr_res"><div class="empty">Search across everything in Compass.</div></div>`);
   const q = $('#sr_q');
@@ -4270,13 +4352,16 @@ function renderSearch(q) {
   if (k.length < 2) { res.innerHTML = '<div class="empty">Search across everything in Compass.</div>'; return; }
   const hit = (...xs) => xs.some(x => nameKey(x).includes(k));
   const groups = [
-    ['Events', 'calendar', S.calendar.events.filter(e => hit(e.title, e.notes)).slice(0, 8).map(e => ({ t: e.title, s: [e.recurring ? 'Weekly' : fmtDay(e.date || todayISO()), evTime(e)].filter(Boolean).join(' · '), act: `data-act="editEvent" data-id="${e.id}"` }))],
+    ['Events', 'calendar', S.calendar.events.filter(e => hit(e.title, e.notes, e.category)).slice(0, 8).map(e => ({ t: e.title, s: [e.recurring ? 'Weekly' : fmtDay(e.date || todayISO()), evTime(e)].filter(Boolean).join(' · '), act: `data-act="editEvent" data-id="${e.id}"` }))],
     ['Tasks', 'check-circle', TASKS().filter(t => hit(t.text, t.cat)).slice(0, 8).map(t => ({ t: t.text, s: [t.date ? fmtDay(t.date) : t.scope, t.cat].filter(Boolean).join(' · '), act: `data-act="editTask" data-id="${t.id}"` }))],
     ['Habits', 'repeat', (S.systems.habits || []).filter(h => hit(h.text)).map(h => ({ t: h.text, s: h.time || '', act: `data-act="editHabit" data-id="${h.id}"` }))],
+    ['Goals', 'target', [...S.systems.goals.filter(g => hit(g.text)).map(g => ({ t: g.text, s: g.done ? 'Done' : 'Goal', act: `data-go="systems:goals"` })),
+      ...(S.systems.weekly || []).filter(m => hit(m.text)).map(m => ({ t: m.text, s: 'Weekly must-do', act: `data-go="systems:weekly"` })),
+      ...(S.money.goals || []).filter(g => hit(g.name)).map(g => ({ t: g.name, s: `${AUD(g.saved || 0, 0)} of ${AUD(g.target, 0)}`, act: `data-act="editMoneyGoal" data-id="${g.id}"` }))]],
     ['Notes', 'note', S.systems.notes.filter(n => hit(n.title, n.body)).slice(0, 8).map(n => ({ t: n.title || 'Untitled', s: (n.body || '').slice(0, 60), act: `data-act="openNote" data-id="${n.id}"` }))],
     ['Bills', 'receipt', S.money.bills.filter(b => hit(b.name)).map(b => ({ t: b.name, s: AUD(b.amount), act: `data-act="editBill" data-id="${b.id}"` }))],
-    ['Money', 'card', S.money.transactions.filter(t => hit(t.desc, t.category)).slice(-8).reverse().map(t => ({ t: t.desc, s: `${t.dir === 'in' ? '+' : '−'}${AUD(t.amount)} · ${t.date}`, act: `data-act="editTxn" data-id="${t.id}"` }))],
-    ['Food', 'utensils', [...MEALS_LIB().map(mealAsFood), ...FOOD().foods].filter(f => hit(f.name)).slice(0, 6).map(f => ({ t: f.name, s: foodLine(f), act: `data-act="pickFood" data-fid="${f.id}"` }))],
+    ['Money', 'card', S.money.transactions.filter(t => hit(t.desc, t.category)).slice(-8).reverse().map(t => ({ t: t.desc, s: `${t.dir === 'in' ? '+' : '−'}${AUD(t.amount)} · ${fmtDay(t.date)}`, act: `data-act="editTxn" data-id="${t.id}"` }))],
+    ['Food', 'utensils', [...MEALS_LIB().map(mealAsFood), ...FOOD().foods].filter(f => hit(f.name)).slice(0, 6).map(f => ({ t: f.name, s: foodLine(f), act: `data-act="searchFood" data-fid="${f.id}"` }))],
   ].filter(g => g[2].length);
   res.innerHTML = groups.map(([name, icon, rows]) => `<div class="card-label" style="margin:16px 0 4px">${name}</div>
     <div class="list">${rows.map(r => `<div class="item tap" ${r.act}><span class="att-ic">${ic(icon)}</span>
@@ -4288,11 +4373,13 @@ function renderSearch(q) {
 function initPullToRefresh() {
   const ptr = $('#ptr'); let y0 = null, dy = 0, busy = false;
   document.addEventListener('touchstart', e => {
-    if (busy || window.scrollY > 0 || $('#scrim').classList.contains('open') || $('#scanner') || e.target.closest('.hg-scroll, .weekstrip')) return;
+    if (busy || window.scrollY > 0 || arranging || dragItem || (typeof dragSec !== 'undefined' && dragSec) ||
+        $('#scrim').classList.contains('open') || $('#scanner') || e.target.closest('.hg-scroll, .weekstrip, .sleep-list, .pb-list')) return;
     y0 = e.touches[0].clientY; dy = 0;
   }, { passive: true });
   document.addEventListener('touchmove', e => {
     if (y0 == null) return;
+    if (Date.now() - swipeLockedAt < 400) { y0 = null; ptr.style.transform = ''; ptr.style.opacity = 0; return; }   // a row swipe owns this gesture
     dy = e.touches[0].clientY - y0;
     if (dy <= 0 || window.scrollY > 0) { ptr.style.transform = ''; ptr.classList.remove('ready'); return; }
     const p = Math.min(dy, 110);
@@ -4304,20 +4391,24 @@ function initPullToRefresh() {
     const go = dy > 80; y0 = null;
     if (!go) { ptr.style.transform = ''; ptr.style.opacity = 0; return; }
     busy = true; haptic(); ptr.classList.add('spin');
-    await Promise.allSettled([syncNow(), refreshPrices(), fetchWeather()]);
+    const jobs = [refreshPrices(), fetchWeather()];
+    if (syncEnabled()) jobs.push(pull().then(push));
+    const res = await Promise.allSettled(jobs);
     if (stravaLinked()) stravaImport(false);
     ptr.classList.remove('spin', 'ready'); ptr.style.transform = ''; ptr.style.opacity = 0; busy = false;
-    renderAll(); toast('Up to date', { undo: false });
+    renderAll();
+    toast(res.some(r => r.status === 'rejected') || !navigator.onLine ? "Couldn't refresh everything — check your connection" : 'Up to date', { undo: false });
   });
 }
 
 /* ---------- swipe a row left to delete (with Undo), right to tick ---------- */
+let swipeLockedAt = 0;
 function initSwipeRows() {
-  const SEL = '.food-entry, .check.task, .item[data-act="editTxn"]';
+  const SEL = '.food-entry, .check.task:not(.tgroup-head), .item[data-act="editTxn"]';
   let row = null, x0 = 0, y0 = 0, dx = 0, locked = null;
   document.addEventListener('touchstart', e => {
     const r = e.target.closest(SEL);
-    if (!r || arranging || dragItem) return;
+    if (!r || arranging || dragItem || r.closest('#scrim')) return;
     row = r; x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; dx = 0; locked = null;
   }, { passive: true });
   document.addEventListener('touchmove', e => {
@@ -4333,30 +4424,33 @@ function initSwipeRows() {
     if (!row) return;
     const r = row; row = null;
     r.style.transition = 'transform .2s ease';
+    const tick = r.querySelector('[data-act="toggleTask"]');
+    if (locked === 'x') swipeLockedAt = Date.now();
     if (locked === 'x' && dx < -80) {
       r.style.transform = 'translateX(-110%)';
-      const id = r.dataset.id || r.querySelector('[data-id]')?.dataset.id;
+      const id = r.matches('.check.task') ? tick?.dataset.id : (r.dataset.id || r.querySelector('[data-id]')?.dataset.id);
+      if (!id) { r.style.transform = ''; return; }
       setTimeout(() => {
         if (r.matches('.food-entry')) ACT.delFoodEntry({ id });
-        else if (r.matches('.check.task')) ACT.delTask({ id: r.querySelector('[data-act="toggleTask"]').dataset.id });
+        else if (r.matches('.check.task')) ACT.delTask({ id });
         else ACT.delTxn({ id });
         if (!$('#toast').classList.contains('show')) toast('Deleted', { undo: true });
         haptic();
       }, 160);
-    } else if (locked === 'x' && dx > 80 && r.matches('.check.task')) {
-      r.style.transform = ''; const b = r.querySelector('[data-act="toggleTask"]');
-      ACT.toggleTask(b.dataset, b);
+    } else if (locked === 'x' && dx > 80 && r.matches('.check.task') && tick) {
+      r.style.transform = '';
+      ACT.toggleTask(tick.dataset, tick);
     } else r.style.transform = '';
     r.classList.remove('swipe-del', 'swipe-done');
   });
 }
 
 /* toast */
-let toastTimer, toastCount = 0, lastChangeAt = 0;
+let toastTimer, toastCount = 0, lastChangeAt = 0, saveSeq = 0;
 // any toast straight after a change offers Undo
 function toast(msg, opts = {}) {
   const t = $('#toast'); toastCount++;
-  const canUndo = opts.undo !== false && (opts.undo || Date.now() - lastChangeAt < 1200) && undoStack.length;
+  const canUndo = !!opts.undo && undoStack.length > 0;
   t.innerHTML = `<span>${esc(msg)}</span>${canUndo ? '<button class="toast-undo">Undo</button>' : ''}`;
   t.style.pointerEvents = canUndo ? 'auto' : 'none';
   t.classList.add('show'); clearTimeout(toastTimer);
@@ -4364,8 +4458,8 @@ function toast(msg, opts = {}) {
 }
 $('#toast').addEventListener('click', e => {
   if (!e.target.closest('.toast-undo')) return;
-  undo(); haptic(); $('#toast').classList.remove('show');
-  if ($('#scrim').classList.contains('open')) closeSheet();
+  undo(); haptic();
+  if ($('#scrim').classList.contains('open') && !$('#fd_res')) closeSheet();   // a form for something that no longer exists
 });
 
 /* theme */
@@ -4482,7 +4576,7 @@ function seedBillsOnce() {
     }
   });
   localStorage.setItem('compass_seed_bills_v1', '1');
-  if (added) { save(); refreshBadges(); if (currentTab === 'money') renderMoney(); toast(`${added} bills added`); }
+  if (added) { save(); refreshBadges(); render(currentTab); toast(`${added} bills added`); }
 }
 
 function boot() {
