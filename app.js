@@ -588,14 +588,15 @@ function rollOverTasks() {
   TASKS().forEach(t => {
     if (t.scope !== 'day' || repeats(t) || t.done || !t.date || t.date >= today) return;
     const late = -daysTo(t.date);
-    if (late > 14) { Object.assign(t, { scope: 'inbox', date: '', week: '', month: '', start: '', end: '', rolled: 0 }); parked++; return; }
+    // a fortnight of carrying, in one jump or day by day, parks it
+    if ((t.rolled || 0) + late > 14) { Object.assign(t, { scope: 'inbox', date: '', week: '', month: '', start: '', end: '', rolled: 0 }); parked++; return; }
     t.rolled = (t.rolled || 0) + late;
     t.date = today; t.week = weekKey(); t.month = today.slice(0, 7);
     t.start = t.end = '';          // yesterday's slot has gone — it goes back in the tray
     moved++;
   });
   if (moved || parked) {
-    save();
+    save(); render(currentTab);
     toast([moved && `${moved} unfinished task${moved > 1 ? 's' : ''} carried to today`, parked && `${parked} old one${parked > 1 ? 's' : ''} parked in your Inbox`].filter(Boolean).join(' · '));
   }
   return moved + parked;
@@ -612,17 +613,28 @@ function mergeIv(iv) {
   return out;
 }
 const evSpan = e => { const s = hhmmToMin(e.start || e.time); if (s === null) return null;
-  let en = hhmmToMin(e.end); if (en === null) en = s + 60; if (en <= s) en = 24 * 60; return [s, en]; };
+  let en = hhmmToMin(e.end); if (en === null || en === s) en = s + 60; else if (en < s) en = 24 * 60; return [s, en]; };
+// a day's timed events, plus the after-midnight tail of last night's overnight ones
+function daySpans(iso) {
+  const out = eventsForDate(iso).map(x => { const sp = evSpan(x); return sp && { s: sp[0], e: sp[1], x }; }).filter(Boolean);
+  eventsForDate(shiftISO(iso, -1)).forEach(x => { const s = hhmmToMin(x.start || x.time), en = hhmmToMin(x.end);
+    if (s !== null && en !== null && 0 < en && en < s) out.push({ s: 0, e: en, x, spill: true }); });
+  return out;
+}
 // what's already spoken for on a day: events, plus (optionally) tasks that have a slot
 function busyIv(iso, withTasks) {
-  const iv = eventsForDate(iso).map(evSpan).filter(Boolean);
+  const iv = daySpans(iso).map(x => [x.s, x.e]);
   if (withTasks) tasksForDate(iso).filter(t => !taskDone(t, iso) && t.start).forEach(t => { const s = hhmmToMin(t.start); iv.push([s, hhmmToMin(t.end) > s ? hhmmToMin(t.end) : s + (num(t.est) || 30)]); });
   return mergeIv(iv);
 }
+// Settings' day start/end; an end at or before the start ('00:00') runs to midnight
+function workDay() {
+  const P = PLAN(), ws = hhmmToMin(P.dayStart) ?? 420, we = hhmmToMin(P.dayEnd) ?? 1320;
+  return [ws, we <= ws ? 24 * 60 : we];
+}
 // the window still open for planning today (from now), or the whole working day
 function planWindow(iso) {
-  const P = PLAN(); let ws = hhmmToMin(P.dayStart) ?? 420, we = hhmmToMin(P.dayEnd) ?? 1320;
-  if (we <= ws) we = 24 * 60;
+  let [ws, we] = workDay();
   const t = todayISO();
   if (iso === t) ws = Math.max(ws, Math.ceil(nowMin() / 15) * 15);
   else if (iso < t) ws = we;
@@ -661,7 +673,7 @@ function autoPlace(iso) {
 function clashes(iso, start, end, exceptId) {
   const s = hhmmToMin(start); if (s === null) return [];
   let e = hhmmToMin(end); if (e === null || e <= s) e = s + 60;
-  return eventsForDate(iso).filter(x => x.id !== exceptId).filter(x => { const sp = evSpan(x); return sp && sp[0] < e && s < sp[1]; });
+  return daySpans(iso).filter(x => x.x.id !== exceptId && x.s < e && s < x.e).map(x => x.x);
 }
 
 /* ---------- natural-language quick add ----------
@@ -825,25 +837,28 @@ const TL_PX = 54;                 // pixels per hour
 let placingTask = null;           // a tray task waiting for you to tap its time
 function tlItems(iso) {
   const out = [];
-  if (showEvents()) eventsForDate(iso).forEach(e => { const sp = evSpan(e); if (sp) out.push({ s: sp[0], e: sp[1], kind: 'ev', x: e }); });
-  if (showTasks()) tasksForDate(iso).filter(t => t.start).forEach(t => { const s = hhmmToMin(t.start); let e = hhmmToMin(t.end); if (e === null || e <= s) e = s + (num(t.est) || 30); out.push({ s, e, kind: 'tk', x: t }); });
-  if (showHabits()) habitsOnDate(iso).filter(h => hhmmToMin(h.time) !== null).forEach(h => { const s = hhmmToMin(h.time); out.push({ s, e: s + 20, kind: 'hb', x: h }); });
-  // overlapping blocks share the width: greedy columns within each cluster
+  if (showEvents()) daySpans(iso).forEach(sp => out.push({ ...sp, kind: 'ev' }));
+  if (showTasks()) tasksForDate(iso).filter(t => hhmmToMin(t.start) !== null).forEach(t => { const s = hhmmToMin(t.start); let e = hhmmToMin(t.end); if (e === null || e <= s) e = s + (num(t.est) || 30); out.push({ s, e: Math.min(e, 1440), kind: 'tk', x: t }); });
+  if (showHabits()) habitsOnDate(iso).filter(h => hhmmToMin(h.time) !== null).forEach(h => { const s = hhmmToMin(h.time); out.push({ s, e: Math.min(s + 20, 1440), kind: 'hb', x: h }); });
+  // overlapping blocks share the width: greedy columns within each cluster. A block
+  // is drawn at least 20px tall, so lay out by its drawn end (le), not its real one,
+  // or a 5-minute event sits on top of the next one
+  const minLen = Math.ceil(22 / TL_PX * 60);
+  out.forEach(it => { it.le = Math.max(it.e, it.s + minLen); });
   out.sort((a, b) => a.s - b.s || b.e - a.e);
   let cluster = [], cEnd = -1;
   const flush = () => { const n = Math.max(...cluster.map(c => c.col)) + 1; cluster.forEach(c => { c.n = n; }); cluster = []; };
   out.forEach(it => {
     if (it.s >= cEnd && cluster.length) flush();
-    const cols = cluster.filter(c => c.e > it.s).map(c => c.col);
+    const cols = cluster.filter(c => c.le > it.s).map(c => c.col);
     let col = 0; while (cols.includes(col)) col++;
-    it.col = col; cluster.push(it); cEnd = Math.max(cEnd, it.e);
+    it.col = col; cluster.push(it); cEnd = Math.max(cEnd, it.le);
   });
   if (cluster.length) flush();
   return out;
 }
 function plannerTimeline(iso) {
-  const items = tlItems(iso), P = PLAN();
-  const ws = hhmmToMin(P.dayStart) ?? 420, we = hhmmToMin(P.dayEnd) ?? 1320;
+  const items = tlItems(iso), [ws, we] = workDay();
   const h0 = Math.floor(Math.min(ws, ...items.map(i => i.s)) / 60);
   const h1 = Math.min(24, Math.ceil(Math.max(we, ...items.map(i => i.e)) / 60));
   const y = m => (m - h0 * 60) / 60 * TL_PX;
@@ -857,9 +872,10 @@ function plannerTimeline(iso) {
     const top = y(it.s), hgt = Math.max(20, y(it.e) - top - 2);
     const pos = `top:${top}px;height:${hgt}px;left:calc(${it.col} * (100% / ${it.n}));width:calc(100% / ${it.n} - 3px)`;
     const short = hgt < 34;
-    if (it.kind === 'ev') { const e = it.x;
+    if (it.kind === 'ev') { const e = it.x, en = hhmmToMin(e.end);
+      const when = it.spill ? `until ${fmtHM(e.end)}` : fmtHM(minToHM(it.s)) + (en !== null && en !== it.s ? '–' + fmtHM(e.end) : '');
       return `<div class="tl-blk ev ${short ? 'short' : ''} ${isToday && it.e <= nm ? 'past' : ''}" style="${pos};--cat:${catColor(e.category)}" data-act="editEvent" data-id="${e.id}">
-        <b>${esc(e.title)}</b>${short ? '' : `<span>${fmtHM(minToHM(it.s))}–${fmtHM(minToHM(it.e))}${e.g ? ' · Google' : ''}</span>`}</div>`; }
+        <b>${esc(e.title)}</b>${short ? '' : `<span>${when}${e.g ? ' · Google' : ''}</span>`}</div>`; }
     if (it.kind === 'tk') { const t = it.x, done = taskDone(t, iso);
       return `<div class="tl-blk tk ${done ? 'done' : ''} ${short ? 'short' : ''} ${t.pri ? 'p' + t.pri : ''}" style="${pos};--cat:${taskColor(t.cat)}" data-act="editTask" data-id="${t.id}">
         <span class="tl-box tap" data-act="toggleTask" data-id="${t.id}" data-d="${iso}">${TICK}</span>
@@ -899,6 +915,7 @@ function trayRow(t, iso) {
   </div>`;
 }
 function plannerDay() {
+  flushNote();
   const iso = calSel, isPast = iso < todayISO();
   const tray = showTasks() ? tasksForDate(iso).filter(t => !t.start && !taskDone(t, iso)).sort(taskRank) : [];
   const doneN = tasksForDate(iso).filter(t => taskDone(t, iso)).length;
@@ -923,7 +940,7 @@ function plannerDay() {
     ${showTasks() ? `<div class="section-head"><h3>To place <span class="muted small">${tray.length || ''}</span></h3><button class="link" data-act="addTask" data-scope="day" data-d="${iso}">+ Task</button></div>
     <div class="card tray">
       ${tray.map(t => trayRow(t, iso)).join('') || `<div class="empty">${tasksForDate(iso).length ? 'Everything is placed on the timeline.' : 'No tasks for this day. Type one in the + button — “Wax Hilux 2pm ~1h”.'}</div>`}
-      ${doneN ? `<div class="small muted" style="margin-top:8px">${doneN} done today</div>` : ''}
+      ${doneN ? `<div class="small muted" style="margin-top:8px">${doneN} done${iso === todayISO() ? ' today' : ''}</div>` : ''}
     </div>` : ''}
     <div class="section-head"><h3>Timeline</h3><span class="small muted">Tap a time to add</span></div>
     <div class="card tl-card">${plannerTimeline(iso)}</div>
@@ -940,25 +957,37 @@ function plannerDay() {
     </div>
     ${calSummaryCard()}`;
 }
-// "- [ ] something" lines in a day note that aren't already tasks on that day
+// "- [ ] something" lines in a day note that aren't already tasks on that day.
+// [ \t] not \s: \s crosses newlines, so an empty "- [ ] " swallowed the next line
 function noteTodos(iso) {
-  const have = new Set(tasksForDate(iso).map(t => titleKey(t)));
-  return ((PLAN().daily[iso] || '').match(/^[ \t]*[-*]?[ \t]*\[ \][ \t]*(.+)$/gm) || [])
-    .map(l => l.replace(/^[ \t]*[-*]?[ \t]*\[ \][ \t]*/, '').trim()).filter(x => x && !have.has(x.toLowerCase()));
+  const have = new Set(tasksForDate(iso).map(t => titleKey(t))), out = [];
+  for (const m of (PLAN().daily[iso] || '').matchAll(/^[ \t]*[-*]?[ \t]*\[ \][ \t]*(\S.*)$/gm)) {
+    const x = m[1].trim(), k = x.toLowerCase();
+    if (!have.has(k)) { have.add(k); out.push(x); }
+  }
+  return out;
 }
 // debounced save of the day note as you type
-let noteTimer = 0;
+let noteTimer = 0, notePending = null;
+function flushNote() {
+  clearTimeout(noteTimer); if (!notePending) return;
+  const { iso, v } = notePending; notePending = null;
+  if (v.trim()) PLAN().daily[iso] = v; else delete PLAN().daily[iso];
+  save();
+}
 document.addEventListener('input', e => {
   if (e.target.id !== 'dayNote') return;
-  const iso = e.target.dataset.d, v = e.target.value;
+  const iso = e.target.dataset.d;
+  notePending = { iso, v: e.target.value };
   clearTimeout(noteTimer);
   noteTimer = setTimeout(() => {
-    if (v.trim()) PLAN().daily[iso] = v; else delete PLAN().daily[iso];
-    save();
+    flushNote();
     const btn = $('[data-act="noteToTasks"]'), n = noteTodos(iso).length;
     if (btn) { btn.hidden = !n; btn.textContent = `Make ${n} task${n > 1 ? 's' : ''}`; }
   }, 700);
 });
+document.addEventListener('focusout', e => { if (e.target.id === 'dayNote') flushNote(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) flushNote(); });
 
 /* ---------- Plan my day: carried-over, inbox, load, then place ---------- */
 function planSheet(iso) {
@@ -5144,7 +5173,8 @@ function qaPreview() {
   box.innerHTML = inp.value.trim() ? quickChips(parseQuick(inp.value, qaForceKind)) : '';
 }
 document.addEventListener('input', e => { if (e.target.id === 'qa_task') qaPreview(); });
-const reopenPlan = iso => { save(); planSheet(iso || todayISO()); render(currentTab); };
+const planIso = () => $('#sheetBody [data-act="planDone"]')?.dataset.d || todayISO();
+const reopenPlan = () => { save(); planSheet(planIso()); render(currentTab); };
 const taskById = id => TASKS().find(t => t.id === id);
 function setTaskDay(t, iso) {
   t.scope = 'day'; t.date = iso; t.week = weekKey(parseISO(iso)); t.month = iso.slice(0, 7);
@@ -5157,7 +5187,7 @@ Object.assign(ACT, {
     if (placingTask) {
       const t = taskById(placingTask); placingTask = null;
       if (!t) return render(currentTab);
-      if (!taskRunsOn(t, iso)) setTaskDay(t, iso);
+      if (!repeats(t) && (t.scope !== 'day' || t.date !== iso)) setTaskDay(t, iso);
       t.start = d.t; t.end = minToHM(hhmmToMin(d.t) + (num(t.est) || 30));
       save(); haptic(); render(currentTab);
       const cl = clashes(iso, t.start, t.end);
@@ -5197,24 +5227,22 @@ Object.assign(ACT, {
   inboxToDay(d) { const t = taskById(d.id); if (!t) return; setTaskDay(t, d.d); save(); render(currentTab); toast(`${t.text} → ${fmtDay(d.d)}`, { undo: true }); },
   noteTemplate(d) { PLAN().daily[d.d] = PLAN().template; save(); render(currentTab); const ta = $('#dayNote'); if (ta) { ta.focus(); ta.setSelectionRange(ta.value.indexOf('- [ ] ') + 6, ta.value.indexOf('- [ ] ') + 6); } },
   noteToTasks(d) {
-    clearTimeout(noteTimer);
-    const ta = $('#dayNote'); if (ta && ta.dataset.d === d.d) { if (ta.value.trim()) PLAN().daily[d.d] = ta.value; }
+    flushNote();
     const list = noteTodos(d.d); if (!list.length) return;
     list.forEach(text => TASKS().push({ id: uid(), text, cat: '', scope: 'day', date: d.d, week: weekKey(parseISO(d.d)), month: d.d.slice(0, 7),
       repeat: 'none', days: [], start: '', end: '', est: 0, pri: 0, deadline: '', checklist: [], done: false, doneDays: {} }));
     save(); render(currentTab); toast(`${list.length} task${list.length > 1 ? 's' : ''} added to ${fmtDay(d.d)}`, { undo: true });
   },
   planMyDay(d) { planSheet(d.d || todayISO()); },
-  planKeep(d) { const t = taskById(d.id); if (t) t.rolled = 0; reopenPlan($('#sheetBody [data-act="planDone"]')?.dataset.d); },
-  planMove(d, el) {
+  planKeep(d) { const t = taskById(d.id); if (t) t.rolled = 0; reopenPlan(); },
+  planMove(d) {
     const t = taskById(d.id); if (!t) return;
-    const iso = $('#sheetBody .sheet-actions [data-act="planDone"]')?.dataset.d || todayISO();
     setTaskDay(t, d.d); t.start = t.end = '';
-    reopenPlan(iso);
+    reopenPlan();
   },
   planInbox(d) { const t = taskById(d.id); if (!t) return; Object.assign(t, { scope: 'inbox', date: '', week: '', month: '', start: '', end: '', rolled: 0 });
-    reopenPlan($('#sheetBody [data-act="planDone"]')?.dataset.d); },
-  planDrop(d) { const iso = $('#sheetBody [data-act="planDone"]')?.dataset.d; S.calendar.tasks = TASKS().filter(t => t.id !== d.id); reopenPlan(iso); toast('Dropped', { undo: true }); },
+    reopenPlan(); },
+  planDrop(d) { S.calendar.tasks = TASKS().filter(t => t.id !== d.id); reopenPlan(); toast('Dropped', { undo: true }); },
   planDone(d) { if (d.d === todayISO()) PLAN().plannedOn = d.d; save(); closeSheet(); render(currentTab); },
   planPlace(d) {
     if (d.d === todayISO()) PLAN().plannedOn = d.d;
@@ -5756,8 +5784,10 @@ function toast(msg, opts = {}) {
 }
 $('#toast').addEventListener('click', e => {
   if (!e.target.closest('.toast-undo')) return;
+  const plan = $('#scrim').classList.contains('open') && $('#sheetBody [data-act="planDone"]');
   undo(); haptic();
-  if ($('#scrim').classList.contains('open') && !$('#fd_res')) closeSheet();   // a form for something that no longer exists
+  if (plan) planSheet(plan.dataset.d);
+  else if ($('#scrim').classList.contains('open') && !$('#fd_res')) closeSheet();   // a form for something that no longer exists
 });
 
 /* theme */

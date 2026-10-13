@@ -1194,7 +1194,7 @@ html.rt-open, html.rt-open body { overflow: hidden; }
 .place-bar { position: sticky; top: calc(var(--safe-t) + 60px); z-index: 30; display: flex; align-items: center; gap: 10px; margin-top: var(--gap);
   padding: 10px 14px; border-radius: var(--radius); background: var(--accent); color: var(--on-accent); font-size: 14px; }
 .place-bar span { flex: 1; min-width: 0; }
-.place-bar .link { color: inherit; text-decoration: underline; font-weight: 600; }
+.place-bar .link { background: none; border: none; padding: 6px 2px; font: 600 14px var(--font); color: inherit; text-decoration: underline; cursor: pointer; }
 /* timeline */
 .tl-card { padding: 10px 10px 10px 4px; }
 .tl { position: relative; }
@@ -1209,7 +1209,7 @@ html.rt-open, html.rt-open body { overflow: hidden; }
 .tl-blk { position: absolute; z-index: 2; border-radius: 8px; padding: 4px 8px; overflow: hidden; cursor: pointer; font-size: 12px; line-height: 1.25;
   background: color-mix(in srgb, var(--cat) 16%, var(--surface)); border-left: 3px solid var(--cat); color: var(--text); }
 .tl-blk b { display: block; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tl-blk > span, .tl-blk .tl-tx > span { display: block; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl-blk > span:not(.tl-box), .tl-blk .tl-tx > span { display: block; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tl-blk.short { display: flex; align-items: center; padding-top: 1px; padding-bottom: 1px; }
 .tl-blk.past { opacity: .6; }
 .tl-blk.tk { background: var(--surface); border: 1.5px dashed color-mix(in srgb, var(--cat) 70%, var(--border-strong)); border-left: 3px solid var(--cat);
@@ -1230,6 +1230,7 @@ html.rt-open, html.rt-open body { overflow: hidden; }
   border-radius: 6px; padding: 4px 8px; font: 600 12px var(--font); cursor: pointer; }
 .day-note textarea { width: 100%; min-height: 120px; border: none; background: transparent; padding: 0; resize: vertical; font: 15px/1.5 var(--font); color: var(--text); outline: none; }
 .day-note .link.small, .day-note .small { margin-top: 6px; display: inline-block; }
+.day-note .link { background: none; border: none; padding: 4px 0; font: 500 13px var(--font); color: var(--accent); cursor: pointer; }
 /* quick add preview */
 .nl-prev:empty { display: none; }
 .nl-prev { margin: -6px 0 12px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--surface-2); }
