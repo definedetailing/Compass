@@ -678,23 +678,29 @@ function clashes(iso, start, end, exceptId) {
 
 /* ---------- natural-language quick add ----------
    "Gym tue 6-7am", "Detail Hilux sat 9am 3h $180 #work", "Call supplier tmrw p1",
-   "Essay due fri ~2h", "Lecture every mon and wed 10am". Anything with a time
-   becomes an event; without one, a task. Pieces it understands are pulled out
-   of the title and shown as chips while you type. */
+   "Essay due fri ~2h", "Lecture every mon and wed 10am", "Footy fri arvo 4",
+   "Night shift 10pm-6am". Anything with a time becomes an event; without one,
+   a task. Pieces it understands are pulled out of the title and shown as chips
+   while you type. */
 const NL_WD = { sun: 0, sunday: 0, mon: 1, monday: 1, tue: 2, tues: 2, tuesday: 2, wed: 3, weds: 3, wednesday: 3, thu: 4, thur: 4, thurs: 4, thursday: 4, fri: 5, friday: 5, sat: 6, saturday: 6 };
 const NL_MON = { jan: 0, january: 0, feb: 1, february: 1, mar: 2, march: 2, apr: 3, april: 3, may: 4, jun: 5, june: 5, jul: 6, july: 6, aug: 7, august: 7, sep: 8, sept: 8, september: 8, oct: 9, october: 9, nov: 10, november: 10, dec: 11, december: 11 };
 const WD_P = 'sun(?:day)?|mon(?:day)?|tue(?:s|sday)?|wed(?:s|nesday)?|thu(?:r|rs|rsday)?|fri(?:day)?|sat(?:urday)?';
 const MON_P = 'jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?';
-const DATE_P = `today|tonight|tomorrow|tmrw|tmr|next\\s+week|(?:next\\s+)?(?:${WD_P})|in\\s+\\d+\\s+(?:days?|weeks?)|\\d{1,2}\\/\\d{1,2}(?:\\/\\d{2,4})?|\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${MON_P})|(?:${MON_P})\\s+\\d{1,2}(?:st|nd|rd|th)?`;
-const TIME_P = '\\d{1,2}(?::\\d{2})?\\s*(?:am|pm|a|p)?';
+const REL_P = `today|tonight|tomorrow|tmrw|tmr|next\\s+week|(?:next\\s+)?(?:${WD_P})|in\\s+\\d+\\s+(?:days?|weeks?)`;
+const EXPL_P = `\\d{1,2}\\/\\d{1,2}(?:\\/\\d{2,4})?|\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${MON_P})|(?:${MON_P})\\s+\\d{1,2}(?:st|nd|rd|th)?|the\\s+\\d{1,2}(?:st|nd|rd|th)`;
+const DATE_P = `${REL_P}|${EXPL_P}`;
+const TIME_P = '\\d{1,2}(?:[:.]\\d{2})?\\s*(?:am|pm|a|p)?';
+const PLURAL_WD = '(?:sun|mon|tues|wednes|thurs|fri|satur)days';
 const CAT_WORDS = [
   [/\b(gym|workout|training|lift|legs day|push day|pull day)\b/i, 'Gym', 'Health'],
-  [/\b(shift|work|roster)\b/i, 'Work', 'Business'],
-  [/\b(detail|detailing|ceramic|polish|wash|cut and polish|customer|quote|invoice|supplier|define)\b/i, 'Work', 'Business'],
+  [/\b(shifts?|work|roster)\b/i, 'Work', 'Business'],
+  [/\b(detail|detailing|ceramic|polish|wash|cut and polish|paint correction|customer|quote|invoice|supplier|define|booking)\b/i, 'Work', 'Business'],
   [/\b(lecture|class|tutorial|tute|school|uni|exam|prac)\b/i, 'School', 'School'],
   [/\b(study|assignment|essay|homework|revision|revise|readings?)\b/i, 'Study', 'School'],
   [/\b(doctor|dentist|physio|run|swim)\b/i, 'Personal', 'Health'],
 ];
+// a $ amount on a Work event is pay, unless the words say you're the one paying
+const SPEND_WORDS = /\b(buy|bought|pay|order|purchase|supplies|fuel|petrol|parts|rego|rent)\b/i;
 function nlDate(s) {
   s = s.toLowerCase().replace(/\s+/g, ' ').trim();
   const t = todayISO();
@@ -713,79 +719,112 @@ function nlDate(s) {
   if ((m = /^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?$/.exec(s))) { const d = +m[1], mo = +m[2] - 1; const y = m[3] ? (m[3].length === 2 ? 2000 + +m[3] : +m[3]) : yearFor(mo, d); return mk(y, mo, d); }
   if ((m = /^(\d{1,2})(?:st|nd|rd|th)? ([a-z]+)$/.exec(s)) && m[2] in NL_MON) return mk(yearFor(NL_MON[m[2]], +m[1]), NL_MON[m[2]], +m[1]);
   if ((m = /^([a-z]+) (\d{1,2})(?:st|nd|rd|th)?$/.exec(s)) && m[1] in NL_MON) return mk(yearFor(NL_MON[m[1]], +m[2]), NL_MON[m[1]], +m[2]);
+  // "the 20th": this month, or next if it's already gone
+  if ((m = /^the (\d{1,2})(?:st|nd|rd|th)$/.exec(s))) { const now = parseISO(t), mo = now.getMonth() + (+m[1] < now.getDate() ? 1 : 0); return mk(now.getFullYear() + Math.floor(mo / 12), mo % 12, +m[1]); }
   return '';
 }
-// "6", "6:30", "6pm", "18:00" → minutes; `mer` overrides am/pm; bare 1–6 means afternoon
+// "6", "6:30", "6.30", "6pm", "18:00" → minutes; `mer` fills in a missing am/pm;
+// with neither, 1–6 means afternoon ("tute 2:30") unless written 24-hour ("06:00")
 function nlTime(s, merHint) {
-  const m = /^(\d{1,2})(?::(\d{2}))?\s*(am|pm|a|p)?$/i.exec(s.trim()); if (!m) return null;
+  const m = /^(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm|a|p)?$/i.exec(s.trim()); if (!m) return null;
   let h = +m[1]; const mi = +(m[2] || 0), mer = (m[3] || merHint || '').toLowerCase()[0];
   if (h > 23 || mi > 59) return null;
   if (mer === 'p' && h < 12) h += 12;
   else if (mer === 'a' && h === 12) h = 0;
-  else if (!mer && !m[2] && h >= 1 && h <= 6) h += 12;
+  else if (!mer && h >= 1 && h <= 6 && m[1][0] !== '0') h += 12;
   return h * 60 + mi;
 }
 const durMin = (n, u) => Math.round(parseFloat(n) * (/^h/i.test(u) ? 60 : 1));
+// removed pieces leave a marker so the title knows where they were: \u0001 any, \u0002 a part of the day, \u0003 a $ amount
+const NL_GONE = /[\u0001-\u0003]/g;
+const nlRestEmpty = t => !t.replace(new RegExp(`\\b(?:on\\s+)?(?:${DATE_P})\\b`, 'gi'), '').replace(NL_GONE, '').trim();
 function parseQuick(raw, forceKind) {
   let s = ' ' + raw + ' ';
-  const r = { kind: '', title: '', date: '', start: '', end: '', dur: 0, days: null, cat: '', pri: 0, deadline: '', est: 0, cost: 0, inbox: false, tags: [] };
-  const take = (re, fn) => { s = s.replace(re, (...a) => { const out = fn(...a); return out === false ? a[0] : ' '; }); };
-  take(/^\s*(todo|task|t:)\s+/i, () => { r.kind = 'task'; });
-  take(/^\s*(event|e:)\s+/i, () => { r.kind = 'event'; });
+  const r = { kind: '', title: '', date: '', start: '', end: '', dur: 0, days: null, cat: '', pri: 0, deadline: '', est: 0, cost: 0, earn: false, inbox: false, tags: [] };
+  const take = (re, fn) => { s = s.replace(re, (...a) => { const out = fn(...a); return out === false ? a[0] : typeof out === 'string' ? out : ' \u0001 '; }); };
+  take(/^\s*(?:(?:todo|task)(?::\s*|\s+)|t:\s*)/i, () => { r.kind = 'task'; });
+  take(/^\s*(?:event(?::\s*|\s+)|e:\s*)/i, () => { r.kind = 'event'; });
+  // "half 6", "quarter to 7" → clock times; "06:45" keeps quarter-to-7 in the morning
+  s = s.replace(/\s(half(?:\s+past)?|quarter\s+(?:past|to))\s+(\d{1,2})(?=\s|[ap])/gi, (m0, q, h) => {
+    h = +h; if (h < 1 || h > 12) return m0;
+    return /to$/i.test(q) ? ` ${h === 7 ? '06' : h === 1 ? 12 : h - 1}:45` : ` ${h}:${/^half/i.test(q) ? 30 : 15}`;
+  });
   take(/\s(someday|inbox|later)(?=\s)/i, () => { r.inbox = true; });
-  take(/\$\s?(\d+(?:\.\d{1,2})?)/, (_, n) => { r.cost = +n; });
+  take(/\$\s?(\d{1,3}(?:,\d{3})+|\d+)(\.\d{1,2})?/, (m0, n, dec) => { r.cost = +(n.replace(/,/g, '') + (dec || '')); r.costTxt = m0.replace(/\s/g, ''); return ' \u0003 '; });
   take(/\s(p[123])(?=\s)/i, (_, p) => { r.pri = +p[1]; });
   take(/\s(!{1,3})(?=\s)/, (_, x) => { r.pri = 4 - x.length; });
   take(/\s#([a-z]+)/i, (_, w) => {
     const all = [...Object.keys(CATS), ...Object.keys(TASK_CATS)], hit = all.find(c => c.toLowerCase().startsWith(w.toLowerCase()));
     if (!hit) return false; r.cat = hit;
   });
-  take(/\s(?:~|est\.?\s*)(\d+(?:\.\d+)?)\s*(h|hrs?|hours?|m|mins?|minutes?)(?=\s)/i, (_, n, u) => { r.est = durMin(n, u); });
+  take(/\s(?:~|est\.?\s*)(\d+(?:\.\d+)?)\s*(h|hrs?|hours?|m|mins?|minutes?)(?:(\d{1,2})(?:m|mins?)?)?(?=\s)/i, (_, n, u, x) => { r.est = durMin(n, u) + (/^h/i.test(u) ? +x || 0 : 0); });
   take(new RegExp(`\\s(?:due|by)\\s+(${DATE_P})(?=\\s)`, 'i'), (_, d) => { const x = nlDate(d); if (!x) return false; r.deadline = x; });
-  take(new RegExp(`\\s(?:every\\s+(day|weekday|weekend|(?:${WD_P})(?:\\s*(?:,|and|&)\\s*(?:${WD_P}))*)s?|(daily|weekdays|weekends|weekly))(?=\\s)`, 'i'), (_, a, b) => {
-    const w = (a || b).toLowerCase();
+  const WD_ITEM = `(?:${WD_P})s?`, SEP = '(?:\\s*(?:,|and|&)\\s*|\\s+)';
+  take(new RegExp(`\\s(?:every\\s+(day|weekday|weekend|${WD_ITEM}(?:${SEP}${WD_ITEM})*)s?|(daily|weekdays|weekends|weekly)|(${PLURAL_WD}(?:${SEP}${PLURAL_WD})*))(?:\\s+(arvo|afternoon|evening|night|morning))?(?=\\s)`, 'i'), (_, a, b, c, part) => {
+    const w = (a || b || c).toLowerCase();
     if (/^(day|daily)$/.test(w)) r.days = [];
     else if (/^weekdays?$/.test(w)) r.days = [1, 2, 3, 4, 5];
     else if (/^weekends?$/.test(w)) r.days = [0, 6];
     else if (w === 'weekly') r.days = 'weekly';
-    else r.days = w.split(/\s*(?:,|and|&)\s*/).map(x => NL_WD[x]).filter(x => x !== undefined);
+    else r.days = [...new Set(w.split(/\s*(?:,|and|&)\s*|\s+/).map(x => NL_WD[x] ?? NL_WD[x.replace(/s$/, '')]).filter(x => x !== undefined))].sort((x, y) => x - y);
+    if (part) { r.pod = /morning/i.test(part) ? 'a' : 'p'; return ' \u0002 '; }
   });
-  // a range: "6-7pm", "9am to 5pm", "from 2 till 4"
-  take(new RegExp(`\\s(from\\s+|at\\s+|@\\s*)?(${TIME_P})\\s*(?:-|–|to|till|until)\\s*(${TIME_P})(?=\\s)`, 'i'), (m0, pre, a, b, off, str) => {
+  // part of the day: "tonight", "this arvo", "tmrw morning", "fri night" — sets the day, and which half bare times fall in
+  take(new RegExp(`\\s(?:(this|today|tomorrow|tmrw|tmr|(?:next\\s+)?(?:${WD_P}))\\s+(arvo|afternoon|evening|night|morning)|(tonight|arvo))(?=\\s)`, 'i'), (_, day, part, solo) => {
+    const d = !day || /^this$/i.test(day) ? todayISO() : nlDate(day); if (!d) return false;
+    r.podDate = d; r.pod = /morning/i.test(part || '') ? 'a' : 'p';
+    return ' \u0002 ';
+  });
+  // a range: "6-7pm", "9am to 5pm", "from 2 till 4", "10pm-6am", "7pm-midnight"
+  take(new RegExp(`\\s(from\\s+|at\\s+|@\\s*)?(${TIME_P})\\s*(?:-|–|to|till|until)\\s*(${TIME_P}|noon|midday|midnight)(?=\\s)`, 'i'), (m0, pre, a, b, off, str) => {
+    const word = { noon: 'pm', midday: 'pm', midnight: 'am' }[b.toLowerCase()];
+    if (word) b = word === 'am' ? '12am' : '12pm';
     const mb = /(am|pm|a|p)\s*$/i.exec(b), ma = /(am|pm|a|p)\s*$/i.exec(a);
-    // "buy 2-3 towels" is a quantity: a bare range only counts as a time at the end of the line
-    if (!pre && !ma && !mb && !/:/.test(a + b) && str.slice(off + m0.length).replace(new RegExp(`\\b(?:on\\s+)?(?:${DATE_P})\\b`, 'gi'), '').trim()) return false;
-    let e = nlTime(b), st = nlTime(a, ma ? '' : mb ? mb[1] : '');
+    // "buy 2-3 towels", "pages 10-20" are quantities: a bare range is only a time at the end of the line, in clock hours
+    if (!pre && !ma && !mb && !/[:.]/.test(a + b) && (parseInt(a) > 12 || parseInt(b) > 12 || !nlRestEmpty(str.slice(off + m0.length)))) return false;
+    let st = nlTime(a, ma ? '' : word === 'am' ? 'pm' : mb ? mb[1] : r.pod), e = nlTime(b, mb ? '' : ma ? ma[1] : r.pod);
     if (st === null || e === null) return false;
-    if (!ma && mb && st > e) st -= 12 * 60;               // "11-1pm" → 11am–1pm
+    if (!ma && mb && st > e && word !== 'am') st -= 12 * 60;   // "11-1pm" → 11am–1pm, but "8-midnight" is 8pm
     if (st < 0) st += 12 * 60;
-    if (!mb && e <= st) e += 12 * 60;                     // "9-5" → 9am–5pm
-    if (e <= st || e > 24 * 60) return false;
+    if (e <= st && !mb && parseInt(b) <= 12 && b.trim()[0] !== '0' && e + 12 * 60 > st) e += 12 * 60;   // "9am-1" → 9am–1pm
+    if (e > 24 * 60) e -= 24 * 60;
+    // ending before the start means overnight: fine when spelled out ("4pm-2am"), otherwise only evening → morning
+    if (e === st || (e < st && !(ma && mb) && !(st >= 17 * 60 && e <= 12 * 60))) return false;
     r.start = minToHM(st); r.end = minToHM(Math.min(e, 1439));
   });
   if (!r.start) take(/\s(noon|midday|midnight)(?=\s)/i, (_, w) => { r.start = w.toLowerCase() === 'midnight' ? '00:00' : '12:00'; });
-  if (!r.start) take(new RegExp(`\\s(?:at\\s+|@\\s*)(${TIME_P})(?=\\s)|\\s(\\d{1,2}(?::\\d{2})?\\s*(?:am|pm))(?=\\s)|\\s(\\d{1,2}:\\d{2})(?=\\s)`, 'i'), (_, a, b, c) => {
-    const m = nlTime(a || b || c); if (m === null) return false; r.start = minToHM(m);
+  // a single time; a bare number counts straight after "tonight"/"arvo" ("movie tonight 9")
+  if (!r.start) take(new RegExp(`\\s(?:at\\s+|@\\s*|\u0002\\s+)(${TIME_P})(?=\\s)|\\s(\\d{1,2}(?:[:.]\\d{2})?\\s*(?:am|pm))(?=\\s)|\\s(\\d{1,2}[:.]\\d{2})(?=\\s)`, 'i'), (_, a, b, c) => {
+    const m = nlTime(a || b || c, r.pod); if (m === null) return false; r.start = minToHM(m);
   });
-  take(/\s(?:for\s+)?(\d+(?:\.\d+)?)\s*(h|hrs?|hours?)(?:\s*(\d+)\s*(?:m|mins?))?(?=\s)/i, (_, n, u, extra) => { r.dur = durMin(n, u) + (+extra || 0); });
-  if (!r.dur) take(/\s(?:for\s+)?(\d+)\s*(mins?|minutes?|m)(?=\s)/i, (_, n, u) => { r.dur = durMin(n, u); });
-  take(new RegExp(`\\s(?:on\\s+)?(${DATE_P})(?=\\s)`, 'i'), (_, d) => {
+  take(/\s(?:for\s+)?(\d+(?:\.\d+)?)\s*(h|hrs?|hours?)(?:\s*(\d{1,2})\s*(?:m|mins?|minutes?)|(\d{1,2}))?(?=\s)/i, (_, n, u, x, y) => { r.dur = durMin(n, u) + (+(x || y) || 0); });
+  // "order 3m tape": a bare "m" is metres unless it ends the line
+  if (!r.dur) take(/\s(for\s+)?(\d+)\s*(minutes?|mins?|m)(?=\s)/i, (m0, f, n, u, off, str) => {
+    if (!f && u.toLowerCase() === 'm' && !nlRestEmpty(str.slice(off + m0.length))) return false;
+    r.dur = +n;
+  });
+  // dates: an explicit one wins, and a weekday beside it ("sat 24 oct") is just dropped
+  take(new RegExp(`\\s(?:on\\s+)?(${EXPL_P})(?=\\s)`, 'i'), (_, d) => { const x = nlDate(d); if (!x) return false; r.date = x; });
+  take(new RegExp(`\\s(?:on\\s+)?(${REL_P})(?=\\s)`, 'i'), (_, d) => {
     const x = nlDate(d); if (!x) return false;
-    r.date = x;
-    if (/tonight/i.test(d)) r.evening = true;
+    if (r.date) { if (!(d.toLowerCase() in NL_WD)) return false; } else r.date = x;
   });
-  r.title = s.replace(/\s+/g, ' ').trim().replace(/^(at|on|from|by|for|-)\s+|\s+(at|on|from|by|for|-)$/gi, '').trim();
-  // "tonight at 7" is 7pm
-  if (r.evening && r.start && hhmmToMin(r.start) < 12 * 60) { r.start = addMinutes(r.start, 720); if (r.end && hhmmToMin(r.end) < 12 * 60) r.end = addMinutes(r.end, 720); }
-  if (r.start && !r.end && r.dur) r.end = minToHM(Math.min(hhmmToMin(r.start) + r.dur, 1439));
+  if (!r.date && r.podDate) r.date = r.podDate;
+  if (r.start && !r.end && r.dur) { const e = hhmmToMin(r.start) + r.dur; r.end = minToHM(e > 24 * 60 ? e - 24 * 60 : Math.min(e, 1439)); }
   if (!r.est && r.dur && !r.start) r.est = r.dur;
   if (r.days === 'weekly') r.days = [parseISO(r.date || todayISO()).getDay()];
   if (!r.kind) r.kind = forceKind || (r.start ? 'event' : 'task');
   if (forceKind) r.kind = forceKind;
+  // a task has nowhere to keep money, so a $ amount stays in its name
+  if (r.kind === 'task' && r.cost) { s = s.replace('\u0003', ` ${r.costTxt} `); r.cost = 0; }
+  r.title = s.replace(/(^|\s)(?:at|on|from|by|for|@|-)(?=\s+[\u0001-\u0003])/gi, ' ').replace(NL_GONE, ' ').replace(/\s+/g, ' ').trim().replace(/^-\s+|\s+-$/g, '');
+  // "Sat exam prep" → "Exam prep" when the typed line started with a capital
+  if (/^\s*\p{Lu}/u.test(raw)) r.title = r.title.replace(/^\p{Ll}/u, c => c.toUpperCase());
   // category: a #tag wins, otherwise a guess from the words
   const hit = CAT_WORDS.find(([re]) => re.test(r.title));
   if (r.kind === 'event') { if (!(r.cat in CATS)) r.cat = (hit && hit[1]) || ''; }
   else if (!(r.cat in TASK_CATS)) r.cat = r.cat === 'Gym' ? 'Health' : r.cat === 'Study' ? 'School' : r.cat === 'Work' ? 'Business' : (hit && hit[2]) || '';
+  r.earn = r.kind === 'event' && r.cat === 'Work' && !SPEND_WORDS.test(r.title);
   return r;
 }
 function quickChips(r) {
@@ -800,7 +839,7 @@ function quickChips(r) {
   if (r.pri) c.push(`<span class="nl-chip pri p${r.pri}">${ic('flag', 'xs')} ${PRI[r.pri]}</span>`);
   if (r.deadline) c.push(`<span class="nl-chip">${ic('flag', 'xs')} Due ${esc(fmtDay(r.deadline))}</span>`);
   if (r.est && r.kind === 'task') c.push(`<span class="nl-chip">~${estLabel(r.est)}</span>`);
-  if (r.cost) c.push(`<span class="nl-chip">${r.kind === 'event' && r.cat === 'Work' ? 'Earns ' : ''}${AUD(r.cost, r.cost % 1 ? 2 : 0)}</span>`);
+  if (r.cost) c.push(`<span class="nl-chip">${r.earn ? 'Earns ' : ''}${AUD(r.cost, r.cost % 1 ? 2 : 0)}</span>`);
   return `<div class="nl-title">${r.title ? esc(r.title) : '<span class="muted">Add a name…</span>'}</div><div class="nl-chips">${c.join('')}</div>`;
 }
 // turn a parse into real items; returns a toast message
@@ -810,8 +849,8 @@ function commitQuick(r) {
   if (r.kind === 'event') {
     const days = r.days ? (r.days.length ? r.days : [0, 1, 2, 3, 4, 5, 6]) : null;
     const base = { title: r.title, category: r.cat || 'Personal', start: r.start, end: r.end || (r.start ? addMinutes(r.start, 60) : ''),
-      // on a Work event the dollar amount is what you're paid, not a cost
-      cost: r.cat === 'Work' ? 0 : r.cost, notes: '', rate: 0, earned: r.cat === 'Work' ? r.cost : 0,
+      // on a Work event the dollar amount is what you're paid, not a cost (see SPEND_WORDS)
+      cost: r.earn ? 0 : r.cost, notes: '', rate: 0, earned: r.earn ? r.cost : 0,
       studyFor: r.cat === 'Study' ? 'School' : '', mtime: Date.now() };
     const made = days
       ? days.map(wd => ({ id: uid(), ...base, recurring: true, date: null, weekday: wd }))
@@ -819,7 +858,8 @@ function commitQuick(r) {
     made.forEach(ev => { S.calendar.events.push(ev); syncEventCost(ev); });
     const cl = !days && r.start ? clashes(date, base.start, base.end, made[0].id) : [];
     gcalSoon();
-    return `${days ? `${r.title} — every ${taskRepeatLabel({ repeat: 'days', days: r.days }).toLowerCase()}` : `${r.title} · ${fmtDay(date)}${r.start ? ' ' + fmtHM(r.start) : ''}`}${cl.length ? ` · clashes with ${cl[0].title}` : ''}`;
+    const lbl = days ? taskRepeatLabel({ repeat: 'days', days: r.days }).toLowerCase() : '';
+    return `${days ? `${r.title} — ${/^(every|week)/.test(lbl) ? lbl : 'every ' + lbl}` : `${r.title} · ${fmtDay(date)}${r.start ? ' ' + fmtHM(r.start) : ''}`}${cl.length ? ` · clashes with ${cl[0].title}` : ''}`;
   }
   const inbox = r.inbox && !r.date && !r.days;
   const rep = r.days ? 'days' : 'none';
