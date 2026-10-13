@@ -207,6 +207,8 @@ function defaultState() {
     settings: { theme: 'auto', pinHash: null, weatherOn: true, notify: false },
     calendar: { events: [], tasks: [] },
     planner: { daily: {}, template: DAILY_TEMPLATE, dayStart: '07:00', dayEnd: '22:00', plannedOn: '' },
+    // Ideas: notes in folders + whiteboards (ideas-notes.js / ideas-board.js)
+    ideas: { mig: 0, folders: [], notes: [], boards: [] },
     gcal: { on: false, email: '', cals: {}, writeCal: '', linked: {}, lastSync: 0, err: '' },
     health: {
       splits: [
@@ -288,6 +290,19 @@ let syncCfg = loadSync();
 let quoteCache = {};   // symbol -> {price, prev, name, ts}
 let weatherCache = null;
 
+// every state that comes in (this device, the cloud, undo, a backup) goes through here,
+// so old shapes are upgraded wherever they arrive from
+function fresh(x) { return migrateIdeas(deepMerge(defaultState(), x)); }
+// the old flat Systems notes move into Ideas › Notes once (first line = title)
+function migrateIdeas(s) {
+  const I = s.ideas;
+  if (!I.mig) {
+    (s.systems.notes || []).forEach(n => I.notes.push({ id: n.id, folder: null,
+      body: [n.title, n.body].filter(Boolean).join('\n'), pin: false, c: n.updatedAt || Date.now(), u: n.updatedAt || Date.now() }));
+    s.systems.notes = []; I.mig = 1;
+  }
+  return s;
+}
 function load() {
   try {
     const raw = localStorage.getItem(LS_KEY);
@@ -296,14 +311,14 @@ function load() {
     localStorage.setItem(LS_KEY + '_backup', raw);   // keep a last-known-good copy
     // deepMerge over a fresh default = any NEW fields a new version adds get defaults,
     // while every existing value the user has is preserved (safe schema upgrade).
-    return deepMerge(defaultState(), parsed);
+    return fresh(parsed);
   } catch (e) {
     console.warn('load failed, trying backup', e);
     return recoverBackup() || defaultState();
   }
 }
 function recoverBackup() {
-  try { const b = localStorage.getItem(LS_KEY + '_backup'); return b ? deepMerge(defaultState(), JSON.parse(b)) : null; }
+  try { const b = localStorage.getItem(LS_KEY + '_backup'); return b ? fresh(JSON.parse(b)) : null; }
   catch { return null; }
 }
 function deepMerge(base, over) {
@@ -342,7 +357,7 @@ function save(touch = true) {
 }
 function applyState(json) {
   const celebrated = S.systems.celebrated, prev = S;   // "once" means once, even across undo
-  S = deepMerge(defaultState(), JSON.parse(json));
+  S = fresh(JSON.parse(json));
   if (celebrated) S.systems.celebrated = celebrated;
   gcalAfterUndo(prev);
   S.updatedAt = Date.now();
@@ -388,7 +403,8 @@ function localIsEmpty() {
   return s.calendar.events.length === 0 && s.money.holdings.length === 0 &&
     s.money.transactions.length === 0 && s.health.runs.length === 0 && s.health.sleep.length === 0 &&
     Object.keys(s.health.water.log).length === 0 && s.systems.goals.length === 0 &&
-    s.systems.notes.length === 0 && !(s.systems.focus || '').trim();
+    s.systems.notes.length === 0 && !(s.systems.focus || '').trim() &&
+    !(s.ideas && (s.ideas.notes.length || s.ideas.boards.length));
 }
 async function pull() {
   if (!syncEnabled()) { setSyncDot('off'); pulledOnce = true; return; }
@@ -401,7 +417,7 @@ async function pull() {
     // adopt the cloud copy if it's newer OR if this device has no user data yet
     // (prevents a fresh/blank device from clobbering good cloud data)
     if (remote && remote.state && ((remote.state.updatedAt || 0) > (S.updatedAt || 0) || localIsEmpty())) {
-      S = deepMerge(defaultState(), remote.state);
+      S = fresh(remote.state);
       undoStack = []; redoStack = []; updateHistoryButtons();   // never undo back over another device's data
       lastSavedJSON = JSON.stringify(S);
       save(false);
@@ -2435,8 +2451,8 @@ function arrangeHeader(tab) {
   return `<button class="link" data-act="toggleArrange" data-tab="${tab}">${arranging ? 'Done' : 'Arrange'}</button>`;
 }
 
-function renderAll() { render(currentTab); refreshBadges(); updateAppBadge(); }
-const TAB_TITLE = { home: 'Today', calendar: 'Calendar', health: 'Health', money: 'Money', systems: 'Systems' };
+function renderAll() { render(currentTab); refreshBadges(); updateAppBadge(); document.dispatchEvent(new Event('compass:render')); }
+const TAB_TITLE = { home: 'Today', calendar: 'Calendar', health: 'Health', money: 'Money', systems: 'Systems', ideas: 'Ideas' };
 const tabScroll = {};   // each tab remembers where you were
 function render(tab) {
   // re-rendering the tab you're on (after ticking something) keeps your place;
@@ -2450,7 +2466,7 @@ function render(tab) {
   const bn = $('#brandName'); if (bn) bn.textContent = TAB_TITLE[tab] || 'Compass';
   // a background re-render (sync) mid-sentence in the day note mustn't drop the keyboard or the unsaved words
   const ae = document.activeElement, note = !switching && ae && ae.id === 'dayNote' ? { d: ae.dataset.d, v: ae.value, s: ae.selectionStart, e: ae.selectionEnd } : null;
-  ({ home: renderHome, calendar: renderCalendar, health: renderHealth, money: renderMoney, systems: renderSystems }[tab])();
+  ({ home: renderHome, calendar: renderCalendar, health: renderHealth, money: renderMoney, systems: renderSystems, ideas: renderIdeas }[tab])();
   const ta = $('#dayNote');
   if (ta) {
     if (note && ta.dataset.d === note.d) { ta.value = note.v; ta.focus({ preventScroll: true }); ta.setSelectionRange(note.s, note.e); }
@@ -2478,11 +2494,13 @@ const SEGS = {
   health:  [['food', 'Food'], ['body', 'Body'], ['train', 'Training']],
   money:   [['spend', 'Spending'], ['bills', 'Bills'], ['wealth', 'Wealth']],
   systems: [['habits', 'Habits'], ['goals', 'Goals'], ['review', 'Review']],
+  ideas:   [['notes', 'Notes'], ['board', 'Whiteboard']],
 };
 const SEG_OF = {
   health:  { food: 'food', foodStats: 'food', water: 'body', sleep: 'body', split: 'train', runs: 'train', pbs: 'train' },
   money:   { tracker: 'spend', budgets: 'spend', bills: 'bills', value: 'wealth', chart: 'wealth', holdings: 'wealth', goals: 'wealth' },
-  systems: { habits: 'habits', badday: 'habits', focus: 'goals', goals: 'goals', weekly: 'goals', review: 'review', notes: 'review' },
+  systems: { habits: 'habits', badday: 'habits', focus: 'goals', goals: 'goals', weekly: 'goals', review: 'review' },
+  ideas:   { notes: 'notes', board: 'board' },
 };
 const segOf = tab => { const v = (S.settings.seg || {})[tab]; return SEGS[tab].some(s => s[0] === v) ? v : SEGS[tab][0][0]; };
 function segBar(tab) {
@@ -2628,6 +2646,80 @@ function renderHome() {
     ${brief}
   `;
 }
+
+/* ---------- IDEAS ----------
+   Notes (ideas-notes.js) and Whiteboard (ideas-board.js). Each module draws its
+   page into #ideasBody; open notes/boards are full-screen overlays outside the
+   view, so a background re-render never closes them. */
+function renderIdeas() {
+  const seg = segOf('ideas');
+  $('#view-ideas').innerHTML = segBar('ideas') + '<div id="ideasBody" class="ideas-body"></div>';
+  const fn = seg === 'board' ? window.renderIdeasBoard : window.renderIdeasNotes;
+  if (typeof fn === 'function') fn($('#ideasBody'));
+}
+
+/* ---------- photos for Ideas ----------
+   Compressed on the device (long edge 1600px JPEG), kept in IndexedDB, and copied to
+   /api/img (one KV key each) when cloud sync is on, so other devices can fetch them.
+   Never stored in S — S only holds the image id. */
+const IMG_DB = 'compass-img', IMG_MAX = 1600;
+let imgDBp = null;
+const imgDB = () => imgDBp || (imgDBp = new Promise((res, rej) => {
+  const r = indexedDB.open(IMG_DB, 1);
+  r.onupgradeneeded = () => { r.result.createObjectStore('img'); r.result.createObjectStore('pending'); };
+  r.onsuccess = () => res(r.result); r.onerror = () => { imgDBp = null; rej(r.error); };
+}));
+const idbDo = async (store, mode, fn) => { const db = await imgDB(); return new Promise((res, rej) => {
+  const tx = db.transaction(store, mode), req = fn(tx.objectStore(store));
+  tx.oncomplete = () => res(req && req.result); tx.onerror = () => rej(tx.error); }); };
+const imgURLs = new Map();
+// a picked File → resized JPEG Blob ({blob, w, h})
+async function imgCompress(file, max = IMG_MAX) {
+  const bmp = await (window.createImageBitmap ? createImageBitmap(file) : new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = URL.createObjectURL(file); }));
+  const k = Math.min(1, max / Math.max(bmp.width, bmp.height)), w = Math.round(bmp.width * k), h = Math.round(bmp.height * k);
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  c.getContext('2d').drawImage(bmp, 0, 0, w, h);
+  const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', 0.8));
+  return { blob, w, h };
+}
+const blobToB64 = b => new Promise(res => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1]); r.readAsDataURL(b); });
+// save a picked photo; returns {id, w, h}. Upload happens in the background.
+async function imgPut(file) {
+  const { blob, w, h } = await imgCompress(file);
+  const id = uid();
+  await idbDo('img', 'readwrite', st => st.put(blob, id));
+  await idbDo('pending', 'readwrite', st => st.put(1, id));
+  imgUploadPending();
+  return { id, w, h };
+}
+// an object URL for an image id: this device's copy, else fetched from the cloud
+async function imgURL(id) {
+  if (imgURLs.has(id)) return imgURLs.get(id);
+  let blob = await idbDo('img', 'readonly', st => st.get(id)).catch(() => null);
+  if (!blob && syncEnabled()) {
+    const r = await fetch('/api/img?id=' + encodeURIComponent(id), { headers: { 'x-sync-key': syncCfg.key } }).catch(() => null);
+    if (r && r.ok) { blob = await r.blob(); idbDo('img', 'readwrite', st => st.put(blob, id)).catch(() => {}); }
+  }
+  if (!blob) return '';
+  const u = URL.createObjectURL(blob); imgURLs.set(id, u); return u;
+}
+let imgUploading = false;
+async function imgUploadPending() {
+  if (imgUploading || !syncEnabled() || !navigator.onLine) return;
+  imgUploading = true;
+  try {
+    const ids = await idbDo('pending', 'readonly', st => st.getAllKeys());
+    for (const id of ids || []) {
+      const blob = await idbDo('img', 'readonly', st => st.get(id));
+      if (!blob) { await idbDo('pending', 'readwrite', st => st.delete(id)); continue; }
+      const r = await fetch('/api/img', { method: 'POST', headers: { 'content-type': 'application/json', 'x-sync-key': syncCfg.key },
+        body: JSON.stringify({ id, type: 'image/jpeg', data: await blobToB64(blob) }) });
+      if (r.ok) await idbDo('pending', 'readwrite', st => st.delete(id)); else break;
+    }
+  } catch (e) { console.warn('img upload', e); }
+  finally { imgUploading = false; }
+}
+window.addEventListener('online', imgUploadPending);
 
 /* ---------- CALENDAR ---------- */
 function renderCalendar() {
@@ -3370,15 +3462,6 @@ function renderSystems() {
       </div>` : ''}
     </div>` });
 
-  B.push({ key:'notes', name:'Notes', html: `
-    <div class="section-head"><h3>Notes</h3><button class="link" data-act="addNote">+ Note</button></div>
-    <div class="card"><div class="list">
-      ${S.systems.notes.slice().sort((a,b)=>b.updatedAt-a.updatedAt).map(n => `
-        <div class="item tap" data-act="openNote" data-id="${n.id}">
-          <div class="body"><div class="t">${esc(n.title||'Untitled')}</div><div class="s">${esc((n.body||'').slice(0,60))}</div></div>
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--text-3)" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg>
-        </div>`).join('') || `<div class="empty">No notes yet</div>`}
-    </div></div>` });
 
   $('#view-systems').innerHTML =
     segBar('systems') + segBlocks('systems', B);
@@ -5092,23 +5175,10 @@ const ACT = {
   },
 
   /* ----- systems: notes ----- */
-  addNote() { ACT.openNote({ id: '' }); },
-  openNote(d) {
-    const n = S.systems.notes.find(x=>x.id===d.id) || { title: '', body: '' };
-    sheetForm('Note','',
-      field('Title','n_title',{val:n.title,ph:'Title'}) +
-      field('Body','n_body',{type:'textarea',val:n.body,ph:'Write…'}),
-      { save:'saveNote', id:d.id, del: d.id ? 'delNote' : '' });
-    const t = $('#n_body'); if (t) t.style.minHeight = '200px';
-  },
-  saveNote(d) {
-    if (!val('n_title') && !val('n_body')) { closeSheet(); return; }
-    let n = S.systems.notes.find(x=>x.id===d.id);
-    if (!n) { n = { id: uid() }; S.systems.notes.push(n); }
-    n.title = val('n_title'); n.body = val('n_body'); n.updatedAt = Date.now();
-    save(); closeSheet(); render(currentTab);
-  },
-  delNote(d) { S.systems.notes = S.systems.notes.filter(x=>x.id!==d.id); save(); closeSheet(); render(currentTab); },
+  addNote() { closeSheet(); go('ideas', 'notes'); if (typeof ideasNewNote === 'function') ideasNewNote(null); },
+  openIdeaNote(d) { closeSheet(); if (typeof ideasOpenNote === 'function') ideasOpenNote(d.id); },
+  openIdeaBoard(d) { closeSheet(); go('ideas', 'board'); if (typeof ideasOpenBoard === 'function') ideasOpenBoard(d.id, d.obj); },
+  openNote(d) { ACT.openIdeaNote(d); },
 
   /* ----- systems: habit reminders ----- */
   addHabit() { ACT.editHabit({ id:'' }); },
@@ -5563,7 +5633,7 @@ ACT.exportData = function () {
 ACT.importData = function () {
   const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'application/json';
   inp.onchange = () => { const f = inp.files[0]; if (!f) return; const r = new FileReader();
-    r.onload = () => { try { S = deepMerge(defaultState(), JSON.parse(r.result)); save(); closeSheet(); renderAll(); toast('Imported'); } catch { toast('Invalid file'); } };
+    r.onload = () => { try { S = fresh(JSON.parse(r.result)); save(); closeSheet(); renderAll(); toast('Imported'); } catch { toast('Invalid file'); } };
     r.readAsText(f); };
   inp.click();
 };
@@ -5598,7 +5668,7 @@ $('#btnSearch').addEventListener('click', () => ACT.search());
 $('#btnAdd').addEventListener('click', () => ACT.quickAdd());
 $('#fab').addEventListener('click', () => { haptic(); ACT.quickAdd(); });
 document.addEventListener('keydown', e => {
-  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && !e.target.closest('input, textarea, [contenteditable]')) { e.preventDefault(); e.shiftKey ? redo() : undo(); }
 });
 
 // bound inputs (focus textarea)
@@ -5883,7 +5953,8 @@ function renderSearch(q) {
     ['Goals', 'target', [...S.systems.goals.filter(g => hit(g.text)).map(g => ({ t: g.text, s: g.done ? 'Done' : 'Goal', act: `data-go="systems:goals"` })),
       ...(S.systems.weekly || []).filter(m => hit(m.text)).map(m => ({ t: m.text, s: 'Weekly must-do', act: `data-go="systems:weekly"` })),
       ...(S.money.goals || []).filter(g => hit(g.name)).map(g => ({ t: g.name, s: `${AUD(g.saved || 0, 0)} of ${AUD(g.target, 0)}`, act: `data-act="editMoneyGoal" data-id="${g.id}"` }))]],
-    ['Notes', 'note', S.systems.notes.filter(n => hit(n.title, n.body)).slice(0, 8).map(n => ({ t: n.title || 'Untitled', s: (n.body || '').slice(0, 60), act: `data-act="openNote" data-id="${n.id}"` }))],
+    ['Notes', 'note', typeof ideasSearch === 'function' ? ideasSearch(q).slice(0, 8) : []],
+    ['Whiteboards', 'sticky', typeof ideasBoardSearch === 'function' ? ideasBoardSearch(q).slice(0, 6) : []],
     ['Bills', 'receipt', S.money.bills.filter(b => hit(b.name)).map(b => ({ t: b.name, s: AUD(b.amount), act: `data-act="editBill" data-id="${b.id}"` }))],
     ['Money', 'card', S.money.transactions.filter(t => hit(t.desc, t.category)).slice(-8).reverse().map(t => ({ t: t.desc, s: `${t.dir === 'in' ? '+' : '−'}${AUD(t.amount)} · ${fmtDay(t.date)}`, act: `data-act="editTxn" data-id="${t.id}"` }))],
     ['Food', 'utensils', [...MEALS_LIB().map(mealAsFood), ...FOOD().foods].filter(f => hit(f.name)).slice(0, 6).map(f => ({ t: f.name, s: foodLine(f), act: `data-act="searchFood" data-fid="${f.id}"` }))],
@@ -5899,7 +5970,7 @@ function initPullToRefresh() {
   const ptr = $('#ptr'); let y0 = null, dy = 0, busy = false;
   document.addEventListener('touchstart', e => {
     if (busy || window.scrollY > 0 || arranging || dragItem || (typeof dragSec !== 'undefined' && dragSec) ||
-        $('#scrim').classList.contains('open') || $('#scanner') || document.documentElement.classList.contains('rt-open') || e.target.closest('.hg-scroll, .weekstrip, .sleep-list, .pb-list')) return;
+        $('#scrim').classList.contains('open') || $('#scanner') || document.documentElement.classList.contains('rt-open') || document.documentElement.classList.contains('ideas-open') || e.target.closest('.hg-scroll, .weekstrip, .sleep-list, .pb-list')) return;
     y0 = e.touches[0].clientY; dy = 0;
   }, { passive: true });
   document.addEventListener('touchmove', e => {
@@ -6077,6 +6148,7 @@ function startApp() {
   checkReminders();
   refreshBadges();
   checkHabitReminders();
+  imgUploadPending();
   // finish a Strava connect, or top up runs if it's been a while since the last import
   stravaHandleCallback().then(handled => {
     if (handled || !stravaLinked()) return;
@@ -6154,4 +6226,4 @@ document.addEventListener('visibilitychange', () => {
   pull().then(() => { rollOverTasks(); if (Date.now() - (GCAL().lastSync || 0) > 2 * 60e3) gcalSync(); });
   checkReminders(); checkHabitReminders();
 });
-boot();
+// boot() is called from index.html once ideas-notes.js / ideas-board.js have loaded

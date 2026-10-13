@@ -5,6 +5,7 @@ Serves the static app AND emulates the two Vercel functions:
   /api/quote  -> live Yahoo Finance quotes (same behaviour as api/quote.js)
   /api/sync   -> file-backed sync store   (same contract as api/sync.js)
   /api/food   -> Open Food Facts search    (same behaviour as api/food.js)
+  /api/img    -> photo store for Ideas      (same contract as api/img.js)
   /api/gcal   -> a FAKE Google Calendar      (same contract as api/gcal.js)
 
 On Vercel, the real api/*.js functions handle these. Run locally with:
@@ -291,6 +292,12 @@ def gcal_mock(h, body):
         return h._json(200, {"ok": True})
     return h._json(400, {"error": "unknown action"})
 
+# ---------- /api/img: photos for Ideas, one file each (same contract as api/img.js) ----------
+IMG_DIR = os.path.join(HERE, ".img-store")
+import re as _re, base64 as _b64
+def _img_ok(i):
+    return isinstance(i, str) and _re.fullmatch(r"[a-z0-9]{6,32}", i or "") is not None
+
 class H(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **k):
         super().__init__(*a, directory=HERE, **k)
@@ -354,6 +361,21 @@ class H(http.server.SimpleHTTPRequestHandler):
                 return self._json(200, {"products": food_rank(food_search(q))})
             except Exception:
                 return self._json(502, {"error": "food database unavailable"})
+        if self.path.startswith("/api/img"):
+            if self.headers.get("x-sync-key") != SYNC_SECRET:
+                return self._json(401, {"error": "unauthorized"})
+            i = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("id", [""])[0]
+            f = os.path.join(IMG_DIR, i)
+            if not _img_ok(i) or not os.path.exists(f):
+                return self._json(404, {"error": "not found"})
+            with open(f, "rb") as fh:
+                data = fh.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if self.path.startswith("/api/gcal"):
             GMOCK["connected"] = True
             _gm_seed()
@@ -371,6 +393,21 @@ class H(http.server.SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_POST(self):
+        if self.path.startswith("/api/img"):
+            if self.headers.get("x-sync-key") != SYNC_SECRET:
+                return self._json(401, {"error": "unauthorized"})
+            n = int(self.headers.get("Content-Length", "0"))
+            try:
+                body = json.loads(self.rfile.read(n) or b"{}")
+            except Exception:
+                return self._json(400, {"error": "bad json"})
+            if not _img_ok(body.get("id")) or not body.get("data"):
+                return self._json(400, {"error": "bad id or data"})
+            os.makedirs(IMG_DIR, exist_ok=True)
+            raw = _b64.b64decode(body["data"])
+            with open(os.path.join(IMG_DIR, body["id"]), "wb") as fh:
+                fh.write(raw)
+            return self._json(200, {"ok": True, "bytes": len(raw)})
         if self.path.startswith("/api/gcal"):
             if self.headers.get("x-sync-key") != SYNC_SECRET:
                 return self._json(401, {"error": "unauthorized"})
