@@ -56,6 +56,8 @@ function eventsForDate(iso) {
     .filter(e => e.recurring ? e.weekday === wd : e.endDate ? (e.date <= iso && iso <= e.endDate) : e.date === iso)
     .sort((a, b) => timeKey(a.start || a.time).localeCompare(timeKey(b.start || b.time)));
 }
+// extra days a multi-day event runs past its first (0 for a one-day event)
+const spanDays = e => e.endDate && e.date ? Math.max(0, Math.round((parseISO(e.endDate) - parseISO(e.date)) / 864e5)) : 0;
 const evTime = e => { const s = e.start || e.time || '', en = e.end || ''; return s ? (en ? `${s}–${en}` : s) : ''; };
 // keep a one-off event's cost mirrored as a linked expense in the Money tab
 // How long an event runs. Needs both ends — a start with no finish has no
@@ -586,7 +588,7 @@ function rollOverTasks() {
   TASKS().forEach(t => {
     if (t.scope !== 'day' || repeats(t) || t.done || !t.date || t.date >= today) return;
     const late = -daysTo(t.date);
-    if (late > 14) { t.scope = 'inbox'; t.start = t.end = ''; parked++; return; }
+    if (late > 14) { Object.assign(t, { scope: 'inbox', date: '', week: '', month: '', start: '', end: '', rolled: 0 }); parked++; return; }
     t.rolled = (t.rolled || 0) + late;
     t.date = today; t.week = weekKey(); t.month = today.slice(0, 7);
     t.start = t.end = '';          // yesterday's slot has gone — it goes back in the tray
@@ -941,8 +943,8 @@ function plannerDay() {
 // "- [ ] something" lines in a day note that aren't already tasks on that day
 function noteTodos(iso) {
   const have = new Set(tasksForDate(iso).map(t => titleKey(t)));
-  return ((PLAN().daily[iso] || '').match(/^\s*[-*]?\s*\[ \]\s*(.+)$/gm) || [])
-    .map(l => l.replace(/^\s*[-*]?\s*\[ \]\s*/, '').trim()).filter(x => x && !have.has(x.toLowerCase()));
+  return ((PLAN().daily[iso] || '').match(/^[ \t]*[-*]?[ \t]*\[ \][ \t]*(.+)$/gm) || [])
+    .map(l => l.replace(/^[ \t]*[-*]?[ \t]*\[ \][ \t]*/, '').trim()).filter(x => x && !have.has(x.toLowerCase()));
 }
 // debounced save of the day note as you type
 let noteTimer = 0;
@@ -962,7 +964,7 @@ document.addEventListener('input', e => {
 function planSheet(iso) {
   const carried = tasksForDate(iso).filter(t => t.rolled && !taskDone(t, iso));
   const inbox = inboxTasks().sort(taskRank);
-  const dueSoon = TASKS().filter(t => t.deadline && !t.done && t.scope !== 'inbox' && !(t.scope === 'day' && t.date === iso) && daysTo(t.deadline) <= 3 && daysTo(t.deadline) >= 0);
+  const dueSoon = TASKS().filter(t => t.deadline && !t.done && t.scope !== 'inbox' && !repeats(t) && !taskRunsOn(t, iso) && daysTo(t.deadline) <= 3 && daysTo(t.deadline) >= 0);
   // over capacity: the least important unplaced tasks are the ones to push out
   const L = dayLoad(iso);
   const movable = tasksForDate(iso).filter(t => !taskDone(t, iso) && !t.start && !repeats(t) && !t.rolled).sort(taskRank).reverse().slice(0, 6);
@@ -3972,7 +3974,7 @@ const ACT = {
       earned:  category === 'Work'  ? num(val('ev_earned')) : 0,
       studyFor: category === 'Study' ? (val('ev_studyfor') || 'School') : '' };
     let ev;
-    if (d.id) { ev = S.calendar.events.find(x=>x.id===d.id); if (ev.endDate && rec.date !== ev.date) ev.endDate = ''; Object.assign(ev, rec); }
+    if (d.id) { ev = S.calendar.events.find(x=>x.id===d.id); if (ev.endDate && rec.date !== ev.date) ev.endDate = rec.date ? shiftISO(rec.date, spanDays(ev)) : ''; Object.assign(ev, rec); }
     else { ev = { id: uid(), ...rec }; S.calendar.events.push(ev); }
     syncEventCost(ev);
     save(); closeSheet(); if (!recurring) setCalSel(date); render(currentTab); gcalSoon();
@@ -4009,7 +4011,7 @@ const ACT = {
       `<div id="tk_datewrap">${field('Date','tk_date',{type:'date',val:t.date||calSel})}</div>` +
       `<div class="row">${field('Time needed','tk_est',{type:'select',val:t.est ? estLabel(t.est) : '—',options:ESTS.map(m => m ? estLabel(m) : '—')})}${field('Priority','tk_pri',{type:'select',val:PRI[t.pri]||'None',options:['None','High','Medium','Low']})}</div>` +
       field('Deadline (optional)','tk_dl',{type:'date',val:t.deadline||''}) +
-      `<label class="field"><span>Checklist</span><div class="cl-list" id="tk_cl">${(t.checklist||[]).map(clRow).join('')}</div>
+      `<label class="field" for="tk_cl_new"><span>Checklist</span><div class="cl-list" id="tk_cl">${(t.checklist||[]).map(clRow).join('')}</div>
         <input id="tk_cl_new" type="text" placeholder="Add a step, then Return" enterkeyhint="enter" autocapitalize="sentences"></label>` +
       `<div id="tk_timewrap">
         <div class="row">${field('Start (optional)','tk_start',{type:'time',val:t.start||''})}${field('End (optional)','tk_end',{type:'time',val:t.end||''})}</div>
@@ -4034,6 +4036,10 @@ const ACT = {
       const v = e.target.value.trim(); if (!v) return;
       $('#tk_cl').insertAdjacentHTML('beforeend', clRow({ text: v, done: false }));
       e.target.value = ''; sheetDirty = true;
+    });
+    $('#tk_cl').addEventListener('keydown', e => {
+      if (e.key !== 'Enter' || e.isComposing || !e.target.matches('.cl-text')) return;
+      e.preventDefault(); e.stopPropagation(); $('#tk_cl_new').focus();
     });
     const sync = () => {
       const isDay = val('tk_scope') === SCOPES.day;
@@ -5151,7 +5157,7 @@ Object.assign(ACT, {
     if (placingTask) {
       const t = taskById(placingTask); placingTask = null;
       if (!t) return render(currentTab);
-      if (t.scope !== 'day' || t.date !== iso) setTaskDay(t, iso);
+      if (!taskRunsOn(t, iso)) setTaskDay(t, iso);
       t.start = d.t; t.end = minToHM(hhmmToMin(d.t) + (num(t.est) || 30));
       save(); haptic(); render(currentTab);
       const cl = clashes(iso, t.start, t.end);
@@ -5199,7 +5205,7 @@ Object.assign(ACT, {
     save(); render(currentTab); toast(`${list.length} task${list.length > 1 ? 's' : ''} added to ${fmtDay(d.d)}`, { undo: true });
   },
   planMyDay(d) { planSheet(d.d || todayISO()); },
-  planKeep(d) { const t = taskById(d.id); if (t) t.rolled = 0; reopenPlan(calSel === todayISO() ? todayISO() : calSel); },
+  planKeep(d) { const t = taskById(d.id); if (t) t.rolled = 0; reopenPlan($('#sheetBody [data-act="planDone"]')?.dataset.d); },
   planMove(d, el) {
     const t = taskById(d.id); if (!t) return;
     const iso = $('#sheetBody .sheet-actions [data-act="planDone"]')?.dataset.d || todayISO();
@@ -5381,12 +5387,14 @@ document.addEventListener('input', e => {
 // Events AND tasks can be dragged between days — replanning a week should be
 // dragging, not reopening a form for each one.
 let dragItem = null;             // {kind:'event'|'task', id} while something is being moved
-function moveEventToDate(id, iso) {
+// a multi-day event moves as a block: `from` is the day of the chip you picked up
+function moveEventToDate(id, iso, from) {
   const e = S.calendar.events.find(x => x.id === id);
   if (!e || !iso) return false;
+  if (!e.recurring && e.endDate && from && from > e.date && from <= e.endDate) iso = shiftISO(iso, -Math.round((parseISO(from) - parseISO(e.date)) / 864e5));
   const wd = parseISO(iso).getDay();
   if (e.recurring) { if (e.weekday === wd) return false; e.weekday = wd; }
-  else { if (e.date === iso) return false; if (e.endDate) e.endDate = ''; e.date = iso; e.weekday = wd; }
+  else { if (e.date === iso) return false; if (e.endDate) e.endDate = shiftISO(iso, spanDays(e)); e.date = iso; e.weekday = wd; }
   e.mtime = Date.now();
   syncEventCost(e);
   save(); gcalSoon();
@@ -5396,7 +5404,7 @@ function moveEventToDate(id, iso) {
 function moveTaskToDate(id, iso) {
   const t = TASKS().find(x => x.id === id);
   if (!t || !iso || t.scope !== 'day' || t.date === iso) return false;
-  t.date = iso;
+  t.date = iso; t.rolled = 0;
   t.week = weekKey(parseISO(iso));
   t.month = iso.slice(0, 7);
   save();
@@ -5404,11 +5412,11 @@ function moveTaskToDate(id, iso) {
   return true;
 }
 const moveItemToDate = (item, iso) => !item ? false
-  : item.kind === 'task' ? moveTaskToDate(item.id, iso) : moveEventToDate(item.id, iso);
+  : item.kind === 'task' ? moveTaskToDate(item.id, iso) : moveEventToDate(item.id, iso, item.from);
 // what's under the pointer: an event chip or a task chip
 function dragTargetOf(el) {
   const ev = el.closest && el.closest('.evchip[data-ev]');
-  if (ev) return { chip: ev, item: { kind: 'event', id: ev.dataset.ev } };
+  if (ev) return { chip: ev, item: { kind: 'event', id: ev.dataset.ev, from: ev.closest('.dayrow')?.dataset.day } };
   const tk = el.closest && el.closest('.tchip[data-task]');
   if (tk) return { chip: tk, item: { kind: 'task', id: tk.dataset.task } };
   return null;
@@ -5642,8 +5650,8 @@ function renderSearch(q) {
   if (k.length < 2) { res.innerHTML = '<div class="empty">Search across everything in Compass.</div>'; return; }
   const hit = (...xs) => xs.some(x => nameKey(x).includes(k));
   const groups = [
-    ['Events', 'calendar', S.calendar.events.filter(e => hit(e.title, e.notes, e.category)).slice(0, 8).map(e => ({ t: e.title, s: [e.recurring ? 'Weekly' : fmtDay(e.date || todayISO()), evTime(e)].filter(Boolean).join(' · '), act: `data-act="editEvent" data-id="${e.id}"` }))],
-    ['Tasks', 'check-circle', TASKS().filter(t => hit(t.text, t.cat)).slice(0, 8).map(t => ({ t: t.text, s: [t.date ? fmtDay(t.date) : t.scope, t.cat].filter(Boolean).join(' · '), act: `data-act="editTask" data-id="${t.id}"` }))],
+    ['Events', 'calendar', S.calendar.events.filter(e => hit(e.title, e.notes, e.category, e.location)).slice(0, 8).map(e => ({ t: e.title, s: [e.recurring ? 'Weekly' : fmtDay(e.date || todayISO()), evTime(e)].filter(Boolean).join(' · '), act: `data-act="editEvent" data-id="${e.id}"` }))],
+    ['Tasks', 'check-circle', TASKS().filter(t => hit(t.text, t.cat)).slice(0, 8).map(t => ({ t: t.text, s: [t.scope === 'inbox' ? 'Inbox' : t.date ? fmtDay(t.date) : t.scope, t.cat].filter(Boolean).join(' · '), act: `data-act="editTask" data-id="${t.id}"` }))],
     ['Habits', 'repeat', (S.systems.habits || []).filter(h => hit(h.text)).map(h => ({ t: h.text, s: h.time || '', act: `data-act="editHabit" data-id="${h.id}"` }))],
     ['Goals', 'target', [...S.systems.goals.filter(g => hit(g.text)).map(g => ({ t: g.text, s: g.done ? 'Done' : 'Goal', act: `data-go="systems:goals"` })),
       ...(S.systems.weekly || []).filter(m => hit(m.text)).map(m => ({ t: m.text, s: 'Weekly must-do', act: `data-go="systems:weekly"` })),

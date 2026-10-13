@@ -1175,9 +1175,9 @@ html.rt-open, html.rt-open body { overflow: hidden; }
 .tray-row .box { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--border-strong); display: grid; place-items: center; flex: none; color: transparent; }
 .tray-row .box svg { width: 13px; height: 13px; }
 .tray-row.picked { background: var(--accent-soft); border-radius: 10px; padding-left: 8px; padding-right: 8px; }
-.p1 > .box, .tray-row.p1 .box, .check.task.p1 .box { border-color: var(--neg); }
-.p2 > .box, .tray-row.p2 .box, .check.task.p2 .box { border-color: var(--warn); }
-.p3 > .box, .tray-row.p3 .box, .check.task.p3 .box { border-color: var(--accent); }
+.p1 > .box, .tray-row.p1 .box, .check.task.p1:not(.done) .box { border-color: var(--neg); }
+.p2 > .box, .tray-row.p2 .box, .check.task.p2:not(.done) .box { border-color: var(--warn); }
+.p3 > .box, .tray-row.p3 .box, .check.task.p3:not(.done) .box { border-color: var(--accent); }
 .plan-btns { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; flex: none; max-width: 55%; }
 .plan-btns .chip { border: none; cursor: pointer; font-size: 12px; padding: 5px 9px; }
 .plan-btns .chip.neg { color: var(--neg); }
@@ -1221,7 +1221,7 @@ html.rt-open, html.rt-open body { overflow: hidden; }
 .tl-blk.done { opacity: .55; }
 .tl-blk.done b { text-decoration: line-through; }
 .tl-blk.done .tl-box { background: var(--pos); border-color: var(--pos); color: #fff; }
-.tl-blk.tk.p1 .tl-box { border-color: var(--neg); }
+.tl-blk.tk.p1:not(.done) .tl-box { border-color: var(--neg); } .tl-blk.tk.p2:not(.done) .tl-box { border-color: var(--warn); } .tl-blk.tk.p3:not(.done) .tl-box { border-color: var(--accent); }
 .tl-blk.hb { background: var(--accent-soft); border-left: 3px solid var(--accent); display: flex; gap: 6px; }
 .tl-now { position: absolute; left: -6px; right: 0; height: 2px; background: var(--neg); z-index: 3; pointer-events: none; }
 .tl-now::before { content: ''; position: absolute; left: -4px; top: -4px; width: 10px; height: 10px; border-radius: 50%; background: var(--neg); }
