@@ -123,6 +123,41 @@ STRAVA_CLIENT_ID=xxxxx STRAVA_CLIENT_SECRET=yyyyy python3 dev-server.py
 
 ---
 
+## Optional — connect Google Calendar (two-way)
+
+Compass reads the calendars you pick and sends events you add in Compass back to
+one of them. Your Google sign-in is stored in your own Vercel KV store, never in
+the browser or in backups, and only works with your cloud-sync secret key. Cloud
+sync (Step 3 and Step 4 above) has to be set up first.
+
+### Step 1 — Create a Google Cloud project (about 10 minutes, once)
+1. Go to **console.cloud.google.com**, create a project called **Compass**.
+2. **APIs & Services → Library** → search **Google Calendar API** → **Enable**.
+3. **Google Auth Platform → Branding**: app name *Compass*, your email as support
+   and developer contact. If asked, add `compass-psi-nine.vercel.app` as an authorised domain.
+4. **Audience**: choose **External**, add your own Gmail as a test user, then press
+   **Publish app** so it says **In production**. Don't submit it for verification.
+   (Apps left in *Testing* have their sign-in expire every 7 days.)
+5. **Data Access → Add or remove scopes**: tick `.../auth/calendar.events` and
+   `.../auth/calendar.calendarlist.readonly`.
+6. **Clients → Create client → Web application**. Under *Authorised redirect URIs*
+   add `https://compass-psi-nine.vercel.app/api/gcal`. Create, then copy the
+   **Client ID** and **Client secret** straight away.
+
+### Step 2 — Add the two env vars on Vercel
+Project → Settings → Environment Variables: `GOOGLE_CLIENT_ID` and
+`GOOGLE_CLIENT_SECRET`. Then push a commit (a dashboard *Redeploy* can reuse old settings).
+
+### Step 3 — Connect, in the app
+Settings → **Google Calendar → Connect**. Google will say it hasn't verified the
+app — that's expected for a personal app: **Advanced → Go to Compass**, allow both
+permissions. Back in Compass, tick the calendars to show, give each a default
+category, and pick where new Compass events go.
+
+It syncs when the app opens, every 5 minutes while it's open, and a few seconds
+after you change an event. Locally, `dev-server.py` runs a **fake** Google
+Calendar so all of this can be tried without a Google account.
+
 ## Using the app
 
 - **Home** — greeting, weather, today's events, this week's must-dos, and snapshot tiles. Tap the focus chip to set your focus.

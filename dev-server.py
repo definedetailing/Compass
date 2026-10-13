@@ -5,6 +5,7 @@ Serves the static app AND emulates the two Vercel functions:
   /api/quote  -> live Yahoo Finance quotes (same behaviour as api/quote.js)
   /api/sync   -> file-backed sync store   (same contract as api/sync.js)
   /api/food   -> Open Food Facts search    (same behaviour as api/food.js)
+  /api/gcal   -> a FAKE Google Calendar      (same contract as api/gcal.js)
 
 On Vercel, the real api/*.js functions handle these. Run locally with:
     python3 dev-server.py           # http://localhost:8787
@@ -113,6 +114,105 @@ def yahoo(symbol):
     return None
 
 
+
+# ---------- fake Google Calendar (local testing of /api/gcal) ----------
+# Same contract as api/gcal.js, backed by an in-memory "Google" with a primary
+# calendar and a read-only holidays calendar, so the planner's two-way sync can
+# be exercised without real Google credentials.
+GMOCK = {"connected": False, "n": 0, "cals": {"me@example.com": {}, "au.holidays": {}}}
+
+def _gm_seed():
+    if any(GMOCK["cals"].values()):
+        return
+    t = datetime.date.today()
+    d = lambda n: (t + datetime.timedelta(days=n)).isoformat()
+    tz = "Australia/Brisbane"
+    me = GMOCK["cals"]["me@example.com"]
+    def put(cal, ev):
+        GMOCK["n"] += 1
+        ev.setdefault("status", "confirmed")
+        ev["etag"] = '"%d"' % GMOCK["n"]
+        ev["updated"] = datetime.datetime.utcnow().isoformat() + "Z"
+        GMOCK["cals"][cal][ev["id"]] = ev
+    put("me@example.com", {"id": "gdentist1", "summary": "Dentist", "location": "Southport",
+        "start": {"dateTime": d(1) + "T10:00:00", "timeZone": tz}, "end": {"dateTime": d(1) + "T10:45:00", "timeZone": tz}})
+    put("me@example.com", {"id": "gshift1", "summary": "Shift", "start": {"dateTime": d(0) + "T16:00:00", "timeZone": tz},
+        "end": {"dateTime": d(0) + "T21:00:00", "timeZone": tz}})
+    put("me@example.com", {"id": "gfooty", "summary": "Footy training", "recurrence": ["RRULE:FREQ=WEEKLY"],
+        "start": {"dateTime": d(2) + "T18:00:00", "timeZone": tz}, "end": {"dateTime": d(2) + "T19:30:00", "timeZone": tz}})
+    put("me@example.com", {"id": "gcamp", "summary": "Camping trip", "start": {"date": d(5)}, "end": {"date": d(7)}})
+    put("au.holidays", {"id": "gholiday", "summary": "Public holiday", "start": {"date": d(3)}, "end": {"date": d(4)}})
+
+def _gm_slim(e):
+    p = (e.get("extendedProperties") or {}).get("private") or {}
+    def fix(x):
+        x = dict(x or {})
+        if "dateTime" in x and len(x["dateTime"]) == 19:
+            x["dateTime"] += "+10:00"
+        return x
+    return {"id": e["id"], "status": e.get("status", "confirmed"), "etag": e["etag"], "updated": e["updated"],
+            "summary": e.get("summary", ""), "description": e.get("description", ""), "location": e.get("location", ""),
+            "start": fix(e.get("start")), "end": fix(e.get("end")), "recurringEventId": e.get("recurringEventId", ""),
+            "eventType": "default", "declined": False,
+            "priv": {k: p.get(k, "") for k in ("compassId", "cat", "cost", "rate", "earned", "studyFor")}}
+
+def _gm_list(cal, tmin, tmax):
+    out = []
+    lo, hi = tmin[:10], tmax[:10]
+    for e in GMOCK["cals"].get(cal, {}).values():
+        s = e["start"].get("date") or e["start"]["dateTime"][:10]
+        if e.get("recurrence"):
+            day = datetime.date.fromisoformat(s)
+            while day.isoformat() < hi:
+                if day.isoformat() >= lo:
+                    inst = json.loads(json.dumps(e)); inst.pop("recurrence", None)
+                    inst["id"] = e["id"] + "_" + day.strftime("%Y%m%d"); inst["recurringEventId"] = e["id"]
+                    for k in ("start", "end"):
+                        if "dateTime" in inst[k]:
+                            inst[k]["dateTime"] = day.isoformat() + inst[k]["dateTime"][10:]
+                    out.append(_gm_slim(inst))
+                day += datetime.timedelta(days=7)
+        elif lo <= s < hi:
+            out.append(_gm_slim(e))
+    return out
+
+def gcal_mock(h, body):
+    a = body.get("action")
+    if a == "config":
+        return h._json(200, {"configured": True, "connected": GMOCK["connected"]})
+    if a == "authUrl":
+        return h._json(200, {"url": "/api/gcal?mock=1&state=" + "0" * 32})
+    if not GMOCK["connected"]:
+        return h._json(401, {"error": "Google Calendar is not connected", "reconnect": True})
+    if a == "disconnect":
+        GMOCK["connected"] = False
+        return h._json(200, {"ok": True})
+    if a == "calendars":
+        return h._json(200, {"email": "me@example.com", "items": [
+            {"id": "me@example.com", "summary": "Tyson", "backgroundColor": "#4285f4", "accessRole": "owner", "primary": True},
+            {"id": "au.holidays", "summary": "Holidays in Australia", "backgroundColor": "#0b8043", "accessRole": "reader", "primary": False}]})
+    cal = body.get("calendarId", "me@example.com")
+    store = GMOCK["cals"].setdefault(cal, {})
+    if a == "list":
+        return h._json(200, {"items": _gm_list(cal, body.get("timeMin", ""), body.get("timeMax", "9999")), "nextPageToken": ""})
+    if a in ("insert", "patch"):
+        ev = body.get("event") or {}
+        eid = ev.get("id") if a == "insert" else body.get("eventId")
+        if a == "insert" and eid in store:
+            return h._json(409, {"error": "exists"})
+        if a == "patch" and eid not in store:
+            return h._json(404, {"error": "Not Found"})
+        cur = store.get(eid, {"id": eid})
+        cur.update({k: v for k, v in ev.items() if k != "id"})
+        GMOCK["n"] += 1
+        cur["etag"] = '"%d"' % GMOCK["n"]; cur["updated"] = datetime.datetime.utcnow().isoformat() + "Z"
+        store[eid] = cur
+        return h._json(200, {"id": eid, "etag": cur["etag"]})
+    if a == "delete":
+        store.pop(body.get("eventId"), None)
+        return h._json(200, {"ok": True})
+    return h._json(400, {"error": "unknown action"})
+
 class H(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **k):
         super().__init__(*a, directory=HERE, **k)
@@ -176,6 +276,13 @@ class H(http.server.SimpleHTTPRequestHandler):
                 return self._json(200, {"products": food_rank(food_search(q))})
             except Exception:
                 return self._json(502, {"error": "food database unavailable"})
+        if self.path.startswith("/api/gcal"):
+            GMOCK["connected"] = True
+            _gm_seed()
+            self.send_response(302)
+            self.send_header("Location", "/?gcal=connected")
+            self.end_headers()
+            return
         if self.path.startswith("/api/sync"):
             if self.headers.get("x-sync-key") != SYNC_SECRET:
                 return self._json(401, {"error": "unauthorized"})
@@ -186,6 +293,15 @@ class H(http.server.SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_POST(self):
+        if self.path.startswith("/api/gcal"):
+            if self.headers.get("x-sync-key") != SYNC_SECRET:
+                return self._json(401, {"error": "unauthorized"})
+            n = int(self.headers.get("Content-Length", "0"))
+            try:
+                body = json.loads(self.rfile.read(n) or b"{}")
+            except Exception:
+                return self._json(400, {"error": "bad json"})
+            return gcal_mock(self, body)
         if self.path.startswith("/api/strava"):
             n = int(self.headers.get("Content-Length", "0"))
             try:

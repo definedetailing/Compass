@@ -39,6 +39,8 @@ function weekKey(d = new Date()) {
   return `${x.getUTCFullYear()}-W${String(wk).padStart(2, '0')}`;
 }
 
+// the day note a blank day starts from (Settings › Planner can change it)
+const DAILY_TEMPLATE = 'Top 3\n- [ ] \n- [ ] \n- [ ] \n\nNotes\n';
 /* ---------- calendar categories & helpers ---------- */
 const CATS = { School:'#4C6FE0', Work:'#C9821B', Gym:'#2F9E6B', Study:'#2A97A8', Personal:'#C2557D', Free:'#8162C9', Other:'#8A8A86' };
 const catColor = c => CATS[c] || CATS.Other;
@@ -51,7 +53,7 @@ const timeKey = t => t || UNTIMED;
 function eventsForDate(iso) {
   const wd = parseISO(iso).getDay();
   return S.calendar.events
-    .filter(e => e.recurring ? e.weekday === wd : e.date === iso)
+    .filter(e => e.recurring ? e.weekday === wd : e.endDate ? (e.date <= iso && iso <= e.endDate) : e.date === iso)
     .sort((a, b) => timeKey(a.start || a.time).localeCompare(timeKey(b.start || b.time)));
 }
 const evTime = e => { const s = e.start || e.time || '', en = e.end || ''; return s ? (en ? `${s}–${en}` : s) : ''; };
@@ -146,11 +148,11 @@ const bySlot = (a, b) => timeKey(taskTime(a)).localeCompare(timeKey(taskTime(b))
 // `showDate` adds the day, for lists that span more than one.
 function taskRow(t, iso, showDate) {
   const done = taskDone(t, iso), rep = taskRepeatLabel(t), slot = taskSlot(t);
-  const sub = [showDate && t.scope === 'day' ? fmtDay(t.date) : '', slot || '',
-               rep ? `↻ ${rep}` : '', t.cat || ''].filter(Boolean).join(' · ');
-  return `<div class="check task ${done ? 'done' : ''}">
+  const sub = [showDate && t.scope === 'day' ? fmtDay(t.date) : '', slot || (t.est ? '~' + estLabel(t.est) : ''),
+               rep ? `↻ ${rep}` : '', checkProgress(t), t.rolled && !done ? `carried ${t.rolled}d` : '', t.cat || ''].filter(Boolean).join(' · ');
+  return `<div class="check task ${done ? 'done' : ''} ${t.pri ? 'p' + t.pri : ''}">
     <span class="box tap" data-act="toggleTask" data-id="${t.id}" data-d="${iso || ''}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 12l4 4 10-11"/></svg></span>
-    <span class="txt tap" data-act="editTask" data-id="${t.id}">${esc(t.text)}${sub ? `<span class="s muted"><i class="cdot" style="background:${taskColor(t.cat)}"></i> ${esc(sub)}</span>` : ''}</span>
+    <span class="txt tap" data-act="editTask" data-id="${t.id}">${esc(t.text)} ${deadlineBadge(t)}${sub ? `<span class="s muted"><i class="cdot" style="background:${taskColor(t.cat)}"></i> ${esc(sub)}</span>` : ''}</span>
     <button class="del" data-act="delTask" data-id="${t.id}">${ic('x')}</button>
   </div>`;
 }
@@ -202,6 +204,8 @@ function defaultState() {
     profile: { name: 'Tyson', city: 'Gold Coast', lat: -28.0167, lon: 153.4000 },
     settings: { theme: 'auto', pinHash: null, weatherOn: true, notify: false },
     calendar: { events: [], tasks: [] },
+    planner: { daily: {}, template: DAILY_TEMPLATE, dayStart: '07:00', dayEnd: '22:00', plannedOn: '' },
+    gcal: { on: false, email: '', cals: {}, writeCal: '', linked: {}, lastSync: 0, err: '' },
     health: {
       splits: [
         { id: uid(), name: 'Push', ex: [
@@ -547,6 +551,720 @@ async function stravaImport(full = false) {
     return 0;
   }
 }
+
+/* ============================================================
+   Planner — the day as a timeline you plan into
+   Events and time-blocked tasks share one hour grid; untimed tasks wait in a
+   tray until they're placed (by tap, or "Auto-place" into the free gaps).
+   Tasks carry an estimate, priority, deadline and checklist; anything left
+   undone rolls forward to today with a counter so guilt-piles stay visible.
+   ============================================================ */
+const PLAN = () => (S.planner || (S.planner = { daily: {}, template: DAILY_TEMPLATE, dayStart: '07:00', dayEnd: '22:00', plannedOn: '' }));
+const PRI = { 1: 'High', 2: 'Medium', 3: 'Low' };
+const ESTS = [0, 15, 30, 45, 60, 90, 120, 180, 240];
+const estLabel = m => !m ? '' : m < 60 ? `${m}m` : m % 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m / 60}h`;
+const minToHM = m => { m = clamp(Math.round(m), 0, 24 * 60 - 1); return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; };
+const nowMin = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
+const fmtHM = hm => { const m = hhmmToMin(hm); if (m === null) return ''; const h = Math.floor(m / 60), x = m % 60;
+  return `${h % 12 || 12}${x ? ':' + String(x).padStart(2, '0') : ''}${h < 12 ? 'am' : 'pm'}`; };
+const daysTo = iso => Math.round((parseISO(iso) - parseISO(todayISO())) / 86400000);
+const inboxTasks = () => TASKS().filter(t => t.scope === 'inbox' && !t.done);
+const taskMins = t => { const s = hhmmToMin(t.start), e = hhmmToMin(t.end); return s !== null && e !== null && e > s ? e - s : num(t.est); };
+const checkProgress = t => (t.checklist || []).length ? `${t.checklist.filter(c => c.done).length}/${t.checklist.length}` : '';
+function deadlineBadge(t) {
+  if (!t.deadline || t.done) return '';
+  const n = daysTo(t.deadline);
+  const txt = n < 0 ? `${-n}d overdue` : n === 0 ? 'Due today' : n === 1 ? 'Due tomorrow' : n < 7 ? `Due ${DOW[parseISO(t.deadline).getDay()]}` : `Due ${fmtDay(t.deadline)}`;
+  return `<span class="dl-badge ${n <= 1 ? 'hot' : n <= 3 ? 'warm' : ''}">${ic('flag', 'xs')}${esc(txt)}</span>`;
+}
+
+/* ---------- unfinished tasks roll forward ----------
+   A one-off day task left undone moves to today, counting how many days it's
+   been carried. Past a fortnight it goes to the Inbox instead of piling onto today. */
+function rollOverTasks() {
+  const today = todayISO(); let moved = 0, parked = 0;
+  TASKS().forEach(t => {
+    if (t.scope !== 'day' || repeats(t) || t.done || !t.date || t.date >= today) return;
+    const late = -daysTo(t.date);
+    if (late > 14) { t.scope = 'inbox'; t.start = t.end = ''; parked++; return; }
+    t.rolled = (t.rolled || 0) + late;
+    t.date = today; t.week = weekKey(); t.month = today.slice(0, 7);
+    t.start = t.end = '';          // yesterday's slot has gone — it goes back in the tray
+    moved++;
+  });
+  if (moved || parked) {
+    save();
+    toast([moved && `${moved} unfinished task${moved > 1 ? 's' : ''} carried to today`, parked && `${parked} old one${parked > 1 ? 's' : ''} parked in your Inbox`].filter(Boolean).join(' · '));
+  }
+  return moved + parked;
+}
+
+/* ---------- free time and load ---------- */
+// merge [s,e) minute intervals
+function mergeIv(iv) {
+  const out = [];
+  iv.filter(x => x[1] > x[0]).sort((a, b) => a[0] - b[0]).forEach(x => {
+    const l = out[out.length - 1];
+    if (l && x[0] <= l[1]) l[1] = Math.max(l[1], x[1]); else out.push([x[0], x[1]]);
+  });
+  return out;
+}
+const evSpan = e => { const s = hhmmToMin(e.start || e.time); if (s === null) return null;
+  let en = hhmmToMin(e.end); if (en === null) en = s + 60; if (en <= s) en = 24 * 60; return [s, en]; };
+// what's already spoken for on a day: events, plus (optionally) tasks that have a slot
+function busyIv(iso, withTasks) {
+  const iv = eventsForDate(iso).map(evSpan).filter(Boolean);
+  if (withTasks) tasksForDate(iso).filter(t => !taskDone(t, iso) && t.start).forEach(t => { const s = hhmmToMin(t.start); iv.push([s, hhmmToMin(t.end) > s ? hhmmToMin(t.end) : s + (num(t.est) || 30)]); });
+  return mergeIv(iv);
+}
+// the window still open for planning today (from now), or the whole working day
+function planWindow(iso) {
+  const P = PLAN(); let ws = hhmmToMin(P.dayStart) ?? 420, we = hhmmToMin(P.dayEnd) ?? 1320;
+  if (we <= ws) we = 24 * 60;
+  const t = todayISO();
+  if (iso === t) ws = Math.max(ws, Math.ceil(nowMin() / 15) * 15);
+  else if (iso < t) ws = we;
+  return [ws, Math.max(ws, we)];
+}
+function freeGaps(iso, withTasks = true) {
+  const [ws, we] = planWindow(iso), gaps = []; let cur = ws;
+  busyIv(iso, withTasks).forEach(([s, e]) => { if (e <= cur) return; if (s > cur) gaps.push([cur, Math.min(s, we)]); cur = Math.max(cur, e); });
+  if (cur < we) gaps.push([cur, we]);
+  return gaps.filter(g => g[1] - g[0] >= 5);
+}
+function dayLoad(iso) {
+  const free = freeGaps(iso, false).reduce((a, g) => a + g[1] - g[0], 0);
+  const open = tasksForDate(iso).filter(t => !taskDone(t, iso));
+  const planned = open.reduce((a, t) => a + taskMins(t), 0);
+  return { free, planned, unest: open.filter(t => !taskMins(t)).length, open: open.length };
+}
+// put a task in the first gap long enough for it; returns false if nothing fits
+function placeTask(t, iso, gaps = freeGaps(iso)) {
+  const need = num(t.est) || 30;
+  const g = gaps.find(x => x[1] - x[0] >= need); if (!g) return false;
+  t.start = minToHM(g[0]); t.end = minToHM(g[0] + need);
+  if (t.scope !== 'day') { t.scope = 'day'; t.date = iso; t.week = weekKey(parseISO(iso)); t.month = iso.slice(0, 7); }
+  g[0] += need;
+  return true;
+}
+// most important first, then nearest deadline, then shortest
+const taskRank = (a, b) => ((a.pri || 9) - (b.pri || 9)) || (a.deadline || '9').localeCompare(b.deadline || '9') || (num(a.est) || 30) - (num(b.est) || 30);
+function autoPlace(iso) {
+  const list = tasksForDate(iso).filter(t => !taskDone(t, iso) && !t.start && !repeats(t)).sort(taskRank);
+  const gaps = freeGaps(iso); let placed = 0; const left = [];
+  list.forEach(t => placeTask(t, iso, gaps) ? placed++ : left.push(t));
+  return { placed, left };
+}
+// other events that clash with a time range on a day
+function clashes(iso, start, end, exceptId) {
+  const s = hhmmToMin(start); if (s === null) return [];
+  let e = hhmmToMin(end); if (e === null || e <= s) e = s + 60;
+  return eventsForDate(iso).filter(x => x.id !== exceptId).filter(x => { const sp = evSpan(x); return sp && sp[0] < e && s < sp[1]; });
+}
+
+/* ---------- natural-language quick add ----------
+   "Gym tue 6-7am", "Detail Hilux sat 9am 3h $180 #work", "Call supplier tmrw p1",
+   "Essay due fri ~2h", "Lecture every mon and wed 10am". Anything with a time
+   becomes an event; without one, a task. Pieces it understands are pulled out
+   of the title and shown as chips while you type. */
+const NL_WD = { sun: 0, sunday: 0, mon: 1, monday: 1, tue: 2, tues: 2, tuesday: 2, wed: 3, weds: 3, wednesday: 3, thu: 4, thur: 4, thurs: 4, thursday: 4, fri: 5, friday: 5, sat: 6, saturday: 6 };
+const NL_MON = { jan: 0, january: 0, feb: 1, february: 1, mar: 2, march: 2, apr: 3, april: 3, may: 4, jun: 5, june: 5, jul: 6, july: 6, aug: 7, august: 7, sep: 8, sept: 8, september: 8, oct: 9, october: 9, nov: 10, november: 10, dec: 11, december: 11 };
+const WD_P = 'sun(?:day)?|mon(?:day)?|tue(?:s|sday)?|wed(?:s|nesday)?|thu(?:r|rs|rsday)?|fri(?:day)?|sat(?:urday)?';
+const MON_P = 'jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?';
+const DATE_P = `today|tonight|tomorrow|tmrw|tmr|next\\s+week|(?:next\\s+)?(?:${WD_P})|in\\s+\\d+\\s+(?:days?|weeks?)|\\d{1,2}\\/\\d{1,2}(?:\\/\\d{2,4})?|\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${MON_P})|(?:${MON_P})\\s+\\d{1,2}(?:st|nd|rd|th)?`;
+const TIME_P = '\\d{1,2}(?::\\d{2})?\\s*(?:am|pm|a|p)?';
+const CAT_WORDS = [
+  [/\b(gym|workout|training|lift|legs day|push day|pull day)\b/i, 'Gym', 'Health'],
+  [/\b(shift|work|roster)\b/i, 'Work', 'Business'],
+  [/\b(detail|detailing|ceramic|polish|wash|cut and polish|customer|quote|invoice|supplier|define)\b/i, 'Work', 'Business'],
+  [/\b(lecture|class|tutorial|tute|school|uni|exam|prac)\b/i, 'School', 'School'],
+  [/\b(study|assignment|essay|homework|revision|revise|readings?)\b/i, 'Study', 'School'],
+  [/\b(doctor|dentist|physio|run|swim)\b/i, 'Personal', 'Health'],
+];
+function nlDate(s) {
+  s = s.toLowerCase().replace(/\s+/g, ' ').trim();
+  const t = todayISO();
+  if (/^(today|tonight)$/.test(s)) return t;
+  if (/^(tomorrow|tmrw|tmr)$/.test(s)) return shiftISO(t, 1);
+  if (s === 'next week') { const d = parseISO(t); return shiftISO(t, ((8 - d.getDay()) % 7) || 7); }   // next Monday
+  let m;
+  if ((m = /^(next )?([a-z]+)$/.exec(s)) && m[2] in NL_WD) {
+    let ahead = (NL_WD[m[2]] - parseISO(t).getDay() + 7) % 7;
+    if (m[1]) ahead += 7;            // "next fri" = the Friday after this coming one
+    return shiftISO(t, ahead);
+  }
+  if ((m = /^in (\d+) (day|week)s?$/.exec(s))) return shiftISO(t, +m[1] * (m[2] === 'week' ? 7 : 1));
+  const yearFor = (mo, d) => { const now = parseISO(t); let y = now.getFullYear(); if (new Date(y, mo, d) < new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1)) y++; return y; };
+  const mk = (y, mo, d) => { const x = new Date(y, mo, d); return x.getMonth() === mo && x.getDate() === d ? todayISO(x) : ''; };
+  if ((m = /^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?$/.exec(s))) { const d = +m[1], mo = +m[2] - 1; const y = m[3] ? (m[3].length === 2 ? 2000 + +m[3] : +m[3]) : yearFor(mo, d); return mk(y, mo, d); }
+  if ((m = /^(\d{1,2})(?:st|nd|rd|th)? ([a-z]+)$/.exec(s)) && m[2] in NL_MON) return mk(yearFor(NL_MON[m[2]], +m[1]), NL_MON[m[2]], +m[1]);
+  if ((m = /^([a-z]+) (\d{1,2})(?:st|nd|rd|th)?$/.exec(s)) && m[1] in NL_MON) return mk(yearFor(NL_MON[m[1]], +m[2]), NL_MON[m[1]], +m[2]);
+  return '';
+}
+// "6", "6:30", "6pm", "18:00" → minutes; `mer` overrides am/pm; bare 1–6 means afternoon
+function nlTime(s, merHint) {
+  const m = /^(\d{1,2})(?::(\d{2}))?\s*(am|pm|a|p)?$/i.exec(s.trim()); if (!m) return null;
+  let h = +m[1]; const mi = +(m[2] || 0), mer = (m[3] || merHint || '').toLowerCase()[0];
+  if (h > 23 || mi > 59) return null;
+  if (mer === 'p' && h < 12) h += 12;
+  else if (mer === 'a' && h === 12) h = 0;
+  else if (!mer && !m[2] && h >= 1 && h <= 6) h += 12;
+  return h * 60 + mi;
+}
+const durMin = (n, u) => Math.round(parseFloat(n) * (/^h/i.test(u) ? 60 : 1));
+function parseQuick(raw, forceKind) {
+  let s = ' ' + raw + ' ';
+  const r = { kind: '', title: '', date: '', start: '', end: '', dur: 0, days: null, cat: '', pri: 0, deadline: '', est: 0, cost: 0, inbox: false, tags: [] };
+  const take = (re, fn) => { s = s.replace(re, (...a) => { const out = fn(...a); return out === false ? a[0] : ' '; }); };
+  take(/^\s*(todo|task|t:)\s+/i, () => { r.kind = 'task'; });
+  take(/^\s*(event|e:)\s+/i, () => { r.kind = 'event'; });
+  take(/\s(someday|inbox|later)(?=\s)/i, () => { r.inbox = true; });
+  take(/\$\s?(\d+(?:\.\d{1,2})?)/, (_, n) => { r.cost = +n; });
+  take(/\s(p[123])(?=\s)/i, (_, p) => { r.pri = +p[1]; });
+  take(/\s(!{1,3})(?=\s)/, (_, x) => { r.pri = 4 - x.length; });
+  take(/\s#([a-z]+)/i, (_, w) => {
+    const all = [...Object.keys(CATS), ...Object.keys(TASK_CATS)], hit = all.find(c => c.toLowerCase().startsWith(w.toLowerCase()));
+    if (!hit) return false; r.cat = hit;
+  });
+  take(/\s(?:~|est\.?\s*)(\d+(?:\.\d+)?)\s*(h|hrs?|hours?|m|mins?|minutes?)(?=\s)/i, (_, n, u) => { r.est = durMin(n, u); });
+  take(new RegExp(`\\s(?:due|by)\\s+(${DATE_P})(?=\\s)`, 'i'), (_, d) => { const x = nlDate(d); if (!x) return false; r.deadline = x; });
+  take(new RegExp(`\\s(?:every\\s+(day|weekday|weekend|(?:${WD_P})(?:\\s*(?:,|and|&)\\s*(?:${WD_P}))*)s?|(daily|weekdays|weekends|weekly))(?=\\s)`, 'i'), (_, a, b) => {
+    const w = (a || b).toLowerCase();
+    if (/^(day|daily)$/.test(w)) r.days = [];
+    else if (/^weekdays?$/.test(w)) r.days = [1, 2, 3, 4, 5];
+    else if (/^weekends?$/.test(w)) r.days = [0, 6];
+    else if (w === 'weekly') r.days = 'weekly';
+    else r.days = w.split(/\s*(?:,|and|&)\s*/).map(x => NL_WD[x]).filter(x => x !== undefined);
+  });
+  // a range: "6-7pm", "9am to 5pm", "from 2 till 4"
+  take(new RegExp(`\\s(from\\s+|at\\s+|@\\s*)?(${TIME_P})\\s*(?:-|–|to|till|until)\\s*(${TIME_P})(?=\\s)`, 'i'), (m0, pre, a, b, off, str) => {
+    const mb = /(am|pm|a|p)\s*$/i.exec(b), ma = /(am|pm|a|p)\s*$/i.exec(a);
+    // "buy 2-3 towels" is a quantity: a bare range only counts as a time at the end of the line
+    if (!pre && !ma && !mb && !/:/.test(a + b) && str.slice(off + m0.length).replace(new RegExp(`\\b(?:on\\s+)?(?:${DATE_P})\\b`, 'gi'), '').trim()) return false;
+    let e = nlTime(b), st = nlTime(a, ma ? '' : mb ? mb[1] : '');
+    if (st === null || e === null) return false;
+    if (!ma && mb && st > e) st -= 12 * 60;               // "11-1pm" → 11am–1pm
+    if (st < 0) st += 12 * 60;
+    if (!mb && e <= st) e += 12 * 60;                     // "9-5" → 9am–5pm
+    if (e <= st || e > 24 * 60) return false;
+    r.start = minToHM(st); r.end = minToHM(Math.min(e, 1439));
+  });
+  if (!r.start) take(/\s(noon|midday|midnight)(?=\s)/i, (_, w) => { r.start = w.toLowerCase() === 'midnight' ? '00:00' : '12:00'; });
+  if (!r.start) take(new RegExp(`\\s(?:at\\s+|@\\s*)(${TIME_P})(?=\\s)|\\s(\\d{1,2}(?::\\d{2})?\\s*(?:am|pm))(?=\\s)|\\s(\\d{1,2}:\\d{2})(?=\\s)`, 'i'), (_, a, b, c) => {
+    const m = nlTime(a || b || c); if (m === null) return false; r.start = minToHM(m);
+  });
+  take(/\s(?:for\s+)?(\d+(?:\.\d+)?)\s*(h|hrs?|hours?)(?:\s*(\d+)\s*(?:m|mins?))?(?=\s)/i, (_, n, u, extra) => { r.dur = durMin(n, u) + (+extra || 0); });
+  if (!r.dur) take(/\s(?:for\s+)?(\d+)\s*(mins?|minutes?|m)(?=\s)/i, (_, n, u) => { r.dur = durMin(n, u); });
+  take(new RegExp(`\\s(?:on\\s+)?(${DATE_P})(?=\\s)`, 'i'), (_, d) => {
+    const x = nlDate(d); if (!x) return false;
+    r.date = x;
+    if (/tonight/i.test(d)) r.evening = true;
+  });
+  r.title = s.replace(/\s+/g, ' ').trim().replace(/^(at|on|from|by|for|-)\s+|\s+(at|on|from|by|for|-)$/gi, '').trim();
+  // "tonight at 7" is 7pm
+  if (r.evening && r.start && hhmmToMin(r.start) < 12 * 60) { r.start = addMinutes(r.start, 720); if (r.end && hhmmToMin(r.end) < 12 * 60) r.end = addMinutes(r.end, 720); }
+  if (r.start && !r.end && r.dur) r.end = minToHM(Math.min(hhmmToMin(r.start) + r.dur, 1439));
+  if (!r.est && r.dur && !r.start) r.est = r.dur;
+  if (r.days === 'weekly') r.days = [parseISO(r.date || todayISO()).getDay()];
+  if (!r.kind) r.kind = forceKind || (r.start ? 'event' : 'task');
+  if (forceKind) r.kind = forceKind;
+  // category: a #tag wins, otherwise a guess from the words
+  const hit = CAT_WORDS.find(([re]) => re.test(r.title));
+  if (r.kind === 'event') { if (!(r.cat in CATS)) r.cat = (hit && hit[1]) || ''; }
+  else if (!(r.cat in TASK_CATS)) r.cat = r.cat === 'Gym' ? 'Health' : r.cat === 'Study' ? 'School' : r.cat === 'Work' ? 'Business' : (hit && hit[2]) || '';
+  return r;
+}
+function quickChips(r) {
+  if (!r.title && !r.date && !r.start) return '';
+  const c = [];
+  c.push(`<button type="button" class="nl-chip kind" data-act="qaKind" data-k="${r.kind === 'event' ? 'task' : 'event'}">${ic(r.kind === 'event' ? 'calendar' : 'check-circle', 'xs')} ${r.kind === 'event' ? 'Event' : 'Task'} <span class="muted">· switch</span></button>`);
+  if (r.inbox && r.kind === 'task') c.push(`<span class="nl-chip">${ic('note', 'xs')} Inbox</span>`);
+  else if (r.days) c.push(`<span class="nl-chip">${ic('repeat', 'xs')} ${esc(taskRepeatLabel({ repeat: 'days', days: r.days.length === 7 ? [] : r.days }))}</span>`);
+  else c.push(`<span class="nl-chip">${ic('calendar', 'xs')} ${r.date ? (r.date === todayISO() ? 'Today' : r.date === shiftISO(todayISO(), 1) ? 'Tomorrow' : fmtDay(r.date)) : 'Today'}</span>`);
+  if (r.start) c.push(`<span class="nl-chip">${ic('clock', 'xs')} ${fmtHM(r.start)}${r.end ? '–' + fmtHM(r.end) : r.kind === 'event' ? ' · 1h' : ''}</span>`);
+  if (r.cat) c.push(`<span class="nl-chip"><i class="cdot" style="background:${r.kind === 'event' ? catColor(r.cat) : taskColor(r.cat)}"></i> ${esc(r.cat)}</span>`);
+  if (r.pri) c.push(`<span class="nl-chip pri p${r.pri}">${ic('flag', 'xs')} ${PRI[r.pri]}</span>`);
+  if (r.deadline) c.push(`<span class="nl-chip">${ic('flag', 'xs')} Due ${esc(fmtDay(r.deadline))}</span>`);
+  if (r.est && r.kind === 'task') c.push(`<span class="nl-chip">~${estLabel(r.est)}</span>`);
+  if (r.cost) c.push(`<span class="nl-chip">${r.kind === 'event' && r.cat === 'Work' ? 'Earns ' : ''}${AUD(r.cost, r.cost % 1 ? 2 : 0)}</span>`);
+  return `<div class="nl-title">${r.title ? esc(r.title) : '<span class="muted">Add a name…</span>'}</div><div class="nl-chips">${c.join('')}</div>`;
+}
+// turn a parse into real items; returns a toast message
+function commitQuick(r) {
+  if (!r.title) return '';
+  const date = r.date || todayISO();
+  if (r.kind === 'event') {
+    const days = r.days ? (r.days.length ? r.days : [0, 1, 2, 3, 4, 5, 6]) : null;
+    const base = { title: r.title, category: r.cat || 'Personal', start: r.start, end: r.end || (r.start ? addMinutes(r.start, 60) : ''),
+      // on a Work event the dollar amount is what you're paid, not a cost
+      cost: r.cat === 'Work' ? 0 : r.cost, notes: '', rate: 0, earned: r.cat === 'Work' ? r.cost : 0,
+      studyFor: r.cat === 'Study' ? 'School' : '', mtime: Date.now() };
+    const made = days
+      ? days.map(wd => ({ id: uid(), ...base, recurring: true, date: null, weekday: wd }))
+      : [{ id: uid(), ...base, recurring: false, date, weekday: parseISO(date).getDay() }];
+    made.forEach(ev => { S.calendar.events.push(ev); syncEventCost(ev); });
+    const cl = !days && r.start ? clashes(date, base.start, base.end, made[0].id) : [];
+    gcalSoon();
+    return `${days ? `${r.title} — every ${taskRepeatLabel({ repeat: 'days', days: r.days }).toLowerCase()}` : `${r.title} · ${fmtDay(date)}${r.start ? ' ' + fmtHM(r.start) : ''}`}${cl.length ? ` · clashes with ${cl[0].title}` : ''}`;
+  }
+  const inbox = r.inbox && !r.date && !r.days;
+  const rep = r.days ? 'days' : 'none';
+  let d = date;
+  if (r.days && r.days.length) { let x = parseISO(d), g = 0; while (!r.days.includes(x.getDay()) && g++ < 7) x.setDate(x.getDate() + 1); d = todayISO(x); }
+  TASKS().push({ id: uid(), text: r.title, cat: r.cat || '', scope: inbox ? 'inbox' : 'day', date: inbox ? '' : d,
+    week: inbox ? '' : weekKey(parseISO(d)), month: inbox ? '' : d.slice(0, 7), repeat: rep, days: r.days && r.days.length < 7 ? r.days : [],
+    start: r.start || '', end: r.start ? (r.end || addMinutes(r.start, r.est || 30)) : '',
+    est: r.est || 0, pri: r.pri || 0, deadline: r.deadline || '', checklist: [], done: false, doneDays: {} });
+  return inbox ? `“${r.title}” → Inbox` : `“${r.title}” → ${d === todayISO() ? 'today' : fmtDay(d)}${r.deadline ? ` · due ${fmtDay(r.deadline)}` : ''}`;
+}
+
+/* ---------- the day timeline ---------- */
+const TL_PX = 54;                 // pixels per hour
+let placingTask = null;           // a tray task waiting for you to tap its time
+function tlItems(iso) {
+  const out = [];
+  if (showEvents()) eventsForDate(iso).forEach(e => { const sp = evSpan(e); if (sp) out.push({ s: sp[0], e: sp[1], kind: 'ev', x: e }); });
+  if (showTasks()) tasksForDate(iso).filter(t => t.start).forEach(t => { const s = hhmmToMin(t.start); let e = hhmmToMin(t.end); if (e === null || e <= s) e = s + (num(t.est) || 30); out.push({ s, e, kind: 'tk', x: t }); });
+  if (showHabits()) habitsOnDate(iso).filter(h => hhmmToMin(h.time) !== null).forEach(h => { const s = hhmmToMin(h.time); out.push({ s, e: s + 20, kind: 'hb', x: h }); });
+  // overlapping blocks share the width: greedy columns within each cluster
+  out.sort((a, b) => a.s - b.s || b.e - a.e);
+  let cluster = [], cEnd = -1;
+  const flush = () => { const n = Math.max(...cluster.map(c => c.col)) + 1; cluster.forEach(c => { c.n = n; }); cluster = []; };
+  out.forEach(it => {
+    if (it.s >= cEnd && cluster.length) flush();
+    const cols = cluster.filter(c => c.e > it.s).map(c => c.col);
+    let col = 0; while (cols.includes(col)) col++;
+    it.col = col; cluster.push(it); cEnd = Math.max(cEnd, it.e);
+  });
+  if (cluster.length) flush();
+  return out;
+}
+function plannerTimeline(iso) {
+  const items = tlItems(iso), P = PLAN();
+  const ws = hhmmToMin(P.dayStart) ?? 420, we = hhmmToMin(P.dayEnd) ?? 1320;
+  const h0 = Math.floor(Math.min(ws, ...items.map(i => i.s)) / 60);
+  const h1 = Math.min(24, Math.ceil(Math.max(we, ...items.map(i => i.e)) / 60));
+  const y = m => (m - h0 * 60) / 60 * TL_PX;
+  const isToday = iso === todayISO(), nm = nowMin();
+  const slots = [], labels = [];
+  for (let h = h0; h < h1; h++) {
+    labels.push(`<div class="tl-hr" style="top:${y(h * 60)}px"><span>${h % 12 || 12}${h < 12 ? 'am' : 'pm'}</span></div>`);
+    [0, 30].forEach(mm => { const m = h * 60 + mm; slots.push(`<button class="tl-slot ${isToday && m + 30 <= nm ? 'past' : ''}" data-act="tlSlot" data-t="${minToHM(m)}" style="top:${y(m)}px;height:${TL_PX / 2}px" aria-label="${fmtHM(minToHM(m))}"></button>`); });
+  }
+  const blk = it => {
+    const top = y(it.s), hgt = Math.max(20, y(it.e) - top - 2);
+    const pos = `top:${top}px;height:${hgt}px;left:calc(${it.col} * (100% / ${it.n}));width:calc(100% / ${it.n} - 3px)`;
+    const short = hgt < 34;
+    if (it.kind === 'ev') { const e = it.x;
+      return `<div class="tl-blk ev ${short ? 'short' : ''} ${isToday && it.e <= nm ? 'past' : ''}" style="${pos};--cat:${catColor(e.category)}" data-act="editEvent" data-id="${e.id}">
+        <b>${esc(e.title)}</b>${short ? '' : `<span>${fmtHM(minToHM(it.s))}–${fmtHM(minToHM(it.e))}${e.g ? ' · Google' : ''}</span>`}</div>`; }
+    if (it.kind === 'tk') { const t = it.x, done = taskDone(t, iso);
+      return `<div class="tl-blk tk ${done ? 'done' : ''} ${short ? 'short' : ''} ${t.pri ? 'p' + t.pri : ''}" style="${pos};--cat:${taskColor(t.cat)}" data-act="editTask" data-id="${t.id}">
+        <span class="tl-box tap" data-act="toggleTask" data-id="${t.id}" data-d="${iso}">${TICK}</span>
+        <span class="tl-tx"><b>${esc(t.text)}</b>${short ? '' : `<span>${fmtHM(minToHM(it.s))}–${fmtHM(minToHM(it.e))}${checkProgress(t) ? ' · ' + checkProgress(t) : ''}</span>`}</span></div>`; }
+    const h = it.x, done = habitDoneOn(h, iso);
+    return `<div class="tl-blk hb short ${done ? 'done' : ''}" style="${pos}" data-act="calToggleHabit" data-id="${h.id}" data-d="${iso}">
+      <span class="tl-box">${TICK}</span><span class="tl-tx"><b>${esc(h.text)}</b></span></div>`;
+  };
+  const allDay = showEvents() ? eventsForDate(iso).filter(e => !evSpan(e)) : [];
+  return `${allDay.length ? `<div class="tl-allday">${allDay.map(e => `<button class="tl-ad tap" data-act="editEvent" data-id="${e.id}" style="--cat:${catColor(e.category)}">${esc(e.title)}</button>`).join('')}</div>` : ''}
+    <div class="tl ${placingTask ? 'placing' : ''}" style="height:${(h1 - h0) * TL_PX}px">
+      ${labels.join('')}
+      <div class="tl-lane">
+        ${slots.join('')}
+        ${items.map(blk).join('')}
+        ${isToday && nm >= h0 * 60 && nm < h1 * 60 ? `<div class="tl-now" style="top:${y(nm)}px"></div>` : ''}
+      </div>
+    </div>`;
+}
+function loadBar(iso) {
+  const L = dayLoad(iso);
+  if (iso < todayISO()) return '';
+  const pct = L.free ? clamp(L.planned / L.free, 0, 1.2) : (L.planned ? 1.2 : 0);
+  const over = L.planned > L.free;
+  return `<div class="load ${over ? 'over' : ''}">
+      <div class="load-top"><span><b>${estLabel(L.planned) || '0m'}</b> planned</span><span><b>${estLabel(L.free) || '0m'}</b> free${iso === todayISO() ? ' left today' : ''}</span></div>
+      <div class="bar slim"><i style="width:${Math.min(100, pct * 100)}%"></i></div>
+      <div class="load-note">${over ? `That's ${estLabel(L.planned - L.free)} more than fits — move something to another day` : L.unest ? `${L.unest} task${L.unest > 1 ? 's have' : ' has'} no time estimate yet` : L.open ? 'Fits in the time you have' : 'Nothing to plan yet'}</div>
+    </div>`;
+}
+function trayRow(t, iso) {
+  const sub = [t.est ? '~' + estLabel(t.est) : '', checkProgress(t), t.rolled ? `carried ${t.rolled}d` : '', t.cat].filter(Boolean).join(' · ');
+  return `<div class="tray-row ${placingTask === t.id ? 'picked' : ''} ${t.pri ? 'p' + t.pri : ''}">
+    <span class="box tap" data-act="toggleTask" data-id="${t.id}" data-d="${iso}">${TICK}</span>
+    <span class="txt tap" data-act="editTask" data-id="${t.id}">${esc(t.text)} ${deadlineBadge(t)}${sub ? `<span class="s muted">${esc(sub)}</span>` : ''}</span>
+    <button class="btn sm" data-act="trayPlace" data-id="${t.id}">${placingTask === t.id ? 'Cancel' : 'Place'}</button>
+  </div>`;
+}
+function plannerDay() {
+  const iso = calSel, isPast = iso < todayISO();
+  const tray = showTasks() ? tasksForDate(iso).filter(t => !t.start && !taskDone(t, iso)).sort(taskRank) : [];
+  const doneN = tasksForDate(iso).filter(t => taskDone(t, iso)).length;
+  const inbox = inboxTasks();
+  const note = PLAN().daily[iso] || '';
+  const pending = noteTodos(iso).length;
+  const pickT = placingTask && TASKS().find(t => t.id === placingTask);
+  return `
+    <div class="card">
+      <div class="section-head" style="margin:0">
+        <button class="iconbtn" data-act="dayPrev">${ic('chevron-left')}</button>
+        <h3>${iso === todayISO() ? 'Today · ' : ''}${fmtDay(iso)}</h3>
+        <button class="iconbtn" data-act="dayNext">${ic('chevron')}</button>
+      </div>
+      ${showTasks() ? loadBar(iso) : ''}
+      ${!isPast && showTasks() ? `<div class="plan-acts">
+        <button class="btn sm" data-act="planMyDay" data-d="${iso}">${ic('sparkles')} Plan ${iso === todayISO() ? 'my day' : 'this day'}</button>
+        <button class="btn sm" data-act="autoPlace" data-d="${iso}" ${tray.some(t => !repeats(t)) ? '' : 'disabled'}>${ic('clock')} Auto-place</button>
+      </div>` : ''}
+    </div>
+    ${pickT ? `<div class="place-bar">${ic('clock')}<span>Tap a time for <b>${esc(pickT.text)}</b></span><button class="link" data-act="placeNext">Next free slot</button><button class="link" data-act="trayPlace" data-id="${pickT.id}">Cancel</button></div>` : ''}
+    ${showTasks() ? `<div class="section-head"><h3>To place <span class="muted small">${tray.length || ''}</span></h3><button class="link" data-act="addTask" data-scope="day" data-d="${iso}">+ Task</button></div>
+    <div class="card tray">
+      ${tray.map(t => trayRow(t, iso)).join('') || `<div class="empty">${tasksForDate(iso).length ? 'Everything is placed on the timeline.' : 'No tasks for this day. Type one in the + button — “Wax Hilux 2pm ~1h”.'}</div>`}
+      ${doneN ? `<div class="small muted" style="margin-top:8px">${doneN} done today</div>` : ''}
+    </div>` : ''}
+    <div class="section-head"><h3>Timeline</h3><span class="small muted">Tap a time to add</span></div>
+    <div class="card tl-card">${plannerTimeline(iso)}</div>
+    ${showTasks() && inbox.length ? `<div class="section-head"><h3>Inbox <span class="muted small">${inbox.length}</span></h3><span class="small muted">no date yet</span></div>
+    <div class="card tray">${inbox.sort(taskRank).slice(0, 8).map(t => `<div class="tray-row ${t.pri ? 'p' + t.pri : ''}">
+        <span class="box tap" data-act="toggleTask" data-id="${t.id}">${TICK}</span>
+        <span class="txt tap" data-act="editTask" data-id="${t.id}">${esc(t.text)} ${deadlineBadge(t)}${t.est ? `<span class="s muted">~${estLabel(t.est)}</span>` : ''}</span>
+        <button class="btn sm" data-act="inboxToDay" data-id="${t.id}" data-d="${iso}">${iso === todayISO() ? 'Today' : 'This day'}</button>
+      </div>`).join('')}${inbox.length > 8 ? `<div class="small muted" style="margin-top:8px">+${inbox.length - 8} more — see the Plan sheet</div>` : ''}</div>` : ''}
+    <div class="section-head"><h3>Day note</h3>${pending ? `<button class="link" data-act="noteToTasks" data-d="${iso}">Make ${pending} task${pending > 1 ? 's' : ''}</button>` : ''}</div>
+    <div class="card day-note">
+      <textarea id="dayNote" data-d="${iso}" placeholder="${esc(PLAN().template.replace(/\n/g, ' · ').replace(/- \[ \] /g, '☐ '))}">${esc(note)}</textarea>
+      ${!note ? `<button class="link small" data-act="noteTemplate" data-d="${iso}">Start from template</button>` : `<div class="small muted">Lines like “- [ ] call Sam” can become tasks</div>`}
+    </div>
+    ${calSummaryCard()}`;
+}
+// "- [ ] something" lines in a day note that aren't already tasks on that day
+function noteTodos(iso) {
+  const have = new Set(tasksForDate(iso).map(t => titleKey(t)));
+  return ((PLAN().daily[iso] || '').match(/^\s*[-*]?\s*\[ \]\s*(.+)$/gm) || [])
+    .map(l => l.replace(/^\s*[-*]?\s*\[ \]\s*/, '').trim()).filter(x => x && !have.has(x.toLowerCase()));
+}
+// debounced save of the day note as you type
+let noteTimer = 0;
+document.addEventListener('input', e => {
+  if (e.target.id !== 'dayNote') return;
+  const iso = e.target.dataset.d, v = e.target.value;
+  clearTimeout(noteTimer);
+  noteTimer = setTimeout(() => {
+    if (v.trim()) PLAN().daily[iso] = v; else delete PLAN().daily[iso];
+    save();
+    const btn = $('[data-act="noteToTasks"]'), n = noteTodos(iso).length;
+    if (btn) { btn.hidden = !n; btn.textContent = `Make ${n} task${n > 1 ? 's' : ''}`; }
+  }, 700);
+});
+
+/* ---------- Plan my day: carried-over, inbox, load, then place ---------- */
+function planSheet(iso) {
+  const carried = tasksForDate(iso).filter(t => t.rolled && !taskDone(t, iso));
+  const inbox = inboxTasks().sort(taskRank);
+  const dueSoon = TASKS().filter(t => t.deadline && !t.done && t.scope !== 'inbox' && !(t.scope === 'day' && t.date === iso) && daysTo(t.deadline) <= 3 && daysTo(t.deadline) >= 0);
+  // over capacity: the least important unplaced tasks are the ones to push out
+  const L = dayLoad(iso);
+  const movable = tasksForDate(iso).filter(t => !taskDone(t, iso) && !t.start && !repeats(t) && !t.rolled).sort(taskRank).reverse().slice(0, 6);
+  const row = (t, btns) => `<div class="tray-row ${t.pri ? 'p' + t.pri : ''}"><span class="txt">${esc(t.text)} ${deadlineBadge(t)}
+      <span class="s muted">${esc([t.rolled ? `carried ${t.rolled}d` : '', t.est ? '~' + estLabel(t.est) : '', t.scope === 'day' && t.date !== iso ? fmtDay(t.date) : ''].filter(Boolean).join(' · '))}</span></span>
+      <span class="plan-btns">${btns}</span></div>`;
+  openSheet(`<h3>Plan ${iso === todayISO() ? 'your day' : fmtDay(iso)}</h3>
+    <p class="desc">Decide what's really happening ${iso === todayISO() ? 'today' : 'that day'}, then let Compass time-block it around your events.</p>
+    ${carried.length ? `<div class="card-label">Carried over · ${carried.length}</div>
+      <div class="plan-list">${carried.map(t => row(t, `
+        <button class="chip tap" data-act="planKeep" data-id="${t.id}">Keep</button>
+        <button class="chip tap" data-act="planMove" data-id="${t.id}" data-d="${shiftISO(iso, 1)}">Tomorrow</button>
+        <button class="chip tap" data-act="planInbox" data-id="${t.id}">Inbox</button>
+        <button class="chip tap neg" data-act="planDrop" data-id="${t.id}">Drop</button>`)).join('')}</div>` : ''}
+    ${dueSoon.length ? `<div class="card-label">Due soon, scheduled elsewhere</div>
+      <div class="plan-list">${dueSoon.map(t => row(t, `<button class="chip tap" data-act="planMove" data-id="${t.id}" data-d="${iso}">Do ${iso === todayISO() ? 'today' : 'this day'}</button>`)).join('')}</div>` : ''}
+    ${L.planned > L.free && movable.length ? `<div class="card-label neg">Doesn't fit · ${estLabel(L.planned - L.free)} over</div>
+      <div class="plan-list">${movable.map(t => row(t, `
+        <button class="chip tap" data-act="planMove" data-id="${t.id}" data-d="${shiftISO(iso, 1)}">Tomorrow</button>
+        <button class="chip tap" data-act="planInbox" data-id="${t.id}">Inbox</button>`)).join('')}</div>` : ''}
+    <div class="card-label">Inbox · ${inbox.length}</div>
+    <div class="plan-list">${inbox.map(t => row(t, `<button class="chip tap" data-act="planMove" data-id="${t.id}" data-d="${iso}">+ ${iso === todayISO() ? 'Today' : 'This day'}</button>`)).join('') || '<div class="empty">Inbox is empty.</div>'}</div>
+    <div class="card-label">Load</div>
+    ${loadBar(iso)}
+    <div class="sheet-actions">
+      <button class="btn" data-act="planDone" data-d="${iso}">Done</button>
+      <button class="btn primary" data-act="planPlace" data-d="${iso}">${ic('clock')} Time-block it</button>
+    </div>`);
+}
+const shouldPlanToday = () => {
+  const t = todayISO(), h = new Date().getHours();
+  return PLAN().plannedOn !== t && h >= 5 && h < 15 && (tasksForDate(t).some(x => !taskDone(x, t)) || inboxTasks().length);
+};
+function planCard() {
+  if (!shouldPlanToday()) return '';
+  const t = todayISO(), L = dayLoad(t), carried = tasksForDate(t).filter(x => x.rolled && !taskDone(x, t)).length;
+  return `<div class="card plan-card tap" data-act="planMyDay" data-d="${t}">
+    <span class="att-ic">${ic('sparkles')}</span>
+    <div class="body"><div class="t">Plan your day</div>
+      <div class="s">${esc([carried && `${carried} carried over`, inboxTasks().length && `${inboxTasks().length} in Inbox`, `${estLabel(L.free) || '0m'} free`].filter(Boolean).join(' · '))}</div></div>
+    ${ic('chevron')}
+  </div>`;
+}
+
+/* ============================================================
+   Google Calendar — two-way sync
+   Google tokens live on the server (KV), behind the same secret key as cloud
+   sync, so they're never in this device's storage or a backup file. Each sync:
+     1. pulls every event in a window (2 weeks back, 4 months ahead) from the
+        calendars you picked, as single instances;
+     2. adds/updates/removes the Compass copies (a Compass edit newer than
+        Google's wins);
+     3. pushes Compass events that are new or changed to your chosen calendar,
+        and deletes in Google what you deleted here.
+   Event ids pushed to Google are derived from the Compass id, so a retry or a
+   second device can never create a duplicate.
+   ============================================================ */
+const GCAL = () => (S.gcal || (S.gcal = { on: false, email: '', cals: {}, writeCal: '', linked: {}, lastSync: 0, err: '' }));
+const GCAL_BACK = 14, GCAL_AHEAD = 120;      // days
+let gcalBusy = false, gcalTimer = 0;
+const gcalTZ = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Australia/Brisbane'; } catch (e) { return 'Australia/Brisbane'; } };
+// "+10:00" for this device right now
+const tzOffset = () => { const m = -new Date().getTimezoneOffset(), a = Math.abs(m); return `${m >= 0 ? '+' : '-'}${String(Math.floor(a / 60)).padStart(2, '0')}:${String(a % 60).padStart(2, '0')}`; };
+// Google event ids are base32hex (0-9, a-v); hex of the Compass id fits and is stable
+const gidFor = id => 'c0' + [...String(id)].map(c => c.charCodeAt(0).toString(16).padStart(2, '0')).join('');
+// fingerprint of the fields that sync, to tell "changed here since the last sync"
+function evHash(e) {
+  const s = JSON.stringify([e.title, e.date, e.endDate || '', e.start || '', e.end || '', !!e.recurring, e.recurring ? e.weekday : '', e.notes || '', e.category, num(e.cost), e.location || '']);
+  let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return h.toString(36);
+}
+async function gcalAPI(payload) {
+  if (!syncEnabled()) throw new Error('Turn on cloud sync first');
+  const r = await fetch('/api/gcal', {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-sync-key': syncCfg.key }, body: JSON.stringify(payload),
+  });
+  const j = await r.json().catch(() => null);
+  if (!r.ok) { const e = new Error((j && j.error) || 'HTTP ' + r.status); e.status = r.status; e.body = j; throw e; }
+  return j || {};
+}
+function gcalSoon(ms = 4000) {
+  if (!GCAL().on) return;
+  clearTimeout(gcalTimer); gcalTimer = setTimeout(() => gcalSync(), ms);
+}
+
+// Google → the fields Compass keeps
+function fromGoogle(it, cal) {
+  const p = it.priv || {}, allDay = !!(it.start && it.start.date);
+  const date = allDay ? it.start.date : String(it.start.dateTime).slice(0, 10);
+  let endDate = '';
+  if (allDay && it.end && it.end.date) { const last = shiftISO(it.end.date, -1); if (last > date) endDate = last; }
+  const title = (it.summary || '(No title)').slice(0, 200);
+  const guess = CAT_WORDS.find(([re]) => re.test(title));
+  const category = (p.cat in CATS && p.cat) || (guess && guess[1]) || cal.cat || 'Personal';
+  return {
+    title, date, endDate, recurring: false, weekday: parseISO(date).getDay(),
+    start: allDay ? '' : String(it.start.dateTime).slice(11, 16),
+    end: allDay ? '' : String(it.end.dateTime).slice(11, 16),
+    notes: (it.description || '').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').slice(0, 4000),
+    location: (it.location || '').slice(0, 300),
+    category, cost: num(p.cost), rate: num(p.rate), earned: num(p.earned),
+    studyFor: category === 'Study' ? (p.studyFor || 'School') : '',
+  };
+}
+// Compass → a Google event body
+function toGoogle(e) {
+  const tz = gcalTZ();
+  let d = e.date;
+  if (e.recurring) {           // a weekly event starts on its next occurrence
+    const t = parseISO(todayISO()); t.setDate(t.getDate() + ((e.weekday - t.getDay() + 7) % 7)); d = todayISO(t);
+  }
+  const body = {
+    summary: e.title, description: e.notes || '', location: e.location || '',
+    extendedProperties: { private: { compassId: e.id, cat: e.category || '', cost: String(num(e.cost) || ''), rate: String(num(e.rate) || ''), earned: String(num(e.earned) || ''), studyFor: e.studyFor || '' } },
+  };
+  const s = e.start || e.time;
+  if (!s) { body.start = { date: d }; body.end = { date: shiftISO(e.endDate && !e.recurring ? e.endDate : d, 1) }; }
+  else {
+    const en = e.end || addMinutes(s, 60);
+    body.start = { dateTime: `${d}T${s}:00`, timeZone: tz };
+    body.end = { dateTime: `${hhmmToMin(en) <= hhmmToMin(s) ? shiftISO(d, 1) : d}T${en}:00`, timeZone: tz };
+  }
+  if (e.recurring) body.recurrence = ['RRULE:FREQ=WEEKLY'];
+  return body;
+}
+const normTitle = t => String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+const enabledCals = () => Object.entries(GCAL().cals).filter(([, c]) => c.on).map(([id, c]) => ({ id, ...c }));
+
+async function gcalSync(opts = {}) {
+  const G = GCAL();
+  if (!G.on || gcalBusy || !syncEnabled() || !pulledOnce) return false;
+  gcalBusy = true; setSyncDot('busy');
+  const today = todayISO(), from = shiftISO(today, -GCAL_BACK), to = shiftISO(today, GCAL_AHEAD);
+  let added = 0, updated = 0, removed = 0, pushed = 0, deleted = 0;
+  const evs = () => S.calendar.events;
+  const byGid = new Map(evs().filter(e => e.g).map(e => [e.g.id, e]));
+  try {
+    /* 1–2. pull and apply */
+    for (const cal of enabledCals()) {
+      const items = []; let pageToken = '', pages = 0;
+      do {
+        const r = await gcalAPI({ action: 'list', calendarId: cal.id, timeMin: `${from}T00:00:00${tzOffset()}`, timeMax: `${to}T00:00:00${tzOffset()}`, timeZone: gcalTZ(), pageToken });
+        items.push(...(r.items || [])); pageToken = r.nextPageToken || '';
+      } while (pageToken && ++pages < 20);
+      const seen = new Set();
+      // Compass events Google already knows by id — never title-match these to something else
+      const claimed = new Set(items.map(i => i.priv && i.priv.compassId).filter(Boolean));
+      for (const it of items) {
+        if (it.status === 'cancelled' || !it.start) continue;
+        // instances of a weekly event that Compass owns stay as the one weekly event here
+        if (it.recurringEventId && G.linked[it.recurringEventId]) continue;
+        seen.add(it.id);
+        // linked before but deleted here since — that's a delete to send (step 4), not a new event
+        if (G.linked[it.id] && !byGid.has(it.id) && !evs().some(e => e.id === G.linked[it.id].c)) continue;
+        let local = byGid.get(it.id);
+        if (!local && it.priv && it.priv.compassId) local = evs().find(e => e.id === it.priv.compassId && !e.g);
+        const f = fromGoogle(it, cal);
+        // the same thing already typed into both (common on first connect): link them, don't duplicate
+        if (!local) {
+          const twin = evs().find(e => !e.g && !claimed.has(e.id) && !e.recurring && e.date === f.date && (e.start || '') === f.start && normTitle(e.title) === normTitle(f.title));
+          if (twin) {
+            twin.g = { cal: cal.id, id: it.id, etag: it.etag, ro: !!cal.ro, hash: evHash(twin) };
+            twin.g.etag = '';                 // treat as changed so the newer side wins below
+            local = twin; byGid.set(it.id, twin); G.linked[it.id] = { c: twin.id, cal: cal.id };
+          }
+        }
+        if (!local) {
+          const ev = { id: uid(), ...f, src: 'google', g: { cal: cal.id, id: it.id, etag: it.etag, ro: !!cal.ro } };
+          ev.g.hash = evHash(ev);
+          evs().push(ev); syncEventCost(ev); byGid.set(it.id, ev);
+          G.linked[it.id] = { c: ev.id, cal: cal.id }; added++;
+          continue;
+        }
+        if (local.g && local.g.etag === it.etag) continue;                 // unchanged (or our own write echoing back)
+        const editedHere = local.g && evHash(local) !== local.g.hash;
+        if (editedHere && (local.mtime || 0) > Date.parse(it.updated || 0)) continue;   // ours is newer — pushed below
+        if (local.recurring) { local.g = { ...(local.g || {}), cal: cal.id, id: it.id, etag: it.etag }; continue; }
+        Object.assign(local, f, { g: { cal: cal.id, id: it.id, etag: it.etag, ro: !!cal.ro } });
+        local.g.hash = evHash(local);
+        syncEventCost(local); byGid.set(it.id, local);
+        G.linked[it.id] = { c: local.id, cal: cal.id }; updated++;
+      }
+      // gone from Google (inside the window we just read in full) → gone here.
+      // Only when every page came back — a partial read must never delete anything.
+      if (pageToken) continue;
+      evs().filter(e => e.g && e.g.cal === cal.id && !e.recurring && e.date >= from && e.date < to && !seen.has(e.g.id)).forEach(e => {
+        S.calendar.events = evs().filter(x => x !== e);
+        S.money.transactions = S.money.transactions.filter(t => t.eventId !== e.id);
+        delete G.linked[e.g.id]; removed++;
+      });
+    }
+    // a calendar you switched off takes its imported events with it
+    const on = new Set(enabledCals().map(c => c.id));
+    evs().filter(e => e.src === 'google' && e.g && !on.has(e.g.cal)).forEach(e => {
+      S.calendar.events = evs().filter(x => x !== e);
+      S.money.transactions = S.money.transactions.filter(t => t.eventId !== e.id);
+      delete G.linked[e.g.id]; removed++;
+    });
+    /* 3. push what changed here */
+    const writeCal = G.writeCal && G.cals[G.writeCal] && !G.cals[G.writeCal].ro ? G.writeCal : '';
+    for (const e of evs().slice()) {
+      if (e.g) {
+        if (e.g.ro || evHash(e) === e.g.hash) continue;
+        try {
+          const r = await gcalAPI({ action: 'patch', calendarId: e.g.cal, eventId: e.g.id, event: toGoogle(e) });
+          e.g.etag = r.etag; e.g.hash = evHash(e); pushed++;
+        } catch (err) {
+          if (err.status === 404 || err.status === 410) {      // deleted in Google while edited here: put it back as new
+            delete G.linked[e.g.id]; delete e.g;
+          } else throw err;
+        }
+        continue;
+      }
+      if (!writeCal || e.noGcal) continue;
+      if (!e.recurring && !(e.date && e.date >= from)) continue;       // don't backfill old history into Google
+      const id = gidFor(e.id);
+      let r;
+      try { r = await gcalAPI({ action: 'insert', calendarId: writeCal, event: { ...toGoogle(e), id } }); }
+      catch (err) {
+        if (err.status !== 409) throw err;                         // 409: already there (another device / a retry)
+        r = await gcalAPI({ action: 'patch', calendarId: writeCal, eventId: id, event: toGoogle(e) });
+      }
+      e.g = { cal: writeCal, id, etag: r.etag, hash: evHash(e) };
+      G.linked[id] = { c: e.id, cal: writeCal }; pushed++;
+    }
+    /* 4. deleted here → delete there */
+    const ids = new Set(evs().map(e => e.id));
+    for (const [gid, l] of Object.entries(G.linked)) {
+      if (ids.has(l.c)) continue;
+      if (G.cals[l.cal] && G.cals[l.cal].ro) { delete G.linked[gid]; continue; }
+      await gcalAPI({ action: 'delete', calendarId: l.cal, eventId: gid });
+      delete G.linked[gid]; deleted++;
+    }
+    G.lastSync = Date.now(); G.err = '';
+    save(false);
+    setSyncDot('ok');
+    if (added || updated || removed) renderAll();
+    if (opts.loud) toast(added + updated + removed + pushed + deleted
+      ? `Google Calendar: ${[added && `${added} new`, updated && `${updated} updated`, removed && `${removed} removed`, pushed && `${pushed} sent`, deleted && `${deleted} deleted`].filter(Boolean).join(', ')}`
+      : 'Google Calendar is up to date');
+    return true;
+  } catch (e) {
+    console.warn('gcal', e);
+    G.err = e.message; save(false); setSyncDot('err');
+    if (e.status === 401 && e.body && e.body.reconnect) { G.on = false; save(false); toast('Google Calendar needs reconnecting — Settings › Google Calendar'); }
+    else if (opts.loud) toast('Google Calendar: ' + e.message);
+    return false;
+  } finally { gcalBusy = false; }
+}
+
+async function gcalLoadCalendars() {
+  const G = GCAL();
+  const { items, email } = await gcalAPI({ action: 'calendars' });
+  const next = {};
+  (items || []).forEach(c => {
+    const was = G.cals[c.id];
+    const ro = !['owner', 'writer'].includes(c.accessRole);
+    next[c.id] = { name: c.summary || c.id, color: c.backgroundColor || '#888', ro,
+      on: was ? was.on : !!c.primary, cat: was ? was.cat : 'Personal', primary: !!c.primary };
+  });
+  G.cals = next;
+  if (email) G.email = email;
+  if (!G.writeCal || !next[G.writeCal] || next[G.writeCal].ro) G.writeCal = (Object.entries(next).find(([, c]) => c.primary) || [''])[0];
+  save(false);
+}
+// back from Google's consent screen: /?gcal=connected (or =error)
+async function gcalHandleReturn() {
+  const q = new URLSearchParams(location.search), st = q.get('gcal');
+  if (!st) return;
+  history.replaceState({}, '', location.pathname);
+  if (st !== 'connected') return toast('Google Calendar: ' + (q.get('msg') || 'connection failed'));
+  try {
+    await gcalLoadCalendars();
+    GCAL().on = true; save(false);
+    toast('Google Calendar connected — pick your calendars');
+    openSettings(); setTimeout(() => $('#gcalSec')?.scrollIntoView({ block: 'start' }), 80);
+    gcalSync({ loud: true });
+  } catch (e) { toast('Google Calendar: ' + e.message); }
+}
+function gcalSettingsHTML() {
+  const G = GCAL();
+  if (!syncEnabled()) return `<p class="desc">Turn on cloud sync above first — your Google sign-in is kept on your own server, behind the same secret key.</p>`;
+  if (!G.on) return `<p class="desc">See your Google events in Compass, and send what you add here back to Google.</p>
+    <button class="btn" data-act="gcalConnect">${ic('calendar')} Connect Google Calendar</button>`;
+  const cals = Object.entries(G.cals);
+  return `<p class="desc">${G.email ? esc(G.email) + ' · ' : ''}${G.lastSync ? `synced ${fmtAgo(G.lastSync)}` : 'not synced yet'}${G.err ? ` · <span class="neg">${esc(G.err)}</span>` : ''}</p>
+    <div class="gcal-cals">${cals.map(([id, c]) => `<div class="gcal-cal">
+        <label class="gc-on"><input type="checkbox" data-gcal-on="${esc(id)}" ${c.on ? 'checked' : ''}><i style="background:${esc(c.color)}"></i><span>${esc(c.name)}${c.ro ? ' <span class="muted small">read-only</span>' : ''}</span></label>
+        <select data-gcal-cat="${esc(id)}" aria-label="Category for ${esc(c.name)}">${Object.keys(CATS).map(k => `<option ${k === c.cat ? 'selected' : ''}>${k}</option>`).join('')}</select>
+      </div>`).join('') || '<div class="empty">No calendars found</div>'}</div>
+    <label class="field"><span>New Compass events go to</span><select id="gcalWrite">
+      <option value="">Nowhere — keep them in Compass</option>
+      ${cals.filter(([, c]) => !c.ro).map(([id, c]) => `<option value="${esc(id)}" ${id === G.writeCal ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
+    <div class="row"><button class="btn" data-act="gcalSyncNow">${ic('repeat')} Sync now</button><button class="btn" data-act="gcalDisconnect">Disconnect</button></div>`;
+}
+// calendar toggles act straight away (they don't wait for "Save settings")
+document.addEventListener('change', e => {
+  const G = GCAL(), on = e.target.dataset && e.target.dataset.gcalOn, cat = e.target.dataset && e.target.dataset.gcalCat;
+  if (on && G.cals[on]) { G.cals[on].on = e.target.checked; save(false); gcalSoon(800); }
+  else if (cat && G.cals[cat]) { G.cals[cat].cat = e.target.value; save(false); }
+  else if (e.target.id === 'gcalWrite') { G.writeCal = e.target.value; save(false); gcalSoon(800); }
+});
 
 /* ============================================================
    Sleep
@@ -1610,7 +2328,7 @@ function renderHome() {
     ...tasksForDate(iso).map(t => { const done = taskDone(t, iso); return { time: taskTime(t) || '99:99', done, html: `
       <div class="item agenda ${done ? 'done hab-done' : ''}">
         <span class="ag-time">${esc(taskTime(t) || '')}</span>
-        <div class="body tap" data-act="editTask" data-id="${t.id}"><div class="t">${esc(t.text)}</div>
+        <div class="body tap" data-act="editTask" data-id="${t.id}"><div class="t">${esc(t.text)} ${deadlineBadge(t)}</div>
           <div class="s"><i class="cdot" style="background:${taskColor(t.cat)}"></i> ${esc(['Task', t.cat, taskRepeatLabel(t)].filter(Boolean).join(' · '))}</div></div>
         <span class="box tap" data-act="toggleTask" data-id="${t.id}" data-d="${iso}">${TICK}</span>
       </div>` }; }),
@@ -1667,6 +2385,7 @@ function renderHome() {
         <div class="card list-card"><div class="list">${rowsAll.filter(r => r.html.includes('editEvent')).map(r => r.html).join('')}</div></div>` : ''}`;
     })() : `
     ${rings}
+    ${planCard()}
 
     <div class="section-head" id="upnext"><h3>${hourNow >= 18 ? 'Rest of today' : 'Up next'}</h3>
       <button class="link" data-act="toggleRoughDay">Rough day?</button></div>
@@ -1809,7 +2528,8 @@ function calWeek() {
   </div>
   ${calSummaryCard()}`;
 }
-function calDay() {
+function calDay() { return plannerDay(); }
+function calDayOld() {
   const evs = eventsForDate(calSel);
   return `
     <div class="card">
@@ -3196,8 +3916,9 @@ const ACT = {
   addEvent() { ACT.editEvent({ id: '' }); },
   addEventOn(d) { setCalSel(d.d); ACT.editEvent({ id: '' }); },
   editEvent(d) {
-    const e = S.calendar.events.find(x => x.id === d.id) || { date: calSel, category:'Personal', recurring:false };
-    sheetForm(d.id?'Edit event':'New event', 'Weekly repeats on the weekday of the date you pick.',
+    const e = S.calendar.events.find(x => x.id === d.id) || { date: calSel, category:'Personal', recurring:false, start: d.start || '', end: d.start ? addMinutes(d.start, 60) : '' };
+    sheetForm(d.id?'Edit event':'New event', e.g && e.g.ro ? 'From a read-only Google calendar — changes stay in Compass.'
+        : e.g ? 'Synced with Google Calendar.' : 'Weekly repeats on the weekday of the date you pick.',
       field('Title','ev_title',{val:e.title,ph:'e.g. Gym, Work, Meeting'}) +
       field('Category','ev_cat',{type:'select',val:e.category||'Personal',options:Object.keys(CATS)}) +
       field('Repeat','ev_rep',{type:'select',val:e.recurring?'Every week':'Does not repeat',options:['Does not repeat','Every week']}) +
@@ -3214,6 +3935,7 @@ const ACT = {
         ${field('Studying for','ev_studyfor',{type:'select',val:e.studyFor||'School',options:['School','Business']})}
       </div>` +
       field('Cost (optional)','ev_cost',{type:'number',step:'any',val:e.cost||'',inputmode:'decimal'}) +
+      field('Location','ev_loc',{val:e.location||'',ph:'Optional'}) +
       field('Notes','ev_notes',{type:'textarea',val:e.notes,ph:'Optional'}),
       { save:'saveEvent', id:d.id, del:d.id?'delEvent':'' });
     // pay fields only for Work, study split only for Study
@@ -3245,32 +3967,36 @@ const ACT = {
     const category = val('ev_cat') || 'Personal';
     const rec = { title, category, recurring,
       date: recurring ? null : date, weekday: parseISO(date).getDay(),
-      start: val('ev_start'), end: val('ev_end'), cost: num(val('ev_cost')), notes: val('ev_notes'),
+      start: val('ev_start'), end: val('ev_end'), cost: num(val('ev_cost')), notes: val('ev_notes'), location: val('ev_loc'), mtime: Date.now(),
       rate:    category === 'Work'  ? num(val('ev_rate'))   : 0,
       earned:  category === 'Work'  ? num(val('ev_earned')) : 0,
       studyFor: category === 'Study' ? (val('ev_studyfor') || 'School') : '' };
     let ev;
-    if (d.id) { ev = S.calendar.events.find(x=>x.id===d.id); Object.assign(ev, rec); }
+    if (d.id) { ev = S.calendar.events.find(x=>x.id===d.id); if (ev.endDate && rec.date !== ev.date) ev.endDate = ''; Object.assign(ev, rec); }
     else { ev = { id: uid(), ...rec }; S.calendar.events.push(ev); }
     syncEventCost(ev);
-    save(); closeSheet(); if (!recurring) setCalSel(date); render(currentTab);
+    save(); closeSheet(); if (!recurring) setCalSel(date); render(currentTab); gcalSoon();
     const pay = eventPay(rec);
-    toast(recurring ? 'Saved'
+    // a clash is worth knowing about the moment you save, not when you're double-booked
+    const cl = recurring ? [] : clashes(date, rec.start, rec.end, ev.id);
+    toast((recurring ? 'Saved'
       : pay > 0 ? `Saved · ${AUD(pay)} logged to Money`
-      : rec.cost > 0 ? 'Saved · logged to Money' : 'Saved');
+      : rec.cost > 0 ? 'Saved · logged to Money' : 'Saved') + (cl.length ? ` · overlaps ${cl[0].title}${cl.length > 1 ? ` +${cl.length - 1}` : ''}` : ''));
   },
   delEvent(d) {
     S.calendar.events = S.calendar.events.filter(x=>x.id!==d.id);
     S.money.transactions = S.money.transactions.filter(t=>t.eventId!==d.id);
-    save(); closeSheet(); render(currentTab);
+    save(); closeSheet(); render(currentTab); gcalSoon();
   },
 
   /* ----- calendar: tasks ----- */
   addTask(d) { ACT.editTask({ id:'', scope: d.scope || 'day', d: d.d || '' }); },
   editTask(d) {
-    const SCOPES = { day:'Just this day', week:'This week', month:'This month' };
+    const SCOPES = { day:'Just this day', week:'This week', month:'This month', inbox:'Inbox — no date yet' };
     const t = TASKS().find(x => x.id === d.id)
-      || { scope: d.scope || 'day', date: d.d || calSel, repeat:'none', days:[] };
+      || { scope: d.scope || 'day', date: d.d || calSel, repeat:'none', days:[], start: d.start || '', end: d.start ? addMinutes(d.start, 30) : '', checklist: [] };
+    const clRow = c => `<div class="cl-row ${c.done ? 'done' : ''}"><button type="button" class="cl-box" data-act="clTick" aria-label="Tick">${TICK}</button>
+      <input class="cl-text" type="text" value="${esc(c.text)}" aria-label="Step"><button type="button" class="cl-del" data-act="clDel" aria-label="Remove">${ic('x')}</button></div>`;
     const lbl = taskRepeatLabel(t);
     const repVal = !repeats(t) ? 'Does not repeat'
       : ['Every day','Weekdays','Weekends'].includes(lbl) ? lbl : 'Certain days';
@@ -3280,7 +4006,11 @@ const ACT = {
       field('Task','tk_text',{val:t.text,ph:'e.g. Order microfibres, Call the accountant'}) +
       field('Category','tk_cat',{type:'select',val:t.cat||'Random',options:Object.keys(TASK_CATS)}) +
       field('Belongs to','tk_scope',{type:'select',val:SCOPES[t.scope]||SCOPES.day,options:Object.values(SCOPES)}) +
-      field('Date','tk_date',{type:'date',val:t.date||calSel}) +
+      `<div id="tk_datewrap">${field('Date','tk_date',{type:'date',val:t.date||calSel})}</div>` +
+      `<div class="row">${field('Time needed','tk_est',{type:'select',val:t.est ? estLabel(t.est) : '—',options:ESTS.map(m => m ? estLabel(m) : '—')})}${field('Priority','tk_pri',{type:'select',val:PRI[t.pri]||'None',options:['None','High','Medium','Low']})}</div>` +
+      field('Deadline (optional)','tk_dl',{type:'date',val:t.deadline||''}) +
+      `<label class="field"><span>Checklist</span><div class="cl-list" id="tk_cl">${(t.checklist||[]).map(clRow).join('')}</div>
+        <input id="tk_cl_new" type="text" placeholder="Add a step, then Return" enterkeyhint="enter" autocapitalize="sentences"></label>` +
       `<div id="tk_timewrap">
         <div class="row">${field('Start (optional)','tk_start',{type:'time',val:t.start||''})}${field('End (optional)','tk_end',{type:'time',val:t.end||''})}</div>
         <button type="button" class="btn sm ghost" data-act="clearTaskTime" style="width:auto;margin:-2px 0 10px">Clear times</button>
@@ -3297,8 +4027,17 @@ const ACT = {
     // repeat only makes sense day-by-day; week/month tasks live on their week or month
     // repeat and a time slot only make sense day-by-day; a week/month task has no
     // single day to sit on, so both are hidden for those scopes
+    // Return in the checklist box adds a step instead of saving the whole task
+    $('#tk_cl_new').addEventListener('keydown', e => {
+      if (e.key !== 'Enter' || e.isComposing) return;
+      e.preventDefault(); e.stopPropagation();
+      const v = e.target.value.trim(); if (!v) return;
+      $('#tk_cl').insertAdjacentHTML('beforeend', clRow({ text: v, done: false }));
+      e.target.value = ''; sheetDirty = true;
+    });
     const sync = () => {
       const isDay = val('tk_scope') === SCOPES.day;
+      $('#tk_datewrap').hidden = val('tk_scope') === SCOPES.inbox;
       $('#tk_repwrap').hidden = !isDay;
       $('#tk_timewrap').hidden = !isDay;
       $('#tk_dayswrap').hidden = !isDay || val('tk_rep') !== 'Certain days';
@@ -3320,8 +4059,12 @@ const ACT = {
   },
   toggleTaskDay(d, el) { el.classList.toggle('on'); },
   saveTask(d) {
-    const SCOPES = { 'Just this day':'day', 'This week':'week', 'This month':'month' };
+    const SCOPES = { 'Just this day':'day', 'This week':'week', 'This month':'month', 'Inbox — no date yet':'inbox' };
     const text = val('tk_text'); if (!text) return toast('Name the task');
+    const checklist = $$('#tk_cl .cl-row').map(r => ({ text: $('.cl-text', r).value.trim(), done: r.classList.contains('done') })).filter(c => c.text);
+    if (val('tk_cl_new')) checklist.push({ text: val('tk_cl_new'), done: false });
+    const extra = { est: ESTS.find(m => (m ? estLabel(m) : '—') === val('tk_est')) || 0,
+      pri: +(Object.keys(PRI).find(k => PRI[k] === val('tk_pri')) || 0), deadline: val('tk_dl'), checklist };
     const scope = SCOPES[val('tk_scope')] || 'day';
     let date = val('tk_date') || calSel || todayISO();   // may roll forward for a repeat
     const repSel = scope === 'day' ? val('tk_rep') : 'Does not repeat';
@@ -3348,10 +4091,13 @@ const ACT = {
       while (!days.includes(d0.getDay()) && guard++ < 7) d0.setDate(d0.getDate() + 1);
       date = todayISO(d0);
     }
-    const rec = { text, cat: val('tk_cat') || 'Random', scope, date,
-      week: weekKey(parseISO(date)), month: date.slice(0,7), repeat, days, start, end };
+    const rec = scope === 'inbox'
+      ? { text, cat: val('tk_cat') || 'Random', scope, date: '', week: '', month: '', repeat: 'none', days: [], start: '', end: '', ...extra }
+      : { text, cat: val('tk_cat') || 'Random', scope, date,
+          week: weekKey(parseISO(date)), month: date.slice(0,7), repeat, days, start, end, ...extra };
     if (d.id) {
       const t = TASKS().find(x => x.id === d.id);
+      if (t.date !== rec.date || t.scope !== rec.scope) rec.rolled = 0;    // replanned on purpose: the carry-over count starts again
       Object.assign(t, rec);
       if (repeat === 'none') t.doneDays = {}; else t.done = false;   // switching modes clears the stale tick
     } else {
@@ -3360,7 +4106,7 @@ const ACT = {
     save(); closeSheet();
     if (scope === 'day') setCalSel(date);
     render(currentTab);
-    toast(repeat === 'none' ? (d.id ? 'Saved' : 'Task added')
+    toast(scope === 'inbox' ? (d.id ? 'Moved to Inbox' : 'Added to Inbox') : repeat === 'none' ? (d.id ? 'Saved' : 'Task added')
       : `Repeats ${taskRepeatLabel({ repeat, days })} — next on ${fmtDay(date)}`, { undo: true });
   },
   toggleTask(d, el) {
@@ -3727,12 +4473,15 @@ const ACT = {
   toggleTracker() { trackerAll = !trackerAll; render(currentTab); },
   setSeg(d) { S.settings.seg = S.settings.seg || {}; S.settings.seg[d.tab] = d.seg; save(false); tabScroll[d.tab] = 0; arranging = false; render(d.tab); window.scrollTo(0, 0); },
   toggleHomeDone() { homeDoneOpen = !homeDoneOpen; renderHome(); },
-  quickAdd() { quickAddSheet(); },
+  quickAdd() { qaForceKind = ''; quickAddSheet(); },
   search() { searchSheet(); },
   qaSaveTask() {
     const text = val('qa_task'); if (!text) { $('#qa_task')?.focus(); return; }
-    TASKS().push({ id: uid(), text, cat: '', scope: 'day', date: todayISO(), repeat: 'none', done: false, doneDays: {} });
-    save(); haptic(); closeSheet(); render(currentTab); toast(`Added “${text}” to today`, { undo: true });
+    const r = parseQuick(text, qaForceKind);
+    if (!r.title) { toast('Add a name as well'); $('#qa_task')?.focus(); return; }
+    const msg = commitQuick(r);
+    qaForceKind = '';
+    save(); haptic(); closeSheet(); render(currentTab); toast(msg, { undo: true });
   },
   qaWater(d) { ACT.water(d); closeSheet(); toast(`+${d.ml} ml water`, { undo: true }); },
   qaFoodSheet() { foodDate = todayISO(); foodPick = false; ACT.addFood({ meal: mealForNow() }); },
@@ -4381,6 +5130,128 @@ async function checkReminders() {
 /* ============================================================
    Settings
    ============================================================ */
+
+/* ----- planner + Google Calendar actions ----- */
+let qaForceKind = '';
+function qaPreview() {
+  const box = $('#qa_prev'), inp = $('#qa_task'); if (!box || !inp) return;
+  box.innerHTML = inp.value.trim() ? quickChips(parseQuick(inp.value, qaForceKind)) : '';
+}
+document.addEventListener('input', e => { if (e.target.id === 'qa_task') qaPreview(); });
+const reopenPlan = iso => { save(); planSheet(iso || todayISO()); render(currentTab); };
+const taskById = id => TASKS().find(t => t.id === id);
+function setTaskDay(t, iso) {
+  t.scope = 'day'; t.date = iso; t.week = weekKey(parseISO(iso)); t.month = iso.slice(0, 7);
+  t.rolled = 0; t.done = false;
+}
+Object.assign(ACT, {
+  qaKind(d) { qaForceKind = d.k; qaPreview(); $('#qa_task')?.focus(); },
+  tlSlot(d) {
+    const iso = calSel;
+    if (placingTask) {
+      const t = taskById(placingTask); placingTask = null;
+      if (!t) return render(currentTab);
+      if (t.scope !== 'day' || t.date !== iso) setTaskDay(t, iso);
+      t.start = d.t; t.end = minToHM(hhmmToMin(d.t) + (num(t.est) || 30));
+      save(); haptic(); render(currentTab);
+      const cl = clashes(iso, t.start, t.end);
+      return toast(`${t.text} → ${fmtHM(t.start)}${cl.length ? ` · overlaps ${cl[0].title}` : ''}`, { undo: true });
+    }
+    const tray = tasksForDate(iso).filter(t => !t.start && !taskDone(t, iso) && !repeats(t)).sort(taskRank).concat(inboxTasks().sort(taskRank)).slice(0, 6);
+    openSheet(`<h3>${fmtHM(d.t)} · ${fmtDay(iso)}</h3>
+      <div class="row" style="margin-top:12px">
+        <button class="btn" data-act="slotEvent" data-t="${d.t}">${ic('calendar')} New event</button>
+        <button class="btn" data-act="slotTask" data-t="${d.t}">${ic('check-circle')} New task</button>
+      </div>
+      ${tray.length ? `<div class="card-label" style="margin:16px 0 6px">Or put a task here</div>
+        <div class="list">${tray.map(t => `<div class="item tap" data-act="slotPut" data-id="${t.id}" data-t="${d.t}">
+          <div class="body"><div class="t">${esc(t.text)}</div><div class="s">${esc([t.scope === 'inbox' ? 'Inbox' : '', '~' + estLabel(num(t.est) || 30)].filter(Boolean).join(' · '))}</div></div>${ic('plus')}</div>`).join('')}</div>` : ''}`);
+  },
+  slotEvent(d) { ACT.editEvent({ id: '', start: d.t }); },
+  slotTask(d) { ACT.editTask({ id: '', scope: 'day', d: calSel, start: d.t }); },
+  slotPut(d) { placingTask = d.id; closeSheet(); ACT.tlSlot({ t: d.t }); },
+  trayPlace(d) {
+    placingTask = placingTask === d.id ? null : d.id;
+    render(currentTab);
+    if (placingTask) setTimeout(() => $('.tl-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+  },
+  placeNext() {
+    const t = taskById(placingTask); placingTask = null;
+    if (!t) return render(currentTab);
+    const ok = placeTask(t, calSel);
+    save(); render(currentTab);
+    toast(ok ? `${t.text} → ${fmtHM(t.start)}` : `No free gap of ${estLabel(num(t.est) || 30)} left on ${fmtDay(calSel)}`, { undo: ok });
+  },
+  autoPlace(d) {
+    const { placed, left } = autoPlace(d.d || calSel);
+    if (placed) save();
+    render(currentTab);
+    toast(placed ? `Placed ${placed} task${placed > 1 ? 's' : ''}${left.length ? ` · ${left.length} didn't fit` : ''}` : left.length ? `None fit — ${left.length} need more free time than you have` : 'Nothing to place', { undo: !!placed });
+  },
+  inboxToDay(d) { const t = taskById(d.id); if (!t) return; setTaskDay(t, d.d); save(); render(currentTab); toast(`${t.text} → ${fmtDay(d.d)}`, { undo: true }); },
+  noteTemplate(d) { PLAN().daily[d.d] = PLAN().template; save(); render(currentTab); const ta = $('#dayNote'); if (ta) { ta.focus(); ta.setSelectionRange(ta.value.indexOf('- [ ] ') + 6, ta.value.indexOf('- [ ] ') + 6); } },
+  noteToTasks(d) {
+    clearTimeout(noteTimer);
+    const ta = $('#dayNote'); if (ta && ta.dataset.d === d.d) { if (ta.value.trim()) PLAN().daily[d.d] = ta.value; }
+    const list = noteTodos(d.d); if (!list.length) return;
+    list.forEach(text => TASKS().push({ id: uid(), text, cat: '', scope: 'day', date: d.d, week: weekKey(parseISO(d.d)), month: d.d.slice(0, 7),
+      repeat: 'none', days: [], start: '', end: '', est: 0, pri: 0, deadline: '', checklist: [], done: false, doneDays: {} }));
+    save(); render(currentTab); toast(`${list.length} task${list.length > 1 ? 's' : ''} added to ${fmtDay(d.d)}`, { undo: true });
+  },
+  planMyDay(d) { planSheet(d.d || todayISO()); },
+  planKeep(d) { const t = taskById(d.id); if (t) t.rolled = 0; reopenPlan(calSel === todayISO() ? todayISO() : calSel); },
+  planMove(d, el) {
+    const t = taskById(d.id); if (!t) return;
+    const iso = $('#sheetBody .sheet-actions [data-act="planDone"]')?.dataset.d || todayISO();
+    setTaskDay(t, d.d); t.start = t.end = '';
+    reopenPlan(iso);
+  },
+  planInbox(d) { const t = taskById(d.id); if (!t) return; Object.assign(t, { scope: 'inbox', date: '', week: '', month: '', start: '', end: '', rolled: 0 });
+    reopenPlan($('#sheetBody [data-act="planDone"]')?.dataset.d); },
+  planDrop(d) { const iso = $('#sheetBody [data-act="planDone"]')?.dataset.d; S.calendar.tasks = TASKS().filter(t => t.id !== d.id); reopenPlan(iso); toast('Dropped', { undo: true }); },
+  planDone(d) { if (d.d === todayISO()) PLAN().plannedOn = d.d; save(); closeSheet(); render(currentTab); },
+  planPlace(d) {
+    if (d.d === todayISO()) PLAN().plannedOn = d.d;
+    const { placed, left } = autoPlace(d.d);
+    save(); closeSheet();
+    calView = 'day'; setCalSel(d.d); calEditing = false;
+    if (currentTab === 'calendar') render('calendar'); else go('calendar');
+    toast(placed ? `Time-blocked ${placed} task${placed > 1 ? 's' : ''}${left.length ? ` · ${left.length} didn't fit` : ''}` : left.length ? `Nothing fits — ${left.length} task${left.length > 1 ? 's' : ''} need more time than you have` : 'Planned', { undo: !!placed });
+  },
+  // checklist inside the task sheet
+  clTick(d, el) { el.closest('.cl-row').classList.toggle('done'); sheetDirty = true; },
+  clDel(d, el) { el.closest('.cl-row').remove(); sheetDirty = true; },
+  /* Google Calendar */
+  async gcalConnect() {
+    try {
+      const c = await gcalAPI({ action: 'config' });
+      if (!c.configured) return toast('Add GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET in Vercel first (see README)');
+      const { url } = await gcalAPI({ action: 'authUrl' });
+      location.href = url;
+    } catch (e) { toast(e.status === 401 ? 'Your sync key was rejected — check it in Settings' : 'Google Calendar: ' + e.message); }
+  },
+  async gcalSyncNow() {
+    toast('Syncing with Google…', { undo: false });
+    try { await gcalLoadCalendars(); } catch (e) {}
+    await gcalSync({ loud: true });
+    if ($('#gcalSec')) { $('#gcalBody').innerHTML = gcalSettingsHTML(); }
+  },
+  gcalDisconnect() {
+    sheetForm('Disconnect Google Calendar?',
+      'Events that came from Google are removed from Compass. Your own Compass events stay here, and anything already sent to Google stays there.',
+      '', { save: 'gcalDisconnectConfirm', saveLabel: 'Disconnect', noFocus: true });
+  },
+  async gcalDisconnectConfirm() {
+    try { await gcalAPI({ action: 'disconnect' }); } catch (e) {}
+    const gone = new Set(S.calendar.events.filter(e => e.src === 'google').map(e => e.id));
+    S.calendar.events = S.calendar.events.filter(e => !gone.has(e.id));
+    S.money.transactions = S.money.transactions.filter(t => !gone.has(t.eventId));
+    S.calendar.events.forEach(e => { delete e.g; });   // ids sent to Google are fixed per event, so reconnecting can't duplicate them
+    S.gcal = { on: false, email: '', cals: {}, writeCal: '', linked: {}, lastSync: 0, err: '' };
+    save(); closeSheet(); render(currentTab); toast('Google Calendar disconnected');
+  },
+});
+
 function openSettings() {
   const theme = S.settings.theme;
   openSheet(`
@@ -4398,6 +5269,14 @@ function openSettings() {
     ${field('Sync URL','set_surl',{val:syncCfg.url,ph:location.origin+'/api/sync'})}
     ${field('Secret key','set_skey',{val:syncCfg.key,ph:'your SYNC_SECRET'})}
     ${syncEnabled() ? `<button class="btn" data-act="syncNowBtn">${ic('repeat')} Sync now</button>` : ''}
+
+    <div class="section-head" id="gcalSec" style="margin:14px 2px 8px"><h3>Google Calendar</h3></div>
+    <div id="gcalBody">${gcalSettingsHTML()}</div>
+
+    <div class="section-head" style="margin:14px 2px 8px"><h3>Planner</h3></div>
+    <p class="desc">The hours you plan inside — free time and auto-placing only use this window.</p>
+    <div class="row">${field('Day starts','set_ds',{type:'time',val:PLAN().dayStart})}${field('Day ends','set_de',{type:'time',val:PLAN().dayEnd})}</div>
+    ${field('Day note template','set_tpl',{type:'textarea',val:PLAN().template})}
 
     <div class="section-head" style="margin:14px 2px 8px"><h3>Reminders</h3></div>
     <button class="btn" data-act="enableNotify">${S.settings.notify?ic('check')+' Notifications on':ic('bell')+' Enable notifications'}</button>
@@ -4421,6 +5300,9 @@ ACT.saveSettings = function () {
   const th = val('set_theme'); S.settings.theme = th==='Dark'?'dark':th==='Light'?'light':'auto';
   applyTheme();
   syncCfg.url = val('set_surl'); syncCfg.key = val('set_skey'); saveSyncCfg();
+  if (val('set_ds')) PLAN().dayStart = val('set_ds');
+  if (val('set_de')) PLAN().dayEnd = val('set_de');
+  if ($('#set_tpl')) PLAN().template = $('#set_tpl').value || DAILY_TEMPLATE;
   save(); closeSheet(); renderAll(); fetchWeather().then(()=>renderHome()); setSyncDot(syncEnabled()?'ok':'off'); pull();
   toast('Settings saved');
 };
@@ -4504,9 +5386,10 @@ function moveEventToDate(id, iso) {
   if (!e || !iso) return false;
   const wd = parseISO(iso).getDay();
   if (e.recurring) { if (e.weekday === wd) return false; e.weekday = wd; }
-  else { if (e.date === iso) return false; e.date = iso; e.weekday = wd; }
+  else { if (e.date === iso) return false; if (e.endDate) e.endDate = ''; e.date = iso; e.weekday = wd; }
+  e.mtime = Date.now();
   syncEventCost(e);
-  save();
+  save(); gcalSoon();
   toast(`${e.title} → ${fmtDay(iso)}`, { undo: true });
   return true;
 }
@@ -4719,9 +5602,11 @@ function quickAddSheet() {
   const hb = habitsToday().filter(h => !(h.doneDays && h.doneDays[iso]));
   openSheet(`<h3>Add</h3>
     <div class="qa-task">
-      <input id="qa_task" type="text" placeholder="New task for today…" autocapitalize="sentences" enterkeyhint="done">
+      <input id="qa_task" type="text" placeholder="Gym tue 6am · Call Sam tmrw p1" autocapitalize="sentences" enterkeyhint="done" autocomplete="off">
       <button class="btn primary sm" data-act="qaSaveTask">Add</button>
     </div>
+    <div id="qa_prev" class="nl-prev"></div>
+    <div class="qa-hint">Type it how you'd say it — times make events, the rest are tasks. Try “Essay due fri ~2h”, “Detail Hilux sat 9am 3h $180”, “Lecture every mon and wed 10-12”, “Buy pads someday”.</div>
     <div class="qa-grid">
       <button class="qa-tile" data-act="qaFoodSheet">${ic('utensils')}<span>Food</span></button>
       <button class="qa-tile" data-act="qaScan">${ic('barcode')}<span>Scan</span></button>
@@ -4940,7 +5825,11 @@ function startApp() {
   setSyncDot(syncEnabled() ? 'ok' : 'off');
   fetchWeather().then(() => { if (currentTab === 'home') renderHome(); });
   refreshPrices();
-  pull().finally(seedBillsOnce);   // add imported bills once we have the latest cloud state
+  pull().finally(() => {          // after the latest cloud state is in:
+    seedBillsOnce();
+    rollOverTasks();
+    gcalHandleReturn().then(() => gcalSync());
+  });
   checkReminders();
   refreshBadges();
   checkHabitReminders();
@@ -4953,6 +5842,7 @@ function startApp() {
   // periodic
   setInterval(refreshPrices, 5 * 60 * 1000);
   setInterval(pull, 60 * 1000);
+  setInterval(() => { if (!document.hidden) gcalSync(); }, 5 * 60 * 1000);
   setInterval(checkHabitReminders, 30 * 1000);
   updateAppBadge();
   initPullToRefresh();
@@ -5005,5 +5895,9 @@ function boot() {
     }).catch(()=>{});
   }
 }
-document.addEventListener('visibilitychange', () => { if (!document.hidden) { pull(); checkReminders(); checkHabitReminders(); } });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  pull().then(() => { rollOverTasks(); if (Date.now() - (GCAL().lastSync || 0) > 2 * 60e3) gcalSync(); });
+  checkReminders(); checkHabitReminders();
+});
 boot();
