@@ -1082,3 +1082,76 @@ textarea { height: auto; }
 .copy-day:disabled { color: var(--pos); opacity: 1; }
 .item.agenda.tap .box { pointer-events: none; }
 .section-head .pill-row { align-items: center; }
+
+/* ---------- live run tracker ---------- */
+.runtrk { position: fixed; inset: 0; z-index: 200; background: var(--bg); color: var(--text); display: flex; flex-direction: column; }
+.runtrk[hidden] { display: none; }
+html.rt-open, html.rt-open body { overflow: hidden; }
+.rt-map { position: relative; flex: 1 1 auto; min-height: 30vh; background: var(--surface-2); isolation: isolate; z-index: 0; }
+.rt-map.nomap { display: grid; place-items: center; padding: calc(64px + var(--safe-t)) 16px 12px; }
+.rt-map .route-svg { width: 100%; height: 100%; max-height: 100%; }
+.rt-nomap { display: grid; justify-items: center; gap: 8px; color: var(--text-3); font-size: 14px; text-align: center; max-width: 260px; }
+.rt-nomap .ic { width: 28px; height: 28px; }
+.rt-map .leaflet-control-attribution { font-size: 10px; }
+:root[data-theme="dark"] .rt-map .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(.85) contrast(.9); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .rt-map .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(.85) contrast(.9); } }
+.rt-top { position: absolute; left: 0; right: 0; top: 0; z-index: 2; display: flex; align-items: center; gap: 10px;
+  padding: calc(12px + var(--safe-t)) 14px 12px; pointer-events: none; }
+.rt-top > * { pointer-events: auto; }
+.runtrk .scan-btn { background: var(--surface); color: var(--text); box-shadow: 0 1px 6px rgba(0,0,0,.18); display: grid; place-items: center; flex: none; }
+.runtrk .scan-btn.on { background: var(--accent); color: var(--on-accent); }
+.rt-centre { position: absolute; right: 14px; top: calc(68px + var(--safe-t)); z-index: 2; }
+.rt-centre[hidden] { display: none; }
+.rt-gps { flex: 1; min-width: 0; margin: 0 auto; max-width: max-content; display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  border-radius: 999px; background: var(--surface); font-size: 13px; font-weight: 600; box-shadow: 0 1px 6px rgba(0,0,0,.18);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rt-gps i { width: 9px; height: 9px; border-radius: 50%; background: var(--text-3); flex: none; }
+.rt-gps.ok i { background: var(--pos); }
+.rt-gps.meh i { background: var(--warn); }
+.rt-gps.bad i { background: var(--neg); }
+.rt-gps.bad { white-space: normal; }
+.rt-gps.wait i { animation: rtblink 1s ease-in-out infinite alternate; }
+@keyframes rtblink { to { opacity: .2; } }
+.rt-panel { flex: none; background: var(--surface); border-radius: 18px 18px 0 0; margin-top: -18px; position: relative; z-index: 1;
+  padding: 16px 16px calc(14px + var(--safe-b)); box-shadow: 0 -4px 20px rgba(0,0,0,.08); text-align: center; }
+.rt-time { font-family: var(--font-num); font-size: 56px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.rt-k { font-size: 12px; color: var(--text-3); margin-top: 4px; text-transform: uppercase; letter-spacing: .04em; }
+.rt-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 16px 0 6px; }
+.rt-grid > div { min-width: 0; }
+.rt-v { font-family: var(--font-num); font-size: 26px; font-weight: 650; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.runtrk[data-status="paused"] .rt-time, .runtrk[data-status="paused"] #rtPace { color: var(--warn); }
+.rt-splits { display: flex; gap: 6px; overflow-x: auto; min-height: 0; padding: 4px 0; scrollbar-width: none; justify-content: center; }
+.rt-splits:empty { display: none; }
+.rt-split { flex: none; font-size: 13px; padding: 4px 9px; border-radius: 999px; background: var(--surface-2); font-variant-numeric: tabular-nums; }
+.rt-split b { color: var(--text-3); font-weight: 600; margin-right: 2px; }
+.rt-ctrl { display: flex; align-items: center; justify-content: center; gap: 18px; margin: 14px 0 8px; }
+.rt-side { flex: 1; max-width: 110px; }
+.rt-ctrl .btn.rt-side { width: auto; }
+.rt-go { width: 84px; height: 84px; border-radius: 50%; border: none; background: var(--accent); color: var(--on-accent);
+  display: grid; place-items: center; align-content: center; gap: 2px; font: 600 13px var(--font); flex: none; cursor: pointer; }
+.rt-go .ic { width: 28px; height: 28px; fill: currentColor; }
+.rt-go:active { transform: scale(.95); }
+.rt-go.pause { background: var(--text); color: var(--bg); }
+.rt-go.finish { background: var(--neg); color: #fff; }
+.rt-note { font-size: 12px; color: var(--text-3); max-width: 360px; margin: 0 auto; }
+.run-pill { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--nav-h) + var(--safe-b) + 22px); z-index: 46;
+  display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-radius: 999px; border: none;
+  background: var(--text); color: var(--bg); font: 600 14px var(--font); font-variant-numeric: tabular-nums;
+  box-shadow: 0 4px 16px rgba(0,0,0,.25); cursor: pointer; white-space: nowrap; }
+.run-pill[hidden] { display: none; }
+.run-pill i { width: 9px; height: 9px; border-radius: 50%; background: var(--pos); animation: rtblink 1s ease-in-out infinite alternate; }
+.run-pill i.paused { background: var(--warn); animation: none; }
+/* a saved route + splits */
+.route-box { background: var(--surface-2); border-radius: var(--radius-sm); margin-bottom: 12px; overflow: hidden; }
+.route-svg { display: block; width: 100%; height: auto; }
+.route-svg polyline { fill: none; stroke: var(--accent); stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; }
+.route-svg .rs-start { fill: var(--pos); stroke: var(--surface); stroke-width: 2; }
+.route-svg .rs-end { fill: var(--neg); stroke: var(--surface); stroke-width: 2; }
+.run-sum { margin-bottom: 12px; }
+.run-splits { display: grid; gap: 6px; margin-bottom: 14px; }
+.rs-row { display: grid; grid-template-columns: 44px 1fr 46px; align-items: center; gap: 10px; font-size: 14px; font-variant-numeric: tabular-nums; }
+.rs-row span:first-child { color: var(--text-3); }
+.rs-row b { text-align: right; font-weight: 600; }
+.rs-bar { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
+.rs-bar i { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+.rt-back { width: 100%; margin-top: 4px; color: var(--text-2); }

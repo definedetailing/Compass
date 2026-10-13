@@ -2053,6 +2053,7 @@ function renderHealth() {
         ${stravaLinked()
           ? `<button class="link" data-act="stravaSync">${ic('repeat', 'sm')} Sync</button>`
           : `<button class="link" data-act="stravaConnect">Connect Strava</button>`}
+        <button class="link" data-act="liveStart">${ic('play', 'sm')} Start</button>
         <button class="link" data-act="addRun">+ Run</button>
       </span></div>
     <div class="card">
@@ -2072,8 +2073,8 @@ function renderHealth() {
         ${runsAll.slice().reverse().slice(0,6).map(r => `
           <div class="item tap" data-act="editRun" data-id="${r.id}">
             <div class="body">
-              <div class="t">${esc(r.name || `${r.distanceKm} km`)}${r.source==='strava'?' <span class="chip strava-chip">Strava</span>':''}</div>
-              <div class="s">${[fmtDay(r.date), `${r.distanceKm} km`, r.timeMin?`${r.timeMin} min`:'', r.elevM?`↑${r.elevM} m`:'', r.avgHr?`${r.avgHr} bpm`:''].filter(Boolean).map(esc).join(' · ')}</div>
+              <div class="t">${esc(r.name || `${r.distanceKm} km`)}${r.source==='strava'?' <span class="chip strava-chip">Strava</span>':r.source==='gps'?' <span class="chip">GPS</span>':''}</div>
+              <div class="s">${[fmtDay(r.date), `${r.distanceKm} km`, runDur(r), r.elevM?`↑${r.elevM} m`:'', r.avgHr?`${r.avgHr} bpm`:''].filter(Boolean).map(esc).join(' · ')}</div>
             </div>
             <div class="trail">${paceStr(pace(r))}</div>
           </div>`).join('') || '<div class="empty">Log a run, or connect Strava to pull them in</div>'}
@@ -2796,6 +2797,351 @@ async function foundBarcode(code) {
       : `Barcode ${esc(code)} isn't in the database yet. Copy the label once and scanning it again finds it straight away.`);
 }
 
+/* ---------- live run tracker ----------
+   GPS from watchPosition. A fix only counts towards distance if it's accurate
+   enough and moved further than GPS jitter; one implying faster than 8 m/s is a
+   glitch. Time is wall clock minus pauses, so it stays right even if the phone
+   sleeps — but iOS stops GPS for web apps while the screen is off, so a locked
+   stretch comes back as a straight line (hence the wake lock). The run in
+   progress lives in localStorage, so a reload or crash picks it back up. */
+const LIVE_KEY = 'compass_live_run';
+const RUN_MAX_ACC = 35;        // m — fixes worse than this are ignored
+const RUN_MAX_SPEED = 8;       // m/s ≈ 2:05 /km — faster is a GPS jump
+const RUN_PACE_WIN = 30;       // seconds of running that "current pace" looks back over
+const LEAFLET = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/';
+let live = null;               // { status, started, pausedMs, pausedAt, distM, segs, splits, hist, voice }
+let liveWatch = null, liveTimer = 0, liveLock = null, liveFix = null, liveBad = 0, liveSavedAt = 0;
+let liveMap = null, liveLine = null, liveDot = null, liveFollow = true, leafletP = null;
+
+const liveElapsed = (now = Date.now()) => !live || !live.started ? 0
+  : Math.max(0, ((live.status === 'paused' ? live.pausedAt : now) - live.started - live.pausedMs) / 1000);
+const fmtClock = s => { s = Math.max(0, Math.floor(s)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
+  return (h ? `${h}:${String(m).padStart(2, '0')}` : `${m}`) + ':' + String(x).padStart(2, '0'); };
+// seconds per km → "5:12"
+const fmtPace = spk => { if (!spk || !isFinite(spk) || spk >= 3600) return '—'; const t = Math.round(spk); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`; };
+const runDur = r => r.timeSec ? fmtClock(r.timeSec) : r.timeMin ? `${r.timeMin} min` : '';
+function geoDist(a, b) {
+  const R = 6371e3, k = Math.PI / 180, dLat = (b[0] - a[0]) * k, dLng = (b[1] - a[1]) * k;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a[0] * k) * Math.cos(b[0] * k) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+// Douglas–Peucker in metres, so a saved route is a few hundred points, not thousands
+function simplifyPath(pts, tol = 4) {
+  if (pts.length < 3) return pts;
+  const k = 111320, c = Math.cos(pts[0][0] * Math.PI / 180);
+  const xy = pts.map(p => [p[1] * k * c, p[0] * k]);
+  const keep = new Uint8Array(pts.length); keep[0] = keep[pts.length - 1] = 1;
+  const stack = [[0, pts.length - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop(), [ax, ay] = xy[a], dx = xy[b][0] - ax, dy = xy[b][1] - ay, L = dx * dx + dy * dy;
+    let md = 0, mi = -1;
+    for (let i = a + 1; i < b; i++) {
+      const t = L ? clamp(((xy[i][0] - ax) * dx + (xy[i][1] - ay) * dy) / L, 0, 1) : 0;
+      const d = Math.hypot(xy[i][0] - ax - t * dx, xy[i][1] - ay - t * dy);
+      if (d > md) { md = d; mi = i; }
+    }
+    if (md > tol) { keep[mi] = 1; stack.push([a, mi], [mi, b]); }
+  }
+  return pts.filter((_, i) => keep[i]);
+}
+// Google's encoded polyline — a route syncs as a short string instead of a big array
+function polyEncode(pts) {
+  let out = '', pa = 0, pb = 0;
+  const enc = v => { v = v < 0 ? ~(v << 1) : v << 1; let s = ''; while (v >= 0x20) { s += String.fromCharCode((0x20 | (v & 0x1f)) + 63); v >>= 5; } return s + String.fromCharCode(v + 63); };
+  for (const p of pts) { const a = Math.round(p[0] * 1e5), b = Math.round(p[1] * 1e5); out += enc(a - pa) + enc(b - pb); pa = a; pb = b; }
+  return out;
+}
+function polyDecode(str) {
+  const pts = []; let i = 0, a = 0, b = 0;
+  const dec = () => { let r = 0, s = 0, c; do { c = str.charCodeAt(i++) - 63; r |= (c & 0x1f) << s; s += 5; } while (c >= 0x20 && i <= str.length); return r & 1 ? ~(r >> 1) : r >> 1; };
+  while (i < str.length) { a += dec(); b += dec(); pts.push([a / 1e5, b / 1e5]); }
+  return pts;
+}
+// a route (array of point-lists) as a plain SVG trace — works offline, no map tiles
+function routeSVG(segs, opts = {}) {
+  segs = (segs || []).filter(s => s.length);
+  const all = segs.flat(); if (all.length < 2) return '';
+  const W = opts.w || 320, H = opts.h || 180, pad = 14;
+  const c = Math.cos(all[0][0] * Math.PI / 180);
+  const xs = all.map(p => p[1] * c), ys = all.map(p => -p[0]);
+  const x0 = Math.min(...xs), y0 = Math.min(...ys), sw = Math.max(...xs) - x0 || 1e-6, sh = Math.max(...ys) - y0 || 1e-6;
+  const sc = Math.min((W - pad * 2) / sw, (H - pad * 2) / sh), ox = (W - sw * sc) / 2, oy = (H - sh * sc) / 2;
+  const pt = p => [(p[1] * c - x0) * sc + ox, (-p[0] - y0) * sc + oy].map(v => v.toFixed(1));
+  const first = pt(segs[0][0]), lastSeg = segs[segs.length - 1], last = pt(lastSeg[lastSeg.length - 1]);
+  return `<svg class="route-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" aria-label="Route">
+    ${segs.map(s => `<polyline points="${s.map(p => pt(p).join(',')).join(' ')}"/>`).join('')}
+    <circle class="rs-start" cx="${first[0]}" cy="${first[1]}" r="5"/><circle class="rs-end" cx="${last[0]}" cy="${last[1]}" r="5"/></svg>`;
+}
+const runRouteSegs = r => (r.route || []).map(polyDecode);
+
+function liveStore() {
+  liveSavedAt = Date.now();
+  try { if (live && live.started) localStorage.setItem(LIVE_KEY, JSON.stringify(live)); else localStorage.removeItem(LIVE_KEY); } catch (e) {}
+}
+
+function liveOnFix(pos) {
+  const c = pos.coords, p = [c.latitude, c.longitude];
+  liveFix = { p, acc: c.accuracy };
+  if (live && live.status === 'running' && c.accuracy <= RUN_MAX_ACC) liveAdd(p, c.accuracy);
+  liveGps(); liveMapUpdate();
+}
+function liveAdd(p, acc) {
+  const e = liveElapsed(), seg = live.segs[live.segs.length - 1], last = seg[seg.length - 1];
+  if (!last) { seg.push([p[0], p[1], e]); return liveStore(); }
+  const d = geoDist(last, p), dt = Math.max(e - last[2], 0.5);
+  if (d < Math.max(4, Math.min(acc, 20) * 0.6)) return;          // standing-still jitter
+  if (d / dt > RUN_MAX_SPEED) {
+    // a jump: ignore it — unless three in a row, then the last good point was the bad one
+    if (++liveBad >= 3) { liveBad = 0; live.segs.push([[p[0], p[1], e]]); liveStore(); }
+    return;
+  }
+  liveBad = 0;
+  const before = live.distM;
+  live.distM += d;
+  seg.push([p[0], p[1], e]);
+  // km splits — interpolate the moment each whole km was crossed
+  for (let k = Math.floor(before / 1000) + 1; k <= Math.floor(live.distM / 1000); k++) {
+    const at = last[2] + dt * ((k * 1000 - before) / d);
+    live.splits.push(Math.round(at - live.splits.reduce((a, b) => a + b, 0)));
+    liveCue(k);
+  }
+  live.hist.push([e, live.distM]);
+  while (live.hist.length > 2 && live.hist[1][0] <= e - RUN_PACE_WIN) live.hist.shift();
+  if (Date.now() - liveSavedAt > 5000) liveStore();
+  liveRender();
+}
+// seconds per km over the last ~30 s of running; 0 when standing still
+function livePace() {
+  if (!live || live.status !== 'running' || !live.hist.length) return 0;
+  const e = liveElapsed(), a = live.hist[0], dd = live.distM - a[1];
+  if (e - live.hist[live.hist.length - 1][0] > 15 || dd < 15) return 0;
+  return (e - a[0]) / dd * 1000;
+}
+function liveSay(text) {
+  if (!live || !live.voice || !window.speechSynthesis) return;
+  try { speechSynthesis.speak(new SpeechSynthesisUtterance(text)); } catch (e) {}
+}
+const sayDur = s => { s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
+  return [h && `${h} hour${h > 1 ? 's' : ''}`, m && `${m} minute${m > 1 ? 's' : ''}`, x && `${x} second${x > 1 ? 's' : ''}`].filter(Boolean).join(' ') || 'zero'; };
+function liveCue(km) {
+  haptic(2);
+  liveSay(`${km} kilometre${km > 1 ? 's' : ''}. Time ${sayDur(liveElapsed())}. Last kilometre ${sayDur(live.splits[km - 1])}.`);
+}
+
+async function liveWake(on) {
+  try {
+    if (on && !liveLock && 'wakeLock' in navigator && !document.hidden) {
+      liveLock = await navigator.wakeLock.request('screen');
+      liveLock.addEventListener('release', () => { liveLock = null; });
+    } else if (!on && liveLock) { const l = liveLock; liveLock = null; await l.release(); }
+  } catch (e) {}
+}
+function liveWatchStart() {
+  if (liveWatch != null) navigator.geolocation.clearWatch(liveWatch);
+  liveWatch = navigator.geolocation.watchPosition(liveOnFix, err => {
+    liveFix = liveFix && err.code === 3 ? liveFix : { err: err.code };
+    liveGps();
+  }, { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
+}
+function liveWatchStop() { if (liveWatch != null) navigator.geolocation.clearWatch(liveWatch); liveWatch = null; }
+
+function liveGps() {
+  const el = $('#rtGps'); if (!el) return;
+  let cls = 'wait', txt = 'Finding GPS…';
+  if (!navigator.geolocation) { cls = 'bad'; txt = 'No GPS in this browser'; }
+  else if (liveFix && liveFix.err === 1) {
+    cls = 'bad'; txt = location.protocol === 'https:' || location.hostname === 'localhost'
+      ? 'Location blocked — allow it in Settings › Privacy › Location Services' : 'GPS only works on the https:// version of Compass';
+  }
+  else if (liveFix && liveFix.err) { txt = 'Still looking for GPS…'; }
+  else if (liveFix) {
+    const a = Math.round(liveFix.acc);
+    cls = a <= 20 ? 'ok' : a <= RUN_MAX_ACC ? 'meh' : 'bad';
+    txt = cls === 'ok' ? `GPS ready · ±${a} m` : cls === 'meh' ? `GPS fair · ±${a} m` : `Weak GPS · ±${a} m — head outside`;
+  }
+  el.className = 'rt-gps ' + cls; el.innerHTML = `<i></i>${esc(txt)}`;
+}
+
+function loadLeaflet() {
+  if (window.L) return Promise.resolve(window.L);
+  return leafletP || (leafletP = new Promise((res, rej) => {
+    const css = document.createElement('link'); css.rel = 'stylesheet'; css.href = LEAFLET + 'leaflet.css';
+    const js = document.createElement('script'); js.src = LEAFLET + 'leaflet.js';
+    js.onload = () => res(window.L); js.onerror = () => { leafletP = null; css.remove(); js.remove(); rej(new Error('map')); };
+    document.head.append(css, js);
+  }));
+}
+async function liveMapInit() {
+  const el = $('#rtMap'); if (!el || liveMap) return;
+  try { await loadLeaflet(); } catch (e) { el.classList.add('nomap'); return liveMapUpdate(); }
+  if (!$('#rtMap') || liveMap) return;
+  const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#3355FF';
+  liveMap = L.map(el, { zoomControl: false, attributionControl: true })
+    .setView(liveFix && liveFix.p ? liveFix.p : [-28.0, 153.4], liveFix && liveFix.p ? 16 : 10);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(liveMap);
+  liveLine = L.polyline([], { color: accent, weight: 5, opacity: .9 }).addTo(liveMap);
+  liveDot = L.circleMarker([0, 0], { radius: 8, color: '#fff', weight: 3, fillColor: accent, fillOpacity: 1 });
+  liveMap.on('dragstart', () => { liveFollow = false; $('#rtCentre')?.removeAttribute('hidden'); });
+  liveMapUpdate();
+}
+function liveMapUpdate() {
+  const el = $('#rtMap'); if (!el || !live) return;
+  const segs = live.segs.map(s => s.map(p => [p[0], p[1]])).filter(s => s.length);
+  if (el.classList.contains('nomap')) {
+    el.innerHTML = routeSVG(segs, { w: 360, h: 240 }) || `<div class="rt-nomap">${ic('compass')}<span>Map unavailable offline — your route is still being recorded</span></div>`;
+    return;
+  }
+  if (!liveMap) return;
+  liveLine.setLatLngs(segs);
+  if (liveFix && liveFix.p) {
+    liveDot.setLatLng(liveFix.p); if (!liveMap.hasLayer(liveDot)) liveDot.addTo(liveMap);
+    if (liveFollow) liveMap.setView(liveFix.p, Math.max(liveMap.getZoom(), 16), { animate: true });
+  }
+}
+
+function liveControls() {
+  if (!live) return '';
+  if (live.status === 'ready') return `
+    <button class="btn rt-side" data-act="liveCancel">Cancel</button>
+    <button class="rt-go" data-act="liveGo" aria-label="Start run">${ic('play')}<span>Start</span></button>
+    <span class="rt-side"></span>`;
+  if (live.status === 'running') return `
+    <span class="rt-side"></span>
+    <button class="rt-go pause" data-act="livePause" aria-label="Pause">${ic('pause')}<span>Pause</span></button>
+    <span class="rt-side"></span>`;
+  return `
+    <span class="rt-side"></span>
+    <button class="rt-go" data-act="liveResume" aria-label="Resume">${ic('play')}<span>Resume</span></button>
+    <button class="rt-go finish" data-act="liveFinish" aria-label="Finish">${ic('square')}<span>Finish</span></button>`;
+}
+function liveRender() {
+  if (!live) return;
+  const e = liveElapsed(), km = live.distM / 1000;
+  const set = (id, v) => { const n = $('#' + id); if (n && n.textContent !== v) n.textContent = v; };
+  set('rtTime', fmtClock(e));
+  set('rtDist', km.toFixed(2));
+  set('rtPace', live.status === 'paused' ? 'Paused' : fmtPace(livePace()));
+  set('rtAvg', km >= 0.05 ? fmtPace(e / km) : '—');
+  const sp = $('#rtSplits');
+  if (sp && sp.dataset.n !== String(live.splits.length)) {
+    sp.dataset.n = live.splits.length;
+    sp.innerHTML = live.splits.map((s, i) => `<span class="rt-split"><b>${i + 1}</b> ${fmtPace(s)}</span>`).reverse().join('');
+  }
+  const ov = $('#runtrk'); if (ov) ov.dataset.status = live.status;
+  const pill = $('#runPill');
+  const showPill = !!live.started && (!ov || ov.hidden);
+  if (pill) {
+    pill.hidden = !showPill;
+    if (showPill) pill.innerHTML = `<i class="${live.status}"></i>${live.status === 'paused' ? 'Paused · ' : ''}${fmtClock(e)} · ${km.toFixed(2)} km`;
+  }
+}
+
+function liveOpen() {
+  if (!live) live = { status: 'ready', started: 0, pausedMs: 0, pausedAt: 0, distM: 0, segs: [[]], splits: [], hist: [],
+    voice: localStorage.getItem('compass_run_voice') !== '0' };
+  closeSheet();
+  let ov = $('#runtrk');
+  if (!ov) {
+    ov = document.createElement('div'); ov.id = 'runtrk'; ov.className = 'runtrk';
+    ov.innerHTML = `
+      <div class="rt-map" id="rtMap"></div>
+      <div class="rt-top">
+        <button class="scan-btn" data-act="liveHide" aria-label="Minimise">${ic('chevron-down')}</button>
+        <span class="rt-gps wait" id="rtGps"><i></i>Finding GPS…</span>
+        <button class="scan-btn" id="rtVoice" data-act="liveVoice" aria-label="Voice updates"></button>
+      </div>
+      <button class="scan-btn rt-centre" id="rtCentre" data-act="liveCentre" aria-label="Re-centre map" hidden>${ic('locate')}</button>
+      <div class="rt-panel">
+        <div class="rt-time" id="rtTime">0:00</div>
+        <div class="rt-k">Time</div>
+        <div class="rt-grid">
+          <div><div class="rt-v" id="rtDist">0.00</div><div class="rt-k">Distance (km)</div></div>
+          <div><div class="rt-v" id="rtPace">—</div><div class="rt-k">Pace /km</div></div>
+          <div><div class="rt-v" id="rtAvg">—</div><div class="rt-k">Avg /km</div></div>
+        </div>
+        <div class="rt-splits" id="rtSplits"></div>
+        <div class="rt-ctrl" id="rtCtrl"></div>
+        <div class="rt-note">Keep Compass open with the screen on — iPhone pauses GPS for web apps while it's locked.</div>
+      </div>`;
+    document.body.appendChild(ov);
+  }
+  ov.hidden = false;
+  document.documentElement.classList.add('rt-open');
+  $('#rtCtrl').innerHTML = liveControls();
+  $('#rtVoice').innerHTML = ic(live.voice ? 'volume' : 'volume-x');
+  $('#rtVoice').classList.toggle('on', !!live.voice);
+  if (navigator.geolocation && liveWatch == null) liveWatchStart();
+  if (!liveTimer) liveTimer = setInterval(liveRender, 1000);
+  if (live.status === 'running') liveWake(true);
+  liveGps(); liveRender();
+  liveMapInit();
+  if (liveMap) setTimeout(() => liveMap.invalidateSize(), 50);
+}
+function liveHide() {
+  const ov = $('#runtrk'); if (ov) ov.hidden = true;
+  document.documentElement.classList.remove('rt-open');
+  liveWake(false);
+  liveRender();
+}
+// tear the whole thing down (cancelled, discarded or saved)
+function liveEnd() {
+  liveWatchStop(); liveWake(false);
+  clearInterval(liveTimer); liveTimer = 0;
+  if (liveMap) { liveMap.remove(); liveMap = null; liveLine = liveDot = null; }
+  $('#runtrk')?.remove();
+  document.documentElement.classList.remove('rt-open');
+  live = null; liveFix = null; liveFollow = true; liveBad = 0;
+  liveStore();
+  const pill = $('#runPill'); if (pill) pill.hidden = true;
+}
+function liveSetStatus(st) {
+  live.status = st;
+  $('#rtCtrl').innerHTML = liveControls();
+  liveStore(); liveRender();
+}
+const runNameNow = (t = new Date()) => { const h = t.getHours();
+  return (h < 5 ? 'Night' : h < 11 ? 'Morning' : h < 14 ? 'Lunch' : h < 17 ? 'Afternoon' : h < 21 ? 'Evening' : 'Night') + ' run'; };
+
+function liveFinishSheet() {
+  const e = Math.round(liveElapsed()), km = +(live.distM / 1000).toFixed(2);
+  const segs = live.segs.map(s => s.map(p => [p[0], p[1]]));
+  liveHide();
+  openSheet(`<h3>Save run</h3>
+    ${routeSVG(segs) ? `<div class="route-box">${routeSVG(segs)}</div>` : ''}
+    <div class="stats-row run-sum">
+      <div class="stat"><div class="k">Time</div><div class="v">${fmtClock(e)}</div></div>
+      <div class="stat"><div class="k">Avg pace</div><div class="v">${km ? fmtPace(e / km) : '—'}<small> /km</small></div></div>
+    </div>
+    ${field('Name', 'lr_name', { val: runNameNow(new Date(live.started)) })}
+    ${field('Distance (km)', 'lr_d', { type: 'number', step: '0.01', val: km || '', inputmode: 'decimal', ph: 'GPS got nothing — type it in' })}
+    ${field('Notes', 'lr_notes', { type: 'textarea', ph: 'How did it feel?' })}
+    <button class="btn ghost rt-back" data-act="liveShow">${ic('chevron-left')} Back to run</button>
+    <div class="sheet-actions">
+      <button class="btn danger" data-act="liveDiscard">Discard</button>
+      <button class="btn primary" data-act="liveSaveRun">Save run</button>
+    </div>`);
+}
+
+// a run that was going when the app closed (reload, crash, iOS killing it) comes back
+function liveRestore() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(LIVE_KEY) || 'null'); } catch (e) {}
+  if (!saved || !saved.started) return;
+  if (Date.now() - saved.started > 24 * 3600e3) { localStorage.removeItem(LIVE_KEY); return; }   // abandoned yesterday
+  live = saved;
+  live.hist = [];                         // pace starts fresh rather than spanning the gap
+  if (live.status === 'running') live.segs.push([]);   // don't draw a line across the time we weren't watching
+  liveOpen();
+  toast(live.status === 'running' ? 'Your run is still going — picked up where it left off' : 'You have a paused run');
+}
+document.addEventListener('visibilitychange', () => {
+  if (!live || !live.started) return;
+  if (document.hidden) { liveStore(); return; }
+  if (live.status === 'running') { liveWatchStart(); if (!$('#runtrk')?.hidden) liveWake(true); }
+  liveRender();
+});
+
 /* ============================================================
    Actions
    ============================================================ */
@@ -3114,10 +3460,17 @@ const ACT = {
   addRun() { ACT.editRun({ id:'' }); },
   editRun(d) {
     const r = S.health.runs.find(x=>x.id===d.id) || { name:'', distanceKm:'', timeMin:'', date:todayISO(), elevM:'', avgHr:'', notes:'' };
+    const segs = runRouteSegs(r), fastest = Math.min(...(r.splits || [0]));
     sheetForm(d.id?'Edit run':'New run',
-      r.source === 'strava' ? 'Imported from Strava. Edits stay local — they will not be pushed back.' : '',
+      r.source === 'strava' ? 'Imported from Strava. Edits stay local — they will not be pushed back.'
+        : r.source === 'gps' ? `Tracked with GPS${r.start ? ` · started ${esc(r.start)}` : ''}` : '',
+      (!d.id ? `<button class="btn primary scan-cta" data-act="liveStart">${ic('play')} ${live && live.started ? 'Back to your run' : 'Start a run — track it with GPS'}</button>
+        <div class="card-label" style="margin:6px 0 10px">Or log one you already did</div>` : '') +
+      (segs.length ? `<div class="route-box">${routeSVG(segs)}</div>` : '') +
+      (r.splits && r.splits.length ? `<div class="card-label" style="margin:4px 0 6px">Splits</div><div class="run-splits">${r.splits.map((s, i) =>
+        `<div class="rs-row"><span>${i + 1} km</span><span class="rs-bar"><i style="width:${Math.round(fastest / s * 100)}%"></i></span><b>${fmtPace(s)}</b></div>`).join('')}</div>` : '') +
       field('Name','r_name',{val:r.name,ph:'e.g. Morning run'}) +
-      `<div class="row">${field('Distance (km)','r_d',{type:'number',step:'0.1',val:r.distanceKm,inputmode:'decimal'})}${field('Time (min)','r_t',{type:'number',val:r.timeMin,inputmode:'decimal'})}</div>` +
+      `<div class="row">${field('Distance (km)','r_d',{type:'number',step:'0.01',val:r.distanceKm,inputmode:'decimal'})}${field('Time (min)','r_t',{type:'number',step:'0.01',val:r.timeMin,inputmode:'decimal'})}</div>` +
       `<div class="row">${field('Elevation (m)','r_e',{type:'number',val:r.elevM,inputmode:'numeric'})}${field('Avg HR','r_hr',{type:'number',val:r.avgHr,inputmode:'numeric'})}</div>` +
       field('Date','r_date',{type:'date',val:r.date}) +
       field('Notes','r_notes',{type:'textarea',val:r.notes,ph:'Optional'}),
@@ -3128,7 +3481,11 @@ const ACT = {
     if (!(dist > 0 && dist <= 300)) return toast('Distance should be 0.1 – 300 km');
     if (num(val('r_t')) < 0 || num(val('r_t')) > 3000) return toast('Time should be in minutes, 0 – 3000');
     if ((val('r_date') || '') > todayISO()) return toast("A run can't be in the future");
-    const rec = { name: val('r_name'), distanceKm: dist, timeMin: num(val('r_t')),
+    const prev = d.id && S.health.runs.find(x=>x.id===d.id);
+    const mins = num(val('r_t'));
+    const rec = { name: val('r_name'), distanceKm: dist, timeMin: mins,
+      // a GPS run keeps its to-the-second time unless the minutes were changed by hand
+      timeSec: prev && prev.timeSec && Math.abs(prev.timeSec / 60 - mins) < 0.01 ? prev.timeSec : undefined,
       elevM: num(val('r_e')), avgHr: num(val('r_hr')),
       date: val('r_date')||todayISO(), notes: val('r_notes') };
     if (d.id) Object.assign(S.health.runs.find(x=>x.id===d.id), rec);
@@ -3137,6 +3494,54 @@ const ACT = {
     save(); closeSheet(); render(currentTab); toast('Run logged', { undo: true });
   },
   delRun(d) { S.health.runs = S.health.runs.filter(x=>x.id!==d.id); save(); closeSheet(); render(currentTab); },
+
+  /* ----- runs: live GPS tracker ----- */
+  liveStart() { liveOpen(); },
+  liveShow() { liveOpen(); },
+  liveHide() { liveHide(); },
+  liveCancel() { liveEnd(); },
+  liveGo() {
+    if (!navigator.geolocation) return toast('This browser has no GPS');
+    // iOS only lets speech start from a tap — prime it now so the km updates can talk later
+    if (live.voice && window.speechSynthesis) try { speechSynthesis.speak(new SpeechSynthesisUtterance('')); } catch (e) {}
+    Object.assign(live, { started: Date.now(), status: 'running' });
+    haptic(); liveWake(true); liveSetStatus('running');
+  },
+  livePause() {
+    live.pausedAt = Date.now(); haptic(); liveSetStatus('paused'); liveSay('Run paused');
+  },
+  liveResume() {
+    live.pausedMs += Date.now() - live.pausedAt; live.pausedAt = 0;
+    live.segs.push([]); live.hist = [];          // no distance for wherever you wandered while paused
+    haptic(); liveWake(true); liveSetStatus('running'); liveSay('Run resumed');
+  },
+  liveFinish() { liveFinishSheet(); },
+  liveVoice() {
+    live.voice = !live.voice;
+    try { localStorage.setItem('compass_run_voice', live.voice ? '1' : '0'); } catch (e) {}
+    $('#rtVoice').innerHTML = ic(live.voice ? 'volume' : 'volume-x');
+    $('#rtVoice').classList.toggle('on', live.voice);
+    toast(live.voice ? 'Voice updates on — every km' : 'Voice updates off'); liveStore();
+  },
+  liveCentre() { liveFollow = true; $('#rtCentre').hidden = true; liveMapUpdate(); },
+  liveDiscard() {
+    sheetForm('Discard this run?', 'The time, distance and route will be thrown away.', '',
+      { save: 'liveDiscardConfirm', saveLabel: 'Discard', noFocus: true });
+  },
+  liveDiscardConfirm() { liveEnd(); closeSheet(); toast('Run discarded'); },
+  liveSaveRun() {
+    const dist = num(val('lr_d'));
+    if (!(dist > 0 && dist <= 300)) return toast('Add the distance (0.01 – 300 km)');
+    const sec = Math.round(liveElapsed()), st = new Date(live.started);
+    S.health.runs.push({ id: uid(), name: val('lr_name') || runNameNow(st), date: todayISO(st),
+      start: `${String(st.getHours()).padStart(2, '0')}:${String(st.getMinutes()).padStart(2, '0')}`,
+      distanceKm: +dist.toFixed(2), timeMin: +(sec / 60).toFixed(2), timeSec: sec, elevM: 0, avgHr: 0,
+      notes: val('lr_notes'), source: 'gps', splits: live.splits.slice(),
+      route: live.segs.filter(s => s.length > 1).map(s => polyEncode(simplifyPath(s))) });
+    S.health.runs.sort((a, b) => a.date.localeCompare(b.date));
+    liveEnd(); save(); closeSheet(); render(currentTab);
+    toast(`Run saved — ${dist.toFixed(2)} km in ${fmtClock(sec)}`, { undo: true });
+  },
 
   /* ----- runs: Strava ----- */
   stravaConnect() { stravaConnect(); },
@@ -4374,7 +4779,7 @@ function initPullToRefresh() {
   const ptr = $('#ptr'); let y0 = null, dy = 0, busy = false;
   document.addEventListener('touchstart', e => {
     if (busy || window.scrollY > 0 || arranging || dragItem || (typeof dragSec !== 'undefined' && dragSec) ||
-        $('#scrim').classList.contains('open') || $('#scanner') || e.target.closest('.hg-scroll, .weekstrip, .sleep-list, .pb-list')) return;
+        $('#scrim').classList.contains('open') || $('#scanner') || document.documentElement.classList.contains('rt-open') || e.target.closest('.hg-scroll, .weekstrip, .sleep-list, .pb-list')) return;
     y0 = e.touches[0].clientY; dy = 0;
   }, { passive: true });
   document.addEventListener('touchmove', e => {
@@ -4552,6 +4957,7 @@ function startApp() {
   updateAppBadge();
   initPullToRefresh();
   initSwipeRows();
+  liveRestore();
 }
 
 // One-time import of Tyson's recurring bills (from the old dashboard). Dedupes by name; runs once per device.
