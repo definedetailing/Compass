@@ -1,1 +1,186 @@
-/* Ideas › Notes */
+/* Ideas › Notes — folders, note list, full-screen editor */
+
+.nn { padding-bottom: 8px; }
+.nn .section-head { margin-top: 22px; }
+.nn .section-head .nn-n { font-size: 13px; }
+
+/* sticky search, just under the Notes / Whiteboard bar */
+.nn-searchbar { position: sticky; top: var(--nn-top, calc(var(--safe-t) + 110px)); z-index: 24;
+  background: var(--bg); margin: 0 -16px; padding: 2px 16px 10px; }
+.nn-search { position: relative; display: flex; align-items: center; }
+.nn-search > .ic { position: absolute; left: 12px; width: 17px; height: 17px; color: var(--text-3); pointer-events: none; }
+.nn-search input { height: 44px; padding: 0 44px 0 38px; font-size: 16px; border-radius: 12px; background: var(--surface-2); border-color: transparent; -webkit-appearance: none; appearance: none; }
+.nn-search input::-webkit-search-cancel-button { display: none; }
+.nn-qx { position: absolute; right: 2px; width: 44px; height: 44px; border: 0; background: none; color: var(--text-3); display: grid; place-items: center; }
+.nn-qx .ic { width: 16px; height: 16px; }
+
+/* the New note / template / folder row */
+.nn-actions { display: flex; gap: 8px; margin: 2px 0 4px; }
+.nn-actions .btn { min-height: 44px; }
+.nn-actions .btn.primary { flex: 1; }
+.nn-actions .nn-ib { width: 48px; flex: none; padding: 0; color: var(--text-2); }
+
+/* first-run explainer */
+.nn-intro { margin-top: 14px; }
+.nn-intro-ic { width: 40px; height: 40px; border-radius: 11px; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; margin-bottom: 10px; }
+.nn-intro-ic .ic { width: 22px; height: 22px; }
+.nn-intro h3 { margin: 0 0 4px; font-size: 17px; font-weight: 600; }
+.nn-intro p { margin: 0 0 8px; color: var(--text-2); font-size: 14px; }
+.nn-intro ul { margin: 0; padding-left: 18px; color: var(--text-2); font-size: 14px; line-height: 1.5; }
+.nn-intro li + li { margin-top: 4px; }
+.nn-intro b { color: var(--text); font-weight: 600; }
+
+/* pinned cards: two across */
+.nn-pins { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.nn-pins > .card + .card { margin-top: 0; }
+.nn-pin { text-align: left; padding: 12px 13px; min-height: 104px; display: flex; flex-direction: column; gap: 4px; color: var(--text); min-width: 0; }
+.nn-pt { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nn-pp { font-size: 13px; color: var(--text-2); line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; flex: 1; overflow-wrap: anywhere; }
+
+/* note rows (swipe left for Pin / Move / Delete) */
+.nn-list { padding: 0; overflow: hidden; }
+.nn-sw { position: relative; overflow: hidden; }
+.nn-sw + .nn-sw, .nn-trow + .nn-trow { border-top: 1px solid var(--border); }
+.nn-acts { position: absolute; top: 0; right: 0; bottom: 0; display: flex; }
+.nn-acts button { width: 62px; border: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  font-size: 11px; font-weight: 600; color: #fff; background: #8A8A86; }
+.nn-acts button:nth-child(2) { background: var(--accent); color: var(--on-accent); }
+.nn-acts button.bad { background: var(--neg); color: #fff; }
+.nn-acts .ic { width: 18px; height: 18px; }
+.nn-row { position: relative; z-index: 1; background: var(--surface); padding: 12px 16px; min-height: 64px; touch-action: pan-y;
+  transition: transform .22s cubic-bezier(.2,.8,.2,1); -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.nn-row:active { background: var(--surface-hover); }
+.nn-rt { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nn-rp { font-size: 13px; color: var(--text-2); margin-top: 2px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.nn-rm { display: flex; align-items: center; gap: 8px; margin-top: 5px; font-size: 12px; color: var(--text-3); min-width: 0; }
+.nn-rm > span:first-child { white-space: nowrap; }
+.nn-pinmark { color: var(--warn); margin-right: 5px; }
+.nn-pinmark .ic { width: 13px; height: 13px; vertical-align: -1px; }
+.nn-badge { display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px; border-radius: 5px; background: var(--surface-2); color: var(--text-2); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.nn-badge .ic { width: 12px; height: 12px; }
+.nn-badge.all { color: var(--pos); }
+.nn-fchip { display: inline-flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.nn-fchip i { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+
+/* folders list */
+.nn-folders { padding: 0 0 0 16px; overflow: hidden; }
+.nn-frow { display: flex; align-items: center; min-height: 52px; }
+.nn-frow + .nn-frow, .nn-frow + .nn-fhint, .nn-fhint + .nn-frow { border-top: 1px solid var(--border); }
+.nn-fmain { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 8px 0; border: 0; background: none; text-align: left; color: var(--text); font-size: 15px; }
+.nn-frow.sub .nn-fmain { padding-left: 22px; }
+.nn-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; }
+.nn-dot.lg { width: 14px; height: 14px; }
+.nn-fic { width: 22px; flex: none; display: grid; place-items: center; color: var(--text-2); margin-left: -5px; }
+.nn-fic .ic { width: 18px; height: 18px; }
+.nn-fname { flex: 1; min-width: 0; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nn-fname small { display: block; font-size: 12px; font-weight: 400; color: var(--text-3); }
+.nn-count { color: var(--text-3); font-size: 14px; font-variant-numeric: tabular-nums; }
+.nn-fgo, .nn-fexp { width: 44px; height: 44px; flex: none; display: grid; place-items: center; color: var(--text-3); border: 0; background: none; }
+.nn-fgo .ic { width: 16px; height: 16px; }
+.nn-fexp .ic { width: 18px; height: 18px; transform: rotate(-90deg); transition: transform .18s; }
+.nn-fexp.on .ic { transform: none; }
+.nn-fhint { font-size: 13px; color: var(--text-3); padding: 12px 16px 12px 0; }
+
+/* folder page */
+.nn-crumb { margin: 0 0 6px; }
+.nn-back { display: inline-flex; align-items: center; gap: 2px; min-height: 44px; padding: 0 10px 0 0; margin-left: -6px; border: 0; background: none; color: var(--accent); font-size: 16px; font-weight: 500; max-width: 70%; }
+.nn-back .ic { width: 22px; height: 22px; flex: none; }
+.nn-back span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nn-ftitle { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.nn-ftitle h2 { flex: 1; min-width: 0; margin: 0; font-size: 26px; font-weight: 650; line-height: 1.15; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nn-more { width: 44px; height: 44px; flex: none; }
+.nn-path { font-size: 12px; color: var(--text-3); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nn-empty-trash { color: var(--neg); min-height: 44px; }
+.nn-emptyf { padding: 34px 12px; }
+.nn-emptyf .btn .ic { width: 16px; height: 16px; display: inline; opacity: 1; margin: 0; }
+.nn-note { font-size: 13px; color: var(--text-3); margin: 10px 2px; }
+
+/* Recently deleted rows */
+.nn-trow { display: flex; align-items: center; gap: 8px; padding: 10px 6px 10px 16px; min-height: 64px; }
+.nn-tb { flex: 1; min-width: 0; }
+.nn-trow .btn.sm { min-height: 40px; }
+.nn-purge { width: 44px; height: 44px; flex: none; }
+
+/* sheets: menus, move-to, colours */
+.nn-menu, .nn-mlist { display: flex; flex-direction: column; margin: 0 -4px; }
+.nn-mrow { display: flex; align-items: center; gap: 14px; min-height: 50px; padding: 8px 6px; border: 0; background: none; border-radius: 10px; text-align: left; font-size: 16px; color: var(--text); width: 100%; }
+.nn-mrow:active { background: var(--surface-2); }
+.nn-mrow > .ic { width: 20px; height: 20px; color: var(--text-2); flex: none; }
+.nn-mrow > span:not(.nn-fic) { flex: 1; min-width: 0; }
+.nn-mrow small { display: block; font-size: 13px; color: var(--text-3); margin-top: 1px; }
+.nn-mrow.bad, .nn-mrow.bad > .ic { color: var(--neg); }
+.nn-mrow:disabled { opacity: .4; }
+.nn-mrow.on { color: var(--accent); font-weight: 600; }
+.nn-mrow.on > .ic:last-child { color: var(--accent); }
+.nn-mrow.sub { padding-left: 32px; }
+.nn-mrow .nn-dot { margin: 0 4px; }
+.nn-mrow .nn-fic { margin: 0 -1px; width: 22px; }
+.nn-mnew { margin-top: 12px; }
+.nn-tip { font-size: 13px; color: var(--text-3); margin: 12px 2px 0; line-height: 1.45; }
+.nn-lbl { display: block; font-size: 13px; font-weight: 600; color: var(--text-2); margin-bottom: 8px; }
+.nn-swatches { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 0; }
+.nn-sw-c { width: 36px; height: 36px; border-radius: 50%; border: 3px solid var(--surface); box-shadow: 0 0 0 1px var(--border); padding: 0; }
+.nn-sw-c.on { box-shadow: 0 0 0 2px var(--text); }
+
+/* ============ the editor overlay ============ */
+html.ideas-open, html.ideas-open body { overflow: hidden; }
+html.ideas-open .nav, html.ideas-open .fab { display: none !important; }
+html.ideas-open .toast { bottom: calc(var(--nn-kb, 0px) + 72px + var(--safe-b)); }
+.nn-ed { position: fixed; inset: 0; z-index: 55; background: var(--bg); color: var(--text); display: flex; flex-direction: column; animation: nnIn .2s ease; }
+@keyframes nnIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+.nn-ehead { display: flex; align-items: center; gap: 4px; padding: calc(var(--safe-t) + 6px) 10px 6px 12px; flex: none;
+  background: color-mix(in srgb, var(--bg) 92%, transparent); border-bottom: 1px solid transparent; max-width: var(--maxw); width: 100%; margin: 0 auto; }
+.nn-ehead .nn-back { margin-left: -4px; max-width: 45%; }
+.nn-espace { flex: 1; }
+.nn-ehead .iconbtn { width: 44px; height: 44px; }
+.nn-epin.on { color: var(--warn); }
+.nn-emode { min-height: 44px; min-width: 64px; margin-left: 4px; color: var(--accent); background: var(--accent-soft); }
+.nn-emode .ic { width: 15px; height: 15px; }
+.nn-escroll { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+  padding: 0 18px calc(var(--nn-kb, 0px) + 84px + var(--safe-b)); max-width: var(--maxw); width: 100%; margin: 0 auto; }
+.nn-emeta { display: flex; align-items: center; gap: 10px; margin: 4px 0 6px; min-width: 0; }
+.nn-fchip.lg { border: 0; background: var(--surface-2); color: var(--text-2); border-radius: 999px; padding: 0 12px; min-height: 40px; font-size: 13px; font-weight: 500; max-width: 62%; }
+.nn-fchip.lg .ic { width: 14px; height: 14px; flex: none; }
+.nn-fchip.lg i { width: 9px; height: 9px; }
+.nn-ewhen { font-size: 12px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nn-ta { display: block; width: 100%; min-height: 220px; resize: none; overflow: hidden; border: 0; background: transparent; padding: 6px 0 0;
+  font-size: 17px; line-height: 1.5; border-radius: 0; box-shadow: none !important; color: var(--text); }
+.nn-ta:focus { border: 0; }
+.nn-view { display: none; padding: 6px 0 0; font-size: 17px; line-height: 1.5; overflow-wrap: anywhere; cursor: text; }
+.nn-ed.viewing .nn-ta, .nn-ed.viewing .nn-tbar { display: none; }
+.nn-ed.viewing .nn-view { display: block; }
+.nn-vt { font-size: 24px; font-weight: 700; line-height: 1.25; margin: 2px 0 8px; }
+.nn-vh { font-weight: 700; font-size: 19px; margin: 14px 0 4px; }
+.nn-vh.h2, .nn-vh.h3 { font-size: 17px; }
+.nn-vp { margin: 0; min-height: 25px; }
+.nn-vgap { height: 12px; }
+.nn-vend { height: 120px; }
+.nn-vli { display: flex; gap: 10px; padding-left: calc(var(--ind, 0) * 8px + 4px); }
+.nn-bul { width: 6px; height: 6px; border-radius: 50%; background: var(--text-2); flex: none; margin-top: 10px; }
+.nn-vck { display: flex; align-items: flex-start; gap: 4px; padding-left: calc(var(--ind, 0) * 8px); margin-left: -11px; }
+.nn-vbox { width: 44px; height: 44px; margin: -9px 0 -9px 0; flex: none; border: 0; background: none; padding: 0; display: grid; place-items: center; }
+.nn-vck .box { pointer-events: none; }
+.nn-vck.done .box { background: var(--primary); border-color: var(--primary); }
+.nn-vck.done .nn-vtx { color: var(--text-3); text-decoration: line-through; }
+.nn-vck + .nn-vck { margin-top: 6px; }
+.nn-vtx { flex: 1; min-width: 0; padding-top: 0; }
+.nn-view a { color: var(--accent); }
+.nn-sent { display: inline-flex; align-items: center; gap: 3px; margin-left: 6px; padding: 0 6px; border-radius: 5px; background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 600; vertical-align: 2px; text-decoration: none; line-height: 1.6; }
+.nn-sent .ic { width: 12px; height: 12px; }
+
+/* keyboard toolbar: moved onto the keyboard via --nn-kb */
+.nn-tbar { position: fixed; left: 0; right: 0; bottom: var(--nn-kb, 0px); z-index: 2; display: flex; align-items: center; gap: 2px;
+  padding: 4px 8px calc(4px + var(--safe-b)); background: color-mix(in srgb, var(--surface) 94%, transparent);
+  -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); border-top: 1px solid var(--border); }
+.nn-ed.kb .nn-tbar { padding-bottom: 4px; }
+.nn-tbar button { height: 44px; min-width: 44px; flex: 1; border: 0; background: none; border-radius: 10px; color: var(--text); display: inline-flex; align-items: center; justify-content: center; gap: 4px; font-size: 14px; font-weight: 600; -webkit-user-select: none; user-select: none; touch-action: manipulation; }
+.nn-tbar button:active { background: var(--surface-2); }
+.nn-tbar .ic { width: 20px; height: 20px; }
+.nn-tbar .nn-tbtask { flex: 1.5; color: var(--accent); }
+.nn-tbar .nn-tbtask .ic { width: 17px; height: 17px; }
+.nn-tbar .nn-tbdone { flex: 1.3; color: var(--accent); }
+@media (min-width: 760px) { .nn-tbar { left: 50%; transform: translateX(-50%); max-width: var(--maxw); border-radius: 14px 14px 0 0; border-left: 1px solid var(--border); border-right: 1px solid var(--border); } }
+.nn-fmain > .nn-dot { margin-right: 5px; }
+.nn-ed:not(.viewing) .nn-emode { display: none; }
+.nn-sw:not(.swiping):not(.open) .nn-acts { visibility: hidden; }
+.nn-vck:not(.done) .box svg { visibility: hidden; }
