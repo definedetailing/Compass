@@ -1193,8 +1193,8 @@ html.rt-open, html.rt-open body { overflow: hidden; }
 .dl-badge.hot { background: var(--red-soft); color: var(--neg); }
 .place-bar { position: sticky; top: calc(var(--safe-t) + 60px); z-index: 30; display: flex; align-items: center; gap: 10px; margin-top: var(--gap);
   padding: 10px 14px; border-radius: var(--radius); background: var(--accent); color: var(--on-accent); font-size: 14px; }
-.place-bar span { flex: 1; min-width: 0; }
-.place-bar .link { background: none; border: none; padding: 6px 2px; font: 600 14px var(--font); color: inherit; text-decoration: underline; cursor: pointer; }
+.place-bar span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.place-bar .link { background: none; border: none; padding: 8px 2px; font: 600 14px var(--font); color: inherit; text-decoration: underline; cursor: pointer; white-space: nowrap; flex: none; }
 /* timeline */
 .tl-card { padding: 10px 10px 10px 4px; }
 .tl { position: relative; }
@@ -1261,3 +1261,36 @@ html.rt-open, html.rt-open body { overflow: hidden; }
 .gcal-cal .gc-on i { width: 10px; height: 10px; border-radius: 3px; flex: none; }
 .gcal-cal select { width: auto; flex: none; padding: 6px 8px; font-size: 13px; }
 .gcal-cal input[type="checkbox"] { width: 20px; height: 20px; min-height: 0; padding: 0; margin: 0; flex: none; accent-color: var(--accent); border: none; background: none; box-shadow: none; appearance: auto; -webkit-appearance: checkbox; }
+
+/* ---------- planner UX pass ---------- */
+/* .link only had styles inside some containers, so elsewhere ("Start from template", the place bar's
+   "Next free slot" / "Cancel") it fell back to a grey OS button with unreadable text */
+.link { background: none; border: none; padding: 4px; color: var(--accent); font: inherit; font-weight: 500; cursor: pointer; }
+/* `.tl-blk > span` was also styling the tick (it's a span): grey ✓ on unfinished tasks looked done */
+.tl-blk .tl-box { display: grid; color: transparent; position: relative; }
+.tl-blk .tl-box::after { content: ""; position: absolute; inset: -9px; }     /* ~36px to hit, inside the block */
+.tl-blk.done .tl-box { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.tl-blk.tk.p2 .tl-box { border-color: var(--warn); }
+/* Plan sheet: several actions go under the title on one line, big enough to tap */
+.plan-list .tray-row:has(.plan-btns .chip + .chip) { flex-wrap: wrap; row-gap: 8px; }
+.plan-list .tray-row:has(.plan-btns .chip + .chip) .plan-btns { flex: 1 1 100%; max-width: none; justify-content: flex-start; flex-wrap: nowrap; }
+.plan-btns .chip { min-height: 34px; padding: 6px 12px; font-size: 13px; border-radius: 8px; }
+.plan-list .tray-row:has(.plan-btns .chip + .chip) .plan-btns .chip { flex: 1; justify-content: center; }
+.plan-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.plan-label .link { font-size: 13px; text-transform: none; letter-spacing: 0; padding: 8px 2px; margin: -8px 0; }
+.est-chips { display: flex; gap: 4px; }
+/* the day note grows with what you write instead of scrolling inside the page */
+.day-note textarea { overflow: hidden; }
+.qa-added { margin: -4px 0 12px; display: grid; gap: 4px; }
+.qa-added:empty { display: none; }
+.qa-added div { font-size: 13px; color: var(--text-2); display: flex; align-items: center; gap: 6px; }
+.qa-added .ic { width: 14px; height: 14px; color: var(--pos); flex: none; }
+.load .link.load-note { display: block; padding: 6px 0 2px; margin-top: 0; font-size: 12px; text-align: left; }
+.tl-card { scroll-margin-top: calc(var(--safe-t) + 72px); }
+.toast .toast-undo { padding: 12px 8px; margin: -12px -8px; flex: none; }   /* 40px+ to hit, same look */
+.tl-blk.tiny { font-size: 11px; line-height: 1.1; padding-top: 0; padding-bottom: 0; }
+.tl-blk.tk.tiny { border-width: 1px; border-left-width: 3px; }
+.tl-blk.tiny .tl-box { width: 12px; height: 12px; border-width: 1.5px; margin-top: 0; }
+.tl-blk.tiny .tl-box svg { width: 8px; height: 8px; }
+.place-bar span b, .place-bar span small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.place-bar span small { font-size: 12px; opacity: .85; }

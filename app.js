@@ -332,6 +332,8 @@ function save(touch = true) {
     S.updatedAt = Date.now();
     lastChangeAt = Date.now();
     saveSeq++;
+    // an Undo toast from an earlier change would now undo this one instead — take it away
+    if (toastSeq !== -1 && toastSeq !== saveSeq) { toastSeq = -1; hideToast(); }
   }
   lastSavedJSON = JSON.stringify(S);
   localStorage.setItem(LS_KEY, lastSavedJSON);
@@ -579,7 +581,7 @@ function deadlineBadge(t) {
   if (!t.deadline || t.done) return '';
   const n = daysTo(t.deadline);
   const txt = n < 0 ? `${-n}d overdue` : n === 0 ? 'Due today' : n === 1 ? 'Due tomorrow' : n < 7 ? `Due ${DOW[parseISO(t.deadline).getDay()]}` : `Due ${fmtDay(t.deadline)}`;
-  return `<span class="dl-badge ${n <= 1 ? 'hot' : n <= 3 ? 'warm' : ''}">${ic('flag', 'xs')}${esc(txt)}</span>`;
+  return `<span class="dl-badge ${n <= 1 ? 'hot' : n <= 3 ? 'warm' : ''}">${ic('target', 'xs')}${esc(txt)}</span>`;   // flag means priority
 }
 
 /* ---------- unfinished tasks roll forward ----------
@@ -598,8 +600,9 @@ function rollOverTasks() {
     moved++;
   });
   if (moved || parked) {
-    save(); render(currentTab);
-    toast([moved && `${moved} unfinished task${moved > 1 ? 's' : ''} carried to today`, parked && `${parked} old one${parked > 1 ? 's' : ''} parked in your Inbox`].filter(Boolean).join(' · '));
+    save(); renderAll();
+    toast([moved && `${moved} unfinished task${moved > 1 ? 's' : ''} carried to today`, parked && `${parked} old one${parked > 1 ? 's' : ''} parked in your Inbox`].filter(Boolean).join(' · '),
+      moved ? { action: { label: 'Plan', fn: () => planSheet(todayISO()) } } : {});
   }
   return moved + parked;
 }
@@ -651,7 +654,8 @@ function freeGaps(iso, withTasks = true) {
 function dayLoad(iso) {
   const free = freeGaps(iso, false).reduce((a, g) => a + g[1] - g[0], 0);
   const open = tasksForDate(iso).filter(t => !taskDone(t, iso));
-  const planned = open.reduce((a, t) => a + taskMins(t), 0);
+  // no estimate = the 30m Auto-place gives it, so "Fits" doesn't turn into "over" the moment it's placed
+  const planned = open.reduce((a, t) => a + (taskMins(t) || 30), 0);
   return { free, planned, unest: open.filter(t => !taskMins(t)).length, open: open.length };
 }
 // put a task in the first gap long enough for it; returns false if nothing fits
@@ -666,7 +670,10 @@ function placeTask(t, iso, gaps = freeGaps(iso)) {
 // most important first, then nearest deadline, then shortest
 const taskRank = (a, b) => ((a.pri || 9) - (b.pri || 9)) || (a.deadline || '9').localeCompare(b.deadline || '9') || (num(a.est) || 30) - (num(b.est) || 30);
 function autoPlace(iso) {
-  const list = tasksForDate(iso).filter(t => !taskDone(t, iso) && !t.start && !repeats(t)).sort(taskRank);
+  // within a priority, place the longest first: a 1h task grabbing the only 2h gap
+  // would leave the 2h one with nowhere to go
+  const list = tasksForDate(iso).filter(t => !taskDone(t, iso) && !t.start && !repeats(t))
+    .sort((a, b) => ((a.pri || 9) - (b.pri || 9)) || (a.deadline || '9').localeCompare(b.deadline || '9') || (num(b.est) || 30) - (num(a.est) || 30));
   const gaps = freeGaps(iso); let placed = 0; const left = [];
   list.forEach(t => placeTask(t, iso, gaps) ? placed++ : left.push(t));
   return { placed, left };
@@ -696,9 +703,9 @@ const PLURAL_WD = '(?:sun|mon|tues|wednes|thurs|fri|satur)days';
 const CAT_WORDS = [
   [/\b(gym|workout|training|lift|legs day|push day|pull day)\b/i, 'Gym', 'Health'],
   [/\b(shifts?|work|roster)\b/i, 'Work', 'Business'],
-  [/\b(detail|detailing|ceramic|polish|wash|cut and polish|paint correction|customer|quote|invoice|supplier|define|booking)\b/i, 'Work', 'Business'],
-  [/\b(lecture|class|tutorial|tute|school|uni|exam|prac)\b/i, 'School', 'School'],
-  [/\b(study|assignment|essay|homework|revision|revise|readings?)\b/i, 'Study', 'School'],
+  [/\b(details?|detailing|ceramic|polish|wash|cut and polish|paint correction|customers?|quotes?|invoices?|invoicing|suppliers?|define|bookings?)\b/i, 'Work', 'Business'],
+  [/\b(lectures?|class(es)?|tutorials?|tutes?|school|uni|exams?|pracs?)\b/i, 'School', 'School'],
+  [/\b(study|assignments?|essays?|homework|revision|revise|readings?|quiz(zes)?)\b/i, 'Study', 'School'],
   [/\b(doctor|dentist|physio|run|swim)\b/i, 'Personal', 'Health'],
 ];
 // a $ amount on a Work event is pay, unless the words say you're the one paying
@@ -839,7 +846,7 @@ function quickChips(r) {
   if (r.start) c.push(`<span class="nl-chip">${ic('clock', 'xs')} ${fmtHM(r.start)}${r.end ? '–' + fmtHM(r.end) : r.kind === 'event' ? ' · 1h' : ''}</span>`);
   if (r.cat) c.push(`<span class="nl-chip"><i class="cdot" style="background:${r.kind === 'event' ? catColor(r.cat) : taskColor(r.cat)}"></i> ${esc(r.cat)}</span>`);
   if (r.pri) c.push(`<span class="nl-chip pri p${r.pri}">${ic('flag', 'xs')} ${PRI[r.pri]}</span>`);
-  if (r.deadline) c.push(`<span class="nl-chip">${ic('flag', 'xs')} Due ${esc(fmtDay(r.deadline))}</span>`);
+  if (r.deadline) c.push(`<span class="nl-chip">${ic('target', 'xs')} Due ${esc(fmtDay(r.deadline))}</span>`);
   if (r.est && r.kind === 'task') c.push(`<span class="nl-chip">~${estLabel(r.est)}</span>`);
   if (r.cost) c.push(`<span class="nl-chip">${r.earn ? 'Earns ' : ''}${AUD(r.cost, r.cost % 1 ? 2 : 0)}</span>`);
   return `<div class="nl-title">${r.title ? esc(r.title) : '<span class="muted">Add a name…</span>'}</div><div class="nl-chips">${c.join('')}</div>`;
@@ -875,7 +882,7 @@ function commitQuick(r) {
 }
 
 /* ---------- the day timeline ---------- */
-const TL_PX = 54;                 // pixels per hour
+const TL_PX = 64;                 // pixels per hour (15m = 16px, enough for one line)
 let placingTask = null;           // a tray task waiting for you to tap its time
 function tlItems(iso) {
   const out = [];
@@ -883,9 +890,9 @@ function tlItems(iso) {
   if (showTasks()) tasksForDate(iso).filter(t => hhmmToMin(t.start) !== null).forEach(t => { const s = hhmmToMin(t.start); let e = hhmmToMin(t.end); if (e === null || e <= s) e = s + (num(t.est) || 30); out.push({ s, e: Math.min(e, 1440), kind: 'tk', x: t }); });
   if (showHabits()) habitsOnDate(iso).filter(h => hhmmToMin(h.time) !== null).forEach(h => { const s = hhmmToMin(h.time); out.push({ s, e: Math.min(s + 20, 1440), kind: 'hb', x: h }); });
   // overlapping blocks share the width: greedy columns within each cluster. A block
-  // is drawn at least 20px tall, so lay out by its drawn end (le), not its real one,
-  // or a 5-minute event sits on top of the next one
-  const minLen = Math.ceil(22 / TL_PX * 60);
+  // is drawn at least 13px (+2px gap) tall, so lay out by its drawn end (le), not its
+  // real one, or a 5-minute event sits on top of the next one
+  const minLen = Math.ceil(15 / TL_PX * 60);
   out.forEach(it => { it.le = Math.max(it.e, it.s + minLen); });
   out.sort((a, b) => a.s - b.s || b.e - a.e);
   let cluster = [], cEnd = -1;
@@ -911,15 +918,16 @@ function plannerTimeline(iso) {
     [0, 30].forEach(mm => { const m = h * 60 + mm; slots.push(`<button class="tl-slot ${isToday && m + 30 <= nm ? 'past' : ''}" data-act="tlSlot" data-t="${minToHM(m)}" style="top:${y(m)}px;height:${TL_PX / 2}px" aria-label="${fmtHM(minToHM(m))}"></button>`); });
   }
   const blk = it => {
-    const top = y(it.s), hgt = Math.max(20, y(it.e) - top - 2);
+    // true height (a 20px floor made back-to-back 15-minute tasks overlap and clip each other)
+    const top = y(it.s), hgt = Math.max(13, y(it.e) - top - 2);
     const pos = `top:${top}px;height:${hgt}px;left:calc(${it.col} * (100% / ${it.n}));width:calc(100% / ${it.n} - 3px)`;
-    const short = hgt < 34;
+    const short = hgt < 34 ? (hgt < 20 ? 'short tiny' : 'short') : '';
     if (it.kind === 'ev') { const e = it.x, en = hhmmToMin(e.end);
       const when = it.spill ? `until ${fmtHM(e.end)}` : fmtHM(minToHM(it.s)) + (en !== null && en !== it.s ? '–' + fmtHM(e.end) : '');
-      return `<div class="tl-blk ev ${short ? 'short' : ''} ${isToday && it.e <= nm ? 'past' : ''}" style="${pos};--cat:${catColor(e.category)}" data-act="editEvent" data-id="${e.id}">
+      return `<div class="tl-blk ev ${short} ${isToday && it.e <= nm ? 'past' : ''}" style="${pos};--cat:${catColor(e.category)}" data-act="editEvent" data-id="${e.id}">
         <b>${esc(e.title)}</b>${short ? '' : `<span>${when}${e.g ? ' · Google' : ''}</span>`}</div>`; }
     if (it.kind === 'tk') { const t = it.x, done = taskDone(t, iso);
-      return `<div class="tl-blk tk ${done ? 'done' : ''} ${short ? 'short' : ''} ${t.pri ? 'p' + t.pri : ''}" style="${pos};--cat:${taskColor(t.cat)}" data-act="editTask" data-id="${t.id}">
+      return `<div class="tl-blk tk ${done ? 'done' : ''} ${short} ${t.pri ? 'p' + t.pri : ''}" style="${pos};--cat:${taskColor(t.cat)}" data-act="editTask" data-id="${t.id}">
         <span class="tl-box tap" data-act="toggleTask" data-id="${t.id}" data-d="${iso}">${TICK}</span>
         <span class="tl-tx"><b>${esc(t.text)}</b>${short ? '' : `<span>${fmtHM(minToHM(it.s))}–${fmtHM(minToHM(it.e))}${checkProgress(t) ? ' · ' + checkProgress(t) : ''}</span>`}</span></div>`; }
     const h = it.x, done = habitDoneOn(h, iso);
@@ -937,7 +945,7 @@ function plannerTimeline(iso) {
       </div>
     </div>`;
 }
-function loadBar(iso) {
+function loadBar(iso, inSheet) {
   const L = dayLoad(iso);
   if (iso < todayISO()) return '';
   const pct = L.free ? clamp(L.planned / L.free, 0, 1.2) : (L.planned ? 1.2 : 0);
@@ -945,7 +953,8 @@ function loadBar(iso) {
   return `<div class="load ${over ? 'over' : ''}">
       <div class="load-top"><span><b>${estLabel(L.planned) || '0m'}</b> planned</span><span><b>${estLabel(L.free) || '0m'}</b> free${iso === todayISO() ? ' left today' : ''}</span></div>
       <div class="bar slim"><i style="width:${Math.min(100, pct * 100)}%"></i></div>
-      <div class="load-note">${over ? `That's ${estLabel(L.planned - L.free)} more than fits — move something to another day` : L.unest ? `${L.unest} task${L.unest > 1 ? 's have' : ' has'} no time estimate yet` : L.open ? 'Fits in the time you have' : 'Nothing to plan yet'}</div>
+      ${!over && L.unest && !inSheet ? `<button class="link load-note" data-act="planMyDay" data-d="${iso}">${L.unest} task${L.unest > 1 ? 's' : ''} guessed at 30m — set times</button>`
+        : `<div class="load-note">${over ? `That's ${estLabel(L.planned - L.free)} more than fits — move something to another day` : L.unest ? `${L.unest} guessed at 30m each` : L.open ? 'Fits in the time you have' : 'Nothing to plan yet'}</div>`}
     </div>`;
 }
 function trayRow(t, iso) {
@@ -978,7 +987,7 @@ function plannerDay() {
         <button class="btn sm" data-act="autoPlace" data-d="${iso}" ${tray.some(t => !repeats(t)) ? '' : 'disabled'}>${ic('clock')} Auto-place</button>
       </div>` : ''}
     </div>
-    ${pickT ? `<div class="place-bar">${ic('clock')}<span>Tap a time for <b>${esc(pickT.text)}</b></span><button class="link" data-act="placeNext">Next free slot</button><button class="link" data-act="trayPlace" data-id="${pickT.id}">Cancel</button></div>` : ''}
+    ${pickT ? `<div class="place-bar">${ic('clock')}<span><b>${esc(pickT.text)}</b><small>Tap a time to put it there</small></span><button class="link" data-act="placeNext">Next free</button><button class="link" data-act="trayPlace" data-id="${pickT.id}">Cancel</button></div>` : ''}
     ${showTasks() ? `<div class="section-head"><h3>To place <span class="muted small">${tray.length || ''}</span></h3><button class="link" data-act="addTask" data-scope="day" data-d="${iso}">+ Task</button></div>
     <div class="card tray">
       ${tray.map(t => trayRow(t, iso)).join('') || `<div class="empty">${tasksForDate(iso).length ? 'Everything is placed on the timeline.' : 'No tasks for this day. Type one in the + button — “Wax Hilux 2pm ~1h”.'}</div>`}
@@ -992,10 +1001,10 @@ function plannerDay() {
         <span class="txt tap" data-act="editTask" data-id="${t.id}">${esc(t.text)} ${deadlineBadge(t)}${t.est ? `<span class="s muted">~${estLabel(t.est)}</span>` : ''}</span>
         <button class="btn sm" data-act="inboxToDay" data-id="${t.id}" data-d="${iso}">${iso === todayISO() ? 'Today' : 'This day'}</button>
       </div>`).join('')}${inbox.length > 8 ? `<div class="small muted" style="margin-top:8px">+${inbox.length - 8} more — see the Plan sheet</div>` : ''}</div>` : ''}
-    <div class="section-head"><h3>Day note</h3>${pending ? `<button class="link" data-act="noteToTasks" data-d="${iso}">Make ${pending} task${pending > 1 ? 's' : ''}</button>` : ''}</div>
+    <div class="section-head"><h3>Day note</h3><button class="link" data-act="noteToTasks" data-d="${iso}" ${pending ? '' : 'hidden'}>Make ${pending} task${pending > 1 ? 's' : ''}</button></div>
     <div class="card day-note">
-      <textarea id="dayNote" data-d="${iso}" placeholder="${esc(PLAN().template.replace(/\n/g, ' · ').replace(/- \[ \] /g, '☐ '))}">${esc(note)}</textarea>
-      ${!note ? `<button class="link small" data-act="noteTemplate" data-d="${iso}">Start from template</button>` : `<div class="small muted">Lines like “- [ ] call Sam” can become tasks</div>`}
+      <textarea id="dayNote" data-d="${iso}" placeholder="Plans, notes, anything for the day…">${esc(note)}</textarea>
+      ${!note ? `<button class="link small" data-act="noteTemplate" data-d="${iso}">Start from template</button>` : `<div class="small muted">Lines starting “- [ ]” can become tasks — Return starts the next one</div>`}
     </div>
     ${calSummaryCard()}`;
 }
@@ -1005,10 +1014,22 @@ function noteTodos(iso) {
   const have = new Set(tasksForDate(iso).map(t => titleKey(t))), out = [];
   for (const m of (PLAN().daily[iso] || '').matchAll(/^[ \t]*[-*]?[ \t]*\[ \][ \t]*(\S.*)$/gm)) {
     const x = m[1].trim(), k = x.toLowerCase();
-    if (!have.has(k)) { have.add(k); out.push(x); }
+    if (x && !/^[-*]?\s*\[.\]$/.test(x) && !have.has(k)) { have.add(k); out.push(x); }
   }
   return out;
 }
+// the note grows with its text (a box scrolling inside a scrolling page is fiddly on a phone)
+function sizeNote(ta) { ta.style.height = 'auto'; ta.style.height = Math.max(120, ta.scrollHeight + 2) + 'px'; }
+// Return on a "- [ ] …" line starts the next one; Return on an empty one ends the list
+document.addEventListener('keydown', e => {
+  const ta = e.target; if (ta.id !== 'dayNote' || e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
+  const v = ta.value, at = ta.selectionStart, ls = v.lastIndexOf('\n', at - 1) + 1, line = v.slice(ls, at);
+  const m = /^([ \t]*[-*][ \t]*\[[ xX]\][ \t]*)(.*)$/.exec(line); if (!m || ta.selectionEnd !== at) return;
+  e.preventDefault();
+  const ins = m[2].trim() ? '\n' + m[1].replace(/\[[xX]\]/, '[ ]') : '';
+  if (!m[2].trim()) ta.setRangeText('', ls, at, 'end'); else ta.setRangeText(ins, at, at, 'end');
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+});
 // debounced save of the day note as you type
 let noteTimer = 0, notePending = null;
 function flushNote() {
@@ -1019,13 +1040,15 @@ function flushNote() {
 }
 document.addEventListener('input', e => {
   if (e.target.id !== 'dayNote') return;
-  const iso = e.target.dataset.d;
-  notePending = { iso, v: e.target.value };
+  sizeNote(e.target);
+  const iso = e.target.dataset.d, v = e.target.value;
+  notePending = { iso, v };
   clearTimeout(noteTimer);
   noteTimer = setTimeout(() => {
     flushNote();
     const btn = $('[data-act="noteToTasks"]'), n = noteTodos(iso).length;
-    if (btn) { btn.hidden = !n; btn.textContent = `Make ${n} task${n > 1 ? 's' : ''}`; }
+    if (btn) { btn.hidden = !n; btn.textContent = `Make ${n} task${n > 1 ? 's' : ''}`; }   // always rendered, so it appears as you type
+    const tpl = $('[data-act="noteTemplate"]'); if (tpl && v.trim()) tpl.hidden = true;
   }, 700);
 });
 document.addEventListener('focusout', e => { if (e.target.id === 'dayNote') flushNote(); });
@@ -1039,12 +1062,13 @@ function planSheet(iso) {
   // over capacity: the least important unplaced tasks are the ones to push out
   const L = dayLoad(iso);
   const movable = tasksForDate(iso).filter(t => !taskDone(t, iso) && !t.start && !repeats(t) && !t.rolled).sort(taskRank).reverse().slice(0, 6);
+  const noEst = tasksForDate(iso).filter(t => !taskDone(t, iso) && !t.start && !repeats(t) && !t.rolled && !num(t.est));
   const row = (t, btns) => `<div class="tray-row ${t.pri ? 'p' + t.pri : ''}"><span class="txt">${esc(t.text)} ${deadlineBadge(t)}
       <span class="s muted">${esc([t.rolled ? `carried ${t.rolled}d` : '', t.est ? '~' + estLabel(t.est) : '', t.scope === 'day' && t.date !== iso ? fmtDay(t.date) : ''].filter(Boolean).join(' · '))}</span></span>
       <span class="plan-btns">${btns}</span></div>`;
   openSheet(`<h3>Plan ${iso === todayISO() ? 'your day' : fmtDay(iso)}</h3>
     <p class="desc">Decide what's really happening ${iso === todayISO() ? 'today' : 'that day'}, then let Compass time-block it around your events.</p>
-    ${carried.length ? `<div class="card-label">Carried over · ${carried.length}</div>
+    ${carried.length ? `<div class="card-label plan-label"><span>Carried over · ${carried.length}</span>${carried.length > 1 ? `<button class="link" data-act="planKeepAll" data-d="${iso}">Keep all</button>` : ''}</div>
       <div class="plan-list">${carried.map(t => row(t, `
         <button class="chip tap" data-act="planKeep" data-id="${t.id}">Keep</button>
         <button class="chip tap" data-act="planMove" data-id="${t.id}" data-d="${shiftISO(iso, 1)}">Tomorrow</button>
@@ -1056,10 +1080,13 @@ function planSheet(iso) {
       <div class="plan-list">${movable.map(t => row(t, `
         <button class="chip tap" data-act="planMove" data-id="${t.id}" data-d="${shiftISO(iso, 1)}">Tomorrow</button>
         <button class="chip tap" data-act="planInbox" data-id="${t.id}">Inbox</button>`)).join('')}</div>` : ''}
+    ${noEst.length ? `<div class="card-label">How long will these take?</div>
+      <div class="plan-list plan-est">${noEst.map(t => row(t, ESTS.filter(m => [15, 30, 60, 120].includes(m)).map(m =>
+        `<button class="chip tap" data-act="planEst" data-id="${t.id}" data-m="${m}">${estLabel(m)}</button>`).join(''))).join('')}</div>` : ''}
     <div class="card-label">Inbox · ${inbox.length}</div>
     <div class="plan-list">${inbox.map(t => row(t, `<button class="chip tap" data-act="planMove" data-id="${t.id}" data-d="${iso}">+ ${iso === todayISO() ? 'Today' : 'This day'}</button>`)).join('') || '<div class="empty">Inbox is empty.</div>'}</div>
     <div class="card-label">Load</div>
-    ${loadBar(iso)}
+    ${loadBar(iso, true)}
     <div class="sheet-actions">
       <button class="btn" data-act="planDone" data-d="${iso}">Done</button>
       <button class="btn primary" data-act="planPlace" data-d="${iso}">${ic('clock')} Time-block it</button>
@@ -1359,6 +1386,7 @@ async function gcalSync(opts = {}) {
     // unless another device saved meanwhile: then its copy wins and the next run re-links by id
     if (added || updated || removed || pushed || deleted) { await pull(); if (S === S0) { S.updatedAt = Date.now(); save(false); schedulePush(); } else gcalSoon(); }
     setSyncDot('ok');
+    if ($('#gcalStatus')) $('#gcalStatus').innerHTML = gcalStatusHTML();   // Settings open: don't keep saying "not synced yet"
     if (added || updated || removed) renderAll();
     if (opts.loud) toast(added + updated + removed + pushed + deleted
       ? `Google Calendar: ${[added && `${added} new`, updated && `${updated} updated`, removed && `${removed} removed`, pushed && `${pushed} sent`, deleted && `${deleted} deleted`].filter(Boolean).join(', ')}`
@@ -1368,7 +1396,8 @@ async function gcalSync(opts = {}) {
     if (e.stale) { gcalSoon(1500); return false; }
     console.warn('gcal', e);
     G.err = e.message; save(false); setSyncDot('err');
-    if (e.status === 401 && e.body && e.body.reconnect) { G.on = false; save(false); toast('Google Calendar needs reconnecting — Settings › Google Calendar'); }
+    if ($('#gcalStatus')) $('#gcalStatus').innerHTML = gcalStatusHTML();
+    if (e.status === 401 && e.body && e.body.reconnect) { G.on = false; save(false); toast('Google Calendar needs reconnecting', { action: { label: 'Reconnect', fn: () => { openSettings(); setTimeout(() => $('#gcalSec')?.scrollIntoView({ block: 'start' }), 80); } } }); }
     else if (opts.loud) toast('Google Calendar: ' + e.message);
     return false;
   } finally { gcalBusy = false; }
@@ -1389,6 +1418,18 @@ async function gcalLoadCalendars() {
   if (!G.writeCal || !next[G.writeCal] || next[G.writeCal].ro) G.writeCal = (Object.entries(next).find(([, c]) => c.primary) || [''])[0];
   save(false);
 }
+// Forget every Google link but keep Compass's own events. Used on disconnect, and on every fresh
+// connect: links left over from an earlier session (a token that expired, or a different Google
+// account) made the first sync treat Compass's own events as "deleted in Google" and delete them here.
+// Ids sent to Google are fixed per event, so re-linking can't duplicate anything.
+function gcalUnlink() {
+  // events you logged money against stay as plain Compass events (gcalDrop)
+  const gone = new Set(S.calendar.events.filter(e => e.src === 'google' && !gcalDrop(e)).map(e => e.id));
+  S.calendar.events = S.calendar.events.filter(e => !gone.has(e.id));
+  S.money.transactions = S.money.transactions.filter(t => !gone.has(t.eventId));
+  S.calendar.events.forEach(e => { delete e.g; delete e.gBack; });   // ids sent to Google are fixed per event, so reconnecting can't duplicate them
+  const G = GCAL(); G.linked = {}; G.lastSync = 0;
+}
 // back from Google's consent screen: /?gcal=connected (or =error)
 async function gcalHandleReturn() {
   const q = new URLSearchParams(location.search), st = q.get('gcal');
@@ -1396,20 +1437,26 @@ async function gcalHandleReturn() {
   history.replaceState({}, '', location.pathname);
   if (st !== 'connected') return toast('Google Calendar: ' + (q.get('msg') || 'connection failed'));
   try {
+    gcalUnlink();
     await gcalLoadCalendars();
+    // Compass's own weekly events: claim their Google ids up front so the instances Google lists
+    // are recognised as these events, not imported again
+    S.calendar.events.forEach(e => { if (e.recurring && !e.noGcal && GCAL().writeCal) GCAL().linked[gidFor(e.id)] = { c: e.id, cal: GCAL().writeCal }; });
     GCAL().on = true; save(false);
     toast('Google Calendar connected — pick your calendars');
     openSettings(); setTimeout(() => $('#gcalSec')?.scrollIntoView({ block: 'start' }), 80);
     gcalSync({ loud: true });
   } catch (e) { toast('Google Calendar: ' + e.message); }
 }
+const gcalStatusHTML = () => { const G = GCAL();
+  return `${G.email ? esc(G.email) + ' · ' : ''}${G.lastSync ? `synced ${fmtAgo(G.lastSync)}` : 'not synced yet'}${G.err ? ` · <span class="neg">${esc(G.err)}</span>` : ''}`; };
 function gcalSettingsHTML() {
   const G = GCAL();
   if (!syncEnabled()) return `<p class="desc">Turn on cloud sync above first — your Google sign-in is kept on your own server, behind the same secret key.</p>`;
   if (!G.on) return `<p class="desc">See your Google events in Compass, and send what you add here back to Google.</p>
     <button class="btn" data-act="gcalConnect">${ic('calendar')} Connect Google Calendar</button>`;
   const cals = Object.entries(G.cals);
-  return `<p class="desc">${G.email ? esc(G.email) + ' · ' : ''}${G.lastSync ? `synced ${fmtAgo(G.lastSync)}` : 'not synced yet'}${G.err ? ` · <span class="neg">${esc(G.err)}</span>` : ''}</p>
+  return `<p class="desc" id="gcalStatus">${gcalStatusHTML()}</p>
     <div class="gcal-cals">${cals.map(([id, c]) => `<div class="gcal-cal">
         <label class="gc-on"><input type="checkbox" data-gcal-on="${esc(id)}" ${c.on ? 'checked' : ''}><i style="background:${esc(c.color)}"></i><span>${esc(c.name)}${c.ro ? ' <span class="muted small">read-only</span>' : ''}</span></label>
         <select data-gcal-cat="${esc(id)}" aria-label="Category for ${esc(c.name)}">${Object.keys(CATS).map(k => `<option ${k === c.cat ? 'selected' : ''}>${k}</option>`).join('')}</select>
@@ -2401,7 +2448,14 @@ function render(tab) {
   $('#view-' + tab).classList.add('active');
   $$('.nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
   const bn = $('#brandName'); if (bn) bn.textContent = TAB_TITLE[tab] || 'Compass';
+  // a background re-render (sync) mid-sentence in the day note mustn't drop the keyboard or the unsaved words
+  const ae = document.activeElement, note = !switching && ae && ae.id === 'dayNote' ? { d: ae.dataset.d, v: ae.value, s: ae.selectionStart, e: ae.selectionEnd } : null;
   ({ home: renderHome, calendar: renderCalendar, health: renderHealth, money: renderMoney, systems: renderSystems }[tab])();
+  const ta = $('#dayNote');
+  if (ta) {
+    if (note && ta.dataset.d === note.d) { ta.value = note.v; ta.focus({ preventScroll: true }); ta.setSelectionRange(note.s, note.e); }
+    sizeNote(ta);
+  }
   if (switching) window.scrollTo({ top: tabScroll[tab] || 0, behavior: 'instant' });
 }
 // jump straight to a section, switching tab and sub-tab first
@@ -4638,15 +4692,24 @@ const ACT = {
   toggleTracker() { trackerAll = !trackerAll; render(currentTab); },
   setSeg(d) { S.settings.seg = S.settings.seg || {}; S.settings.seg[d.tab] = d.seg; save(false); tabScroll[d.tab] = 0; arranging = false; render(d.tab); window.scrollTo(0, 0); },
   toggleHomeDone() { homeDoneOpen = !homeDoneOpen; renderHome(); },
-  quickAdd() { qaForceKind = ''; quickAddSheet(); },
+  quickAdd() { qaForceKind = ''; qaAddedN = 0; quickAddSheet(); },
   search() { searchSheet(); },
-  qaSaveTask() {
-    const text = val('qa_task'); if (!text) { $('#qa_task')?.focus(); return; }
+  // Add saves and closes; Return saves and keeps the sheet open for the next one (a week's worth in one go)
+  qaSaveTask(d = {}) {
+    const inp = $('#qa_task'), text = val('qa_task');
+    if (!text) { if (qaAddedN) closeSheet(); else inp?.focus(); return; }
     const r = parseQuick(text, qaForceKind);
-    if (!r.title) { toast('Add a name as well'); $('#qa_task')?.focus(); return; }
+    if (!r.title) { toast('Add a name as well'); inp?.focus(); return; }
     const msg = commitQuick(r);
     qaForceKind = '';
-    save(); haptic(); closeSheet(); render(currentTab); toast(msg, { undo: true });
+    save(); haptic(); render(currentTab);
+    if (d.keep && inp) {
+      qaAddedN++; inp.value = ''; qaPreview();
+      $('#qa_added')?.insertAdjacentHTML('beforeend', `<div>${ic('check')}<span>${esc(msg)}</span></div>`);
+      inp.focus(); toast(msg, { undo: true });
+      return;
+    }
+    closeSheet(); toast(msg, { undo: true });
   },
   qaWater(d) { ACT.water(d); closeSheet(); toast(`+${d.ml} ml water`, { undo: true }); },
   qaFoodSheet() { foodDate = todayISO(); foodPick = false; ACT.addFood({ meal: mealForNow() }); },
@@ -5297,14 +5360,18 @@ async function checkReminders() {
    ============================================================ */
 
 /* ----- planner + Google Calendar actions ----- */
-let qaForceKind = '';
+let qaForceKind = '', qaAddedN = 0;
 function qaPreview() {
   const box = $('#qa_prev'), inp = $('#qa_task'); if (!box || !inp) return;
   box.innerHTML = inp.value.trim() ? quickChips(parseQuick(inp.value, qaForceKind)) : '';
+  const btn = $('#sheetBody [data-act="qaSaveTask"]');
+  if (btn) btn.textContent = !inp.value.trim() && qaAddedN ? 'Done' : 'Add';
 }
 document.addEventListener('input', e => { if (e.target.id === 'qa_task') qaPreview(); });
 const planIso = () => $('#sheetBody [data-act="planDone"]')?.dataset.d || todayISO();
-const reopenPlan = () => { save(); planSheet(planIso()); render(currentTab); };
+// after placing things, show where they went (the timeline sits below the tray)
+const showTimeline = () => setTimeout(() => $('.tl-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60);
+const reopenPlan = iso => { const y = $('#sheet').scrollTop; save(); planSheet(iso || planIso()); $('#sheet').scrollTop = y; render(currentTab); };
 const taskById = id => TASKS().find(t => t.id === id);
 function setTaskDay(t, iso) {
   t.scope = 'day'; t.date = iso; t.week = weekKey(parseISO(iso)); t.month = iso.slice(0, 7);
@@ -5339,7 +5406,7 @@ Object.assign(ACT, {
   trayPlace(d) {
     placingTask = placingTask === d.id ? null : d.id;
     render(currentTab);
-    if (placingTask) setTimeout(() => $('.tl-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+    if (placingTask) showTimeline();
   },
   placeNext() {
     const t = taskById(placingTask); placingTask = null;
@@ -5352,9 +5419,10 @@ Object.assign(ACT, {
     const { placed, left } = autoPlace(d.d || calSel);
     if (placed) save();
     render(currentTab);
+    if (placed) showTimeline();
     toast(placed ? `Placed ${placed} task${placed > 1 ? 's' : ''}${left.length ? ` · ${left.length} didn't fit` : ''}` : left.length ? `None fit — ${left.length} need more free time than you have` : 'Nothing to place', { undo: !!placed });
   },
-  inboxToDay(d) { const t = taskById(d.id); if (!t) return; setTaskDay(t, d.d); save(); render(currentTab); toast(`${t.text} → ${fmtDay(d.d)}`, { undo: true }); },
+  inboxToDay(d) { const t = taskById(d.id); if (!t) return; setTaskDay(t, d.d); save(); render(currentTab); toast(`${t.text} → ${d.d === todayISO() ? 'today' : fmtDay(d.d)} · in To place`, { undo: true }); },
   noteTemplate(d) { PLAN().daily[d.d] = PLAN().template; save(); render(currentTab); const ta = $('#dayNote'); if (ta) { ta.focus(); ta.setSelectionRange(ta.value.indexOf('- [ ] ') + 6, ta.value.indexOf('- [ ] ') + 6); } },
   noteToTasks(d) {
     flushNote();
@@ -5364,6 +5432,8 @@ Object.assign(ACT, {
     save(); render(currentTab); toast(`${list.length} task${list.length > 1 ? 's' : ''} added to ${fmtDay(d.d)}`, { undo: true });
   },
   planMyDay(d) { planSheet(d.d || todayISO()); },
+  planKeepAll(d) { tasksForDate(d.d).forEach(t => { if (t.rolled && !taskDone(t, d.d)) t.rolled = 0; }); reopenPlan(d.d); },
+  planEst(d) { const t = taskById(d.id); if (!t) return; t.est = +d.m; reopenPlan(); },
   planKeep(d) { const t = taskById(d.id); if (t) t.rolled = 0; reopenPlan(); },
   planMove(d) {
     const t = taskById(d.id); if (!t) return;
@@ -5380,6 +5450,7 @@ Object.assign(ACT, {
     save(); closeSheet();
     calView = 'day'; setCalSel(d.d); calEditing = false;
     if (currentTab === 'calendar') render('calendar'); else go('calendar');
+    if (placed) showTimeline();
     toast(placed ? `Time-blocked ${placed} task${placed > 1 ? 's' : ''}${left.length ? ` · ${left.length} didn't fit` : ''}` : left.length ? `Nothing fits — ${left.length} task${left.length > 1 ? 's' : ''} need more time than you have` : 'Planned', { undo: !!placed });
   },
   // checklist inside the task sheet
@@ -5407,10 +5478,7 @@ Object.assign(ACT, {
   },
   async gcalDisconnectConfirm() {
     try { await gcalAPI({ action: 'disconnect' }); } catch (e) {}
-    const gone = new Set(S.calendar.events.filter(e => e.src === 'google' && !gcalDrop(e)).map(e => e.id));
-    S.calendar.events = S.calendar.events.filter(e => !gone.has(e.id));
-    S.money.transactions = S.money.transactions.filter(t => !gone.has(t.eventId));
-    S.calendar.events.forEach(e => { delete e.g; delete e.gBack; });   // ids sent to Google are fixed per event, so reconnecting can't duplicate them
+    gcalUnlink();
     S.gcal = { on: false, email: '', cals: {}, writeCal: '', linked: {}, lastSync: 0, err: '' };
     save(); closeSheet(); render(currentTab); toast('Google Calendar disconnected');
   },
@@ -5768,11 +5836,12 @@ function quickAddSheet() {
   const hb = habitsToday().filter(h => !(h.doneDays && h.doneDays[iso]));
   openSheet(`<h3>Add</h3>
     <div class="qa-task">
-      <input id="qa_task" type="text" placeholder="Gym tue 6am · Call Sam tmrw p1" autocapitalize="sentences" enterkeyhint="done" autocomplete="off">
+      <input id="qa_task" type="text" placeholder="Gym tue 6am · Call Sam tmrw p1" autocapitalize="sentences" enterkeyhint="enter" autocomplete="off">
       <button class="btn primary sm" data-act="qaSaveTask">Add</button>
     </div>
     <div id="qa_prev" class="nl-prev"></div>
-    <div class="qa-hint">Type it how you'd say it — times make events, the rest are tasks. Try “Essay due fri ~2h”, “Detail Hilux sat 9am 3h $180”, “Lecture every mon and wed 10-12”, “Buy pads someday”.</div>
+    <div id="qa_added" class="qa-added"></div>
+    <div class="qa-hint">Type it how you'd say it — times make events, the rest are tasks. Try “Essay due fri ~2h”, “Detail Hilux sat 9am 3h $180”, “Lecture every mon and wed 10-12”, “Buy pads someday”. Return adds it and keeps this open for the next.</div>
     <div class="qa-grid">
       <button class="qa-tile" data-act="qaFoodSheet">${ic('utensils')}<span>Food</span></button>
       <button class="qa-tile" data-act="qaScan">${ic('barcode')}<span>Scan</span></button>
@@ -5790,7 +5859,7 @@ function quickAddSheet() {
     ${hb.length ? `<div class="card-label" style="margin:16px 0 8px">Habits left today</div>
       <div class="qa-chips">${hb.map(h => `<button class="chip qa-chip" data-act="qaHabit" data-id="${h.id}">${ic('check')} ${esc(h.text)}</button>`).join('')}</div>` : ''}`);
   const inp = $('#qa_task');
-  inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); ACT.qaSaveTask(); } });
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); ACT.qaSaveTask({ keep: true }); } });
   if (matchMedia('(hover: hover)').matches) inp.focus({ preventScroll: true });   // on a phone the keyboard would hide the tiles
 }
 
@@ -5904,16 +5973,23 @@ function initSwipeRows() {
 /* toast */
 let toastTimer, toastCount = 0, lastChangeAt = 0, saveSeq = 0;
 // any toast straight after a change offers Undo
+// opts.undo adds Undo; opts.action = { label, fn } adds a different button (e.g. "Plan")
+var toastAction = null, toastSeq = -1;   // var: save() reads toastSeq and can run before this line
+function hideToast() { const t = $('#toast'); t.classList.remove('show'); t.style.pointerEvents = 'none'; toastAction = null; }
 function toast(msg, opts = {}) {
   const t = $('#toast'); toastCount++;
   const canUndo = !!opts.undo && undoStack.length > 0;
-  t.innerHTML = `<span>${esc(msg)}</span>${canUndo ? '<button class="toast-undo">Undo</button>' : ''}`;
-  t.style.pointerEvents = canUndo ? 'auto' : 'none';
+  toastAction = !canUndo && opts.action ? opts.action : null;
+  toastSeq = canUndo ? saveSeq : -1;
+  t.innerHTML = `<span>${esc(msg)}</span>${canUndo ? '<button class="toast-undo">Undo</button>' : toastAction ? `<button class="toast-undo">${esc(toastAction.label)}</button>` : ''}`;
+  t.style.pointerEvents = canUndo || toastAction ? 'auto' : 'none';
   t.classList.add('show'); clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), canUndo ? 4500 : 2200);
+  // a faded toast must stop catching taps — an invisible Undo over a sheet's buttons undid things silently
+  toastTimer = setTimeout(hideToast, canUndo || toastAction ? 4500 : 2200);
 }
 $('#toast').addEventListener('click', e => {
-  if (!e.target.closest('.toast-undo')) return;
+  if (!e.target.closest('.toast-undo') || !$('#toast').classList.contains('show')) return;
+  if (toastAction) { const a = toastAction; hideToast(); a.fn(); return; }
   const plan = $('#scrim').classList.contains('open') && $('#sheetBody [data-act="planDone"]');
   undo(); haptic();
   if (plan) planSheet(plan.dataset.d);
@@ -6012,6 +6088,7 @@ function startApp() {
   setInterval(pull, 60 * 1000);
   setInterval(() => { if (!document.hidden) gcalSync(); }, 5 * 60 * 1000);
   setInterval(checkHabitReminders, 30 * 1000);
+  setInterval(() => { if (!document.hidden) followNewDay(); }, 60 * 1000);   // left open past midnight
   updateAppBadge();
   initPullToRefresh();
   initSwipeRows();
@@ -6063,8 +6140,17 @@ function boot() {
     }).catch(()=>{});
   }
 }
+// back in the app on a new day: whatever was showing "today" moves to the real today
+let shownDay = todayISO();
+function followNewDay() {
+  const t = todayISO(); if (t === shownDay) return;
+  if (calSel === shownDay) setCalSel(t);
+  shownDay = t;
+  if (!rollOverTasks()) renderAll();     // rollOverTasks re-renders when it moves anything
+}
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) return;
+  followNewDay();
   pull().then(() => { rollOverTasks(); if (Date.now() - (GCAL().lastSync || 0) > 2 * 60e3) gcalSync(); });
   checkReminders(); checkHabitReminders();
 });
