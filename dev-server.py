@@ -118,8 +118,22 @@ def yahoo(symbol):
 # ---------- fake Google Calendar (local testing of /api/gcal) ----------
 # Same contract as api/gcal.js, backed by an in-memory "Google" with a primary
 # calendar and a read-only holidays calendar, so the planner's two-way sync can
-# be exercised without real Google credentials.
-GMOCK = {"connected": False, "n": 0, "cals": {"me@example.com": {}, "au.holidays": {}}}
+# be exercised without real Google credentials. Behaves like Google where the
+# sync depends on it: deleted events stay as "cancelled" (their id can't be
+# inserted again, but can be patched back to life), weekly series expand to
+# instances "<id>_<YYYYMMDD>T<HHMMSS>Z", and patching/deleting one instance
+# makes an exception rather than touching the series.
+# Test hooks: POST {action:'_fail', on:'patch', status:500, n:1} fails the next n calls;
+# {action:'_reset'} starts Google over from the seed events; asOwner:true writes to the
+# read-only calendar (as its owner would).
+GMOCK = {"connected": False, "n": 0, "cals": {"me@example.com": {}, "au.holidays": {}}, "fail": None}
+_gm_now = lambda: datetime.datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+
+def _gm_touch(ev):
+    GMOCK["n"] += 1
+    ev.setdefault("status", "confirmed")
+    ev["etag"] = '"%d"' % GMOCK["n"]
+    ev["updated"] = _gm_now()
 
 def _gm_seed():
     if any(GMOCK["cals"].values()):
@@ -127,12 +141,8 @@ def _gm_seed():
     t = datetime.date.today()
     d = lambda n: (t + datetime.timedelta(days=n)).isoformat()
     tz = "Australia/Brisbane"
-    me = GMOCK["cals"]["me@example.com"]
     def put(cal, ev):
-        GMOCK["n"] += 1
-        ev.setdefault("status", "confirmed")
-        ev["etag"] = '"%d"' % GMOCK["n"]
-        ev["updated"] = datetime.datetime.utcnow().isoformat() + "Z"
+        _gm_touch(ev)
         GMOCK["cals"][cal][ev["id"]] = ev
     put("me@example.com", {"id": "gdentist1", "summary": "Dentist", "location": "Southport",
         "start": {"dateTime": d(1) + "T10:00:00", "timeZone": tz}, "end": {"dateTime": d(1) + "T10:45:00", "timeZone": tz}})
@@ -156,28 +166,80 @@ def _gm_slim(e):
             "eventType": "default", "declined": False,
             "priv": {k: p.get(k, "") for k in ("compassId", "cat", "cost", "rate", "earned", "studyFor")}}
 
+def _gm_day(x):
+    return datetime.date.fromisoformat((x.get("date") or x["dateTime"])[:10])
+
+def _gm_instances(e, lo, hi):
+    """(instance id, instance) for each week of a series inside [lo, hi) — Brisbane is UTC+10, no DST."""
+    s0, span = _gm_day(e["start"]), (_gm_day(e["end"]) - _gm_day(e["start"]))
+    day = s0
+    while day.isoformat() < hi:
+        if (day + span).isoformat() >= lo:
+            inst = json.loads(json.dumps(e)); inst.pop("recurrence", None)
+            if "dateTime" in e["start"]:
+                utc = datetime.datetime.fromisoformat(day.isoformat() + e["start"]["dateTime"][10:19]) - datetime.timedelta(hours=10)
+                inst["id"] = e["id"] + "_" + utc.strftime("%Y%m%dT%H%M%SZ")
+            else:
+                inst["id"] = e["id"] + "_" + day.strftime("%Y%m%d")
+            inst["recurringEventId"] = e["id"]
+            for k, dd in (("start", day), ("end", day + span)):
+                if "dateTime" in inst[k]:
+                    inst[k]["dateTime"] = dd.isoformat() + inst[k]["dateTime"][10:]
+                else:
+                    inst[k]["date"] = dd.isoformat()
+            yield inst
+        day += datetime.timedelta(days=7)
+
 def _gm_list(cal, tmin, tmax):
     out = []
     lo, hi = tmin[:10], tmax[:10]
-    for e in GMOCK["cals"].get(cal, {}).values():
-        s = e["start"].get("date") or e["start"]["dateTime"][:10]
+    store = GMOCK["cals"].get(cal, {})
+    for e in store.values():
+        if e.get("recurringEventId"):
+            continue                                   # exceptions are listed through their series
+        if e.get("status") == "cancelled":
+            continue
         if e.get("recurrence"):
-            day = datetime.date.fromisoformat(s)
-            while day.isoformat() < hi:
-                if day.isoformat() >= lo:
-                    inst = json.loads(json.dumps(e)); inst.pop("recurrence", None)
-                    inst["id"] = e["id"] + "_" + day.strftime("%Y%m%d"); inst["recurringEventId"] = e["id"]
-                    for k in ("start", "end"):
-                        if "dateTime" in inst[k]:
-                            inst[k]["dateTime"] = day.isoformat() + inst[k]["dateTime"][10:]
-                    out.append(_gm_slim(inst))
-                day += datetime.timedelta(days=7)
-        elif lo <= s < hi:
+            for inst in _gm_instances(e, lo, hi):
+                ex = store.get(inst["id"])
+                if ex and ex.get("status") == "cancelled":
+                    continue
+                out.append(_gm_slim(ex or inst))
+            continue
+        s, en = _gm_day(e["start"]).isoformat(), _gm_day(e["end"]).isoformat()
+        if s < hi and (en > lo or ("dateTime" in e["end"] and en >= lo)):
             out.append(_gm_slim(e))
     return out
 
+def _gm_find(store, eid):
+    """the stored event, or a fresh exception for an instance id of a stored series"""
+    if eid in store:
+        return store[eid]
+    sid = (eid or "").rsplit("_", 1)[0]
+    ser = store.get(sid)
+    if ser and ser.get("recurrence") and ser.get("status") != "cancelled":
+        try:
+            d = datetime.date(int(eid[-16:-12] if eid.endswith("Z") else eid[-8:-4]), 1, 1)
+        except ValueError:
+            return None
+        for inst in _gm_instances(ser, (d - datetime.timedelta(days=9)).isoformat(), (d + datetime.timedelta(days=375)).isoformat()):
+            if inst["id"] == eid:
+                _gm_touch(inst)
+                return inst
+    return None
+
 def gcal_mock(h, body):
     a = body.get("action")
+    if a == "_fail":
+        GMOCK["fail"] = {"on": body.get("on"), "status": body.get("status", 500), "n": body.get("n", 1)}
+        return h._json(200, {"ok": True})
+    if a == "_reset":                                   # test hook: fresh seeded Google
+        GMOCK["cals"] = {"me@example.com": {}, "au.holidays": {}}; GMOCK["fail"] = None; _gm_seed()
+        return h._json(200, {"ok": True})
+    f = GMOCK["fail"]
+    if f and f["n"] > 0 and f["on"] in (a, "*"):
+        f["n"] -= 1
+        return h._json(f["status"], {"error": "injected failure"})
     if a == "config":
         return h._json(200, {"configured": True, "connected": GMOCK["connected"]})
     if a == "authUrl":
@@ -195,21 +257,37 @@ def gcal_mock(h, body):
     store = GMOCK["cals"].setdefault(cal, {})
     if a == "list":
         return h._json(200, {"items": _gm_list(cal, body.get("timeMin", ""), body.get("timeMax", "9999")), "nextPageToken": ""})
-    if a in ("insert", "patch"):
-        ev = body.get("event") or {}
-        eid = ev.get("id") if a == "insert" else body.get("eventId")
-        if a == "insert" and eid in store:
+    if a in ("insert", "patch", "delete") and cal == "au.holidays" and not body.get("asOwner"):
+        return h._json(403, {"error": "You need to have writer access to this calendar."})
+    if a == "insert":
+        ev = json.loads(json.dumps(body.get("event") or {}))
+        eid = ev.get("id") or uuid.uuid4().hex
+        if eid in store:                                # deleted events keep their id too
             return h._json(409, {"error": "exists"})
-        if a == "patch" and eid not in store:
+        ev["id"] = eid; ev.pop("status", None)
+        _gm_touch(ev); store[eid] = ev
+        return h._json(200, {"id": eid, "etag": ev["etag"]})
+    if a == "patch":
+        eid = body.get("eventId")
+        cur = _gm_find(store, eid)
+        if cur is None:
             return h._json(404, {"error": "Not Found"})
-        cur = store.get(eid, {"id": eid})
-        cur.update({k: v for k, v in ev.items() if k != "id"})
-        GMOCK["n"] += 1
-        cur["etag"] = '"%d"' % GMOCK["n"]; cur["updated"] = datetime.datetime.utcnow().isoformat() + "Z"
-        store[eid] = cur
+        for k, v in (body.get("event") or {}).items():
+            if k == "id":
+                continue
+            if k == "extendedProperties":               # maps merge, like Google's patch
+                for kk, vv in v.items():
+                    cur.setdefault(k, {}).setdefault(kk, {}).update(vv)
+            else:
+                cur[k] = v
+        _gm_touch(cur); store[eid] = cur
         return h._json(200, {"id": eid, "etag": cur["etag"]})
     if a == "delete":
-        store.pop(body.get("eventId"), None)
+        eid = body.get("eventId")
+        cur = _gm_find(store, eid)
+        if cur is None or cur.get("status") == "cancelled":   # api/gcal.js turns Google's 404/410 into ok
+            return h._json(200, {"ok": True})
+        cur["status"] = "cancelled"; _gm_touch(cur); store[eid] = cur
         return h._json(200, {"ok": True})
     return h._json(400, {"error": "unknown action"})
 

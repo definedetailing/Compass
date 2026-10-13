@@ -16,6 +16,7 @@
 //
 // Env: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, plus the KV_* and SYNC_SECRET that
 // /api/sync already uses. Redirect URI to register: https://<your-domain>/api/gcal
+// (or set GOOGLE_REDIRECT_URI to pin it, if the app is reached on more than one domain).
 
 const SCOPES = [
   'https://www.googleapis.com/auth/calendar.events',
@@ -45,7 +46,8 @@ function readBody(req) {
   });
 }
 function safeParse(s) { try { return JSON.parse(s); } catch { return null; } }
-const redirectUri = req => `${req.headers['x-forwarded-proto'] || 'https'}://${req.headers['x-forwarded-host'] || req.headers.host}/api/gcal`;
+const redirectUri = req => process.env.GOOGLE_REDIRECT_URI ||
+  `${String(req.headers['x-forwarded-proto'] || 'https').split(',')[0]}://${req.headers['x-forwarded-host'] || req.headers.host}/api/gcal`;
 
 class Reconnect extends Error {}
 async function oauthToken(params) {
@@ -73,18 +75,20 @@ async function accessToken() {
   await kv(['SET', K_ACCESS, JSON.stringify({ token: j.access_token, exp }), 'EX', Math.max(60, (j.expires_in || 3600) - 120)]);
   return j.access_token;
 }
-async function google(method, path, body, retry = 2) {
+async function google(method, path, body, retry = 2, fresh = false) {
   const tok = await accessToken();
   const r = await fetch(API + path, {
     method, headers: { Authorization: `Bearer ${tok}`, ...(body ? { 'content-type': 'application/json' } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
-  if ((r.status === 429 || r.status === 403) && retry > 0) {        // rate limited: back off and try again
+  // rate limited or a Google hiccup: back off and try again (well inside the function's 10 s)
+  if ((r.status === 429 || r.status === 403 || r.status >= 500) && retry > 0) {
     const j = await r.clone().json().catch(() => ({}));
     const reason = j.error && j.error.errors && j.error.errors[0] && j.error.errors[0].reason;
-    if (r.status === 429 || /rateLimit/i.test(reason || '')) { await new Promise(res => setTimeout(res, (3 - retry) * 900 + 400)); return google(method, path, body, retry - 1); }
+    if (r.status !== 403 || /rateLimit/i.test(reason || '')) { await new Promise(res => setTimeout(res, (3 - retry) * 900 + 400)); return google(method, path, body, retry - 1, fresh); }
   }
-  if (r.status === 401) { await kv(['DEL', K_ACCESS]); }
+  // the cached access token was revoked or expired early: forget it and refresh once
+  if (r.status === 401) { await kv(['DEL', K_ACCESS]); if (!fresh) return google(method, path, body, retry, true); }
   if (r.status === 204) return { status: 204, json: {} };
   return { status: r.status, json: await r.json().catch(() => ({})) };
 }
@@ -118,7 +122,9 @@ module.exports = async (req, res) => {
       await kv(['DEL', 'compass:gcal:state:' + state]);          // single use
       if (!ok) return back('error', 'that sign-in link expired — try again');
       const j = await oauthToken({ grant_type: 'authorization_code', code, redirect_uri: redirectUri(req) });
-      if (!String(j.scope || '').includes('calendar.events')) return back('error', 'Compass needs permission to see and edit events');
+      // Google lets you untick permissions on the consent screen — Compass needs both
+      const got = String(j.scope || '').split(' ');
+      if (!SCOPES.every(s => got.includes(s))) return back('error', 'Compass needs both permissions (your events, and your list of calendars) — connect again and tick both');
       if (!j.refresh_token) return back('error', 'Google did not return a refresh token — remove Compass at myaccount.google.com/permissions and connect again');
       await kv(['SET', K_TOKEN, JSON.stringify({ refresh_token: j.refresh_token, scope: j.scope, at: Date.now() })]);
       await kv(['SET', K_ACCESS, JSON.stringify({ token: j.access_token, exp: Date.now() + (j.expires_in || 3600) * 1000 }), 'EX', Math.max(60, (j.expires_in || 3600) - 120)]);
@@ -167,8 +173,10 @@ module.exports = async (req, res) => {
     }
     const cal = enc(String(body.calendarId || 'primary'));
     if (a === 'list') {
+      if (!body.timeMin || !body.timeMax) { res.status(400).json({ error: 'timeMin and timeMax are required' }); return; }
       const qs = new URLSearchParams({ singleEvents: 'true', maxResults: '250', showDeleted: 'false',
-        timeMin: body.timeMin, timeMax: body.timeMax, timeZone: body.timeZone || 'Australia/Brisbane' });
+        timeMin: body.timeMin, timeMax: body.timeMax, timeZone: body.timeZone || 'Australia/Brisbane',
+        fields: 'nextPageToken,items(id,status,etag,updated,summary,description,location,start,end,recurringEventId,eventType,attendees(self,responseStatus),extendedProperties)' });
       if (body.pageToken) qs.set('pageToken', body.pageToken);
       const r = await google('GET', `/calendars/${cal}/events?${qs}`);
       if (r.status !== 200) { res.status(r.status).json({ error: gErr(r.json) }); return; }

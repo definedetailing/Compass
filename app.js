@@ -339,15 +339,17 @@ function save(touch = true) {
   if (touch) { schedulePush(); queueMicrotask(checkMilestones); updateAppBadge(); }
 }
 function applyState(json) {
-  const celebrated = S.systems.celebrated;   // "once" means once, even across undo
+  const celebrated = S.systems.celebrated, prev = S;   // "once" means once, even across undo
   S = deepMerge(defaultState(), JSON.parse(json));
   if (celebrated) S.systems.celebrated = celebrated;
+  gcalAfterUndo(prev);
   S.updatedAt = Date.now();
   lastSavedJSON = JSON.stringify(S);
   localStorage.setItem(LS_KEY, JSON.stringify(S));
   schedulePush();
   renderAll();
   updateHistoryButtons();
+  gcalSoon();
 }
 function undo() {
   if (!undoStack.length) return;
@@ -1095,16 +1097,19 @@ const GCAL = () => (S.gcal || (S.gcal = { on: false, email: '', cals: {}, writeC
 const GCAL_BACK = 14, GCAL_AHEAD = 120;      // days
 let gcalBusy = false, gcalTimer = 0;
 const gcalTZ = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Australia/Brisbane'; } catch (e) { return 'Australia/Brisbane'; } };
-// "+10:00" for this device right now
-const tzOffset = () => { const m = -new Date().getTimezoneOffset(), a = Math.abs(m); return `${m >= 0 ? '+' : '-'}${String(Math.floor(a / 60)).padStart(2, '0')}:${String(a % 60).padStart(2, '0')}`; };
+// "+10:00" for this device on that day (so a window edge months away is right across DST)
+const tzOffset = d => { const m = -(d ? parseISO(d) : new Date()).getTimezoneOffset(), a = Math.abs(m); return `${m >= 0 ? '+' : '-'}${String(Math.floor(a / 60)).padStart(2, '0')}:${String(a % 60).padStart(2, '0')}`; };
 // Google event ids are base32hex (0-9, a-v); hex of the Compass id fits and is stable
 const gidFor = id => 'c0' + [...String(id)].map(c => c.charCodeAt(0).toString(16).padStart(2, '0')).join('');
+const strHash = s => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return h.toString(36); };
 // fingerprint of the fields that sync, to tell "changed here since the last sync"
-function evHash(e) {
-  const s = JSON.stringify([e.title, e.date, e.endDate || '', e.start || '', e.end || '', !!e.recurring, e.recurring ? e.weekday : '', e.notes || '', e.category, num(e.cost), e.location || '']);
-  let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
-  return h.toString(36);
-}
+const evHash = e => strHash(JSON.stringify([e.title, e.date, e.endDate || '', e.start || '', e.end || '', !!e.recurring, e.recurring ? e.weekday : '', e.notes || '', e.category, num(e.cost), e.location || '']));
+// when it happens, and its notes: only sent to Google when they changed here, so editing anything
+// else can't flatten what Compass doesn't keep (a 3-day timed event, a rich description, a series' first week)
+const whenKey = e => strHash(JSON.stringify([e.date || '', e.endDate || '', e.start || e.time || '', e.end || '', !!e.recurring, e.recurring ? e.weekday : '']));
+const gSnap = e => ({ hash: evHash(e), w: whenKey(e), n: strHash(e.notes || ''), rec: !!e.recurring });
+// what only Compass holds — Google can't have changed these, so a Google-side edit never wipes them
+const GCAL_OWN = ['category', 'cost', 'rate', 'earned', 'studyFor'];
 async function gcalAPI(payload) {
   if (!syncEnabled()) throw new Error('Turn on cloud sync first');
   const r = await fetch('/api/gcal', {
@@ -1138,12 +1143,14 @@ function fromGoogle(it, cal) {
     studyFor: category === 'Study' ? (p.studyFor || 'School') : '',
   };
 }
-// Compass → a Google event body
-function toGoogle(e) {
+// Compass → a Google event body. With `prev` (what was last synced) it's a patch: the time and
+// notes go only if they changed, and a weekly event keeps its series' first week.
+function toGoogle(e, prev) {
   const tz = gcalTZ();
   let d = e.date;
   if (e.recurring) {           // a weekly event starts on its next occurrence
     const t = parseISO(todayISO()); t.setDate(t.getDate() + ((e.weekday - t.getDay() + 7) % 7)); d = todayISO(t);
+    if (prev && prev.d0 && parseISO(prev.d0).getDay() === e.weekday) d = prev.d0;
   }
   const body = {
     summary: e.title, description: e.notes || '', location: e.location || '',
@@ -1157,118 +1164,200 @@ function toGoogle(e) {
     body.end = { dateTime: `${hhmmToMin(en) <= hhmmToMin(s) ? shiftISO(d, 1) : d}T${en}:00`, timeZone: tz };
   }
   if (e.recurring) body.recurrence = ['RRULE:FREQ=WEEKLY'];
+  if (prev && prev.w === whenKey(e)) { delete body.start; delete body.end; delete body.recurrence; }
+  if (prev && prev.n === strHash(e.notes || '')) delete body.description;
   return body;
 }
+const firstDay = b => b.start && (b.start.date || b.start.dateTime.slice(0, 10));
 const normTitle = t => String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 const enabledCals = () => Object.entries(GCAL().cals).filter(([, c]) => c.on).map(([id, c]) => ({ id, ...c }));
+// an imported event leaving Compass (calendar switched off, disconnect) — unless money was logged
+// against it: then it stays, as a plain Compass event that isn't sent anywhere
+function gcalDrop(e) {
+  if (!S.money.transactions.some(t => t.eventId === e.id)) return false;
+  delete e.g; delete e.src; e.noGcal = true;
+  return true;
+}
+// undo/redo swaps in an older copy of everything, but Google has moved on since: keep today's
+// Google bookkeeping, and treat what the undo changed as an edit to send
+function gcalAfterUndo(prev) {
+  const P = prev.gcal;
+  if (!P || !P.on) return;
+  const was = new Map(prev.calendar.events.map(e => [e.id, e])), gone = new Set(P.gone || []);
+  S.gcal = P;
+  S.calendar.events = S.calendar.events.filter(e => {
+    const p = was.get(e.id);
+    if (p) { if (p.g) e.g = p.g; else delete e.g; if (evHash(e) !== evHash(p)) e.mtime = Date.now(); return true; }
+    if (!e.g) return true;
+    if (gone.has(e.g.id)) { S.money.transactions = S.money.transactions.filter(t => t.eventId !== e.id); return false; }  // deleted in Google, not by you
+    e.g.revive = 1; e.mtime = Date.now(); P.linked[e.g.id] = { c: e.id, cal: e.g.cal };       // un-deleted: bring it back there too
+    return true;
+  });
+}
 
 async function gcalSync(opts = {}) {
-  const G = GCAL();
+  const G = GCAL(), S0 = S;
   if (!G.on || gcalBusy || !syncEnabled() || !pulledOnce) return false;
   gcalBusy = true; setSyncDot('busy');
+  // if the whole state is swapped mid-sync (a pull from another device, an undo), stop: the next run starts clean
+  const api = async p => { const r = await gcalAPI(p); if (S !== S0) throw Object.assign(new Error('changed while syncing'), { stale: true }); return r; };
   const today = todayISO(), from = shiftISO(today, -GCAL_BACK), to = shiftISO(today, GCAL_AHEAD);
-  let added = 0, updated = 0, removed = 0, pushed = 0, deleted = 0;
+  let added = 0, updated = 0, removed = 0, pushed = 0, deleted = 0, refused = 0;
   const evs = () => S.calendar.events;
   const byGid = new Map(evs().filter(e => e.g).map(e => [e.g.id, e]));
+  const drop = (e, google) => {
+    S.calendar.events = evs().filter(x => x !== e);
+    S.money.transactions = S.money.transactions.filter(t => t.eventId !== e.id);
+    delete G.linked[e.g.id];
+    if (google) G.gone = [...(G.gone || []), e.g.id].slice(-100);
+    removed++;
+  };
   try {
     /* 1–2. pull and apply */
     for (const cal of enabledCals()) {
       const items = []; let pageToken = '', pages = 0;
       do {
-        const r = await gcalAPI({ action: 'list', calendarId: cal.id, timeMin: `${from}T00:00:00${tzOffset()}`, timeMax: `${to}T00:00:00${tzOffset()}`, timeZone: gcalTZ(), pageToken });
+        const r = await api({ action: 'list', calendarId: cal.id, timeMin: `${from}T00:00:00${tzOffset(from)}`, timeMax: `${to}T00:00:00${tzOffset(to)}`, timeZone: gcalTZ(), pageToken });
         items.push(...(r.items || [])); pageToken = r.nextPageToken || '';
       } while (pageToken && ++pages < 20);
-      const seen = new Set();
+      const seen = new Set(), series = new Set();
       // Compass events Google already knows by id — never title-match these to something else
       const claimed = new Set(items.map(i => i.priv && i.priv.compassId).filter(Boolean));
       for (const it of items) {
         if (it.status === 'cancelled' || !it.start) continue;
-        // instances of a weekly event that Compass owns stay as the one weekly event here
-        if (it.recurringEventId && G.linked[it.recurringEventId]) continue;
+        const cid = it.priv && it.priv.compassId;
+        if (it.recurringEventId) {
+          const sid = it.recurringEventId; series.add(sid);
+          // instances of a weekly event that Compass owns stay as the one weekly event here
+          if (G.linked[sid]) continue;
+          // …even when this copy hasn't linked it yet (sent from another device, or before a reconnect)
+          const own = cid && evs().find(e => e.id === cid && e.recurring);
+          if (own) {
+            if (!own.g || own.g.id === sid) G.linked[sid] = { c: own.id, cal: cal.id };
+            if (!own.g || own.g.id.startsWith(sid + '_')) { if (own.g) delete G.linked[own.g.id]; own.g = { cal: cal.id, id: sid, etag: '', ...gSnap(own) }; }
+            if (own.g.id === sid && (!own.g.d0 || firstDay(it) < own.g.d0)) own.g.d0 = firstDay(it);
+            continue;
+          }
+        }
         seen.add(it.id);
-        // linked before but deleted here since — that's a delete to send (step 4), not a new event
-        if (G.linked[it.id] && !byGid.has(it.id) && !evs().some(e => e.id === G.linked[it.id].c)) continue;
+        const l = G.linked[it.id];
+        // deleted here since — that's a delete to send (step 4), not a new event; or read-only, so it stays hidden
+        if (l && (l.hide || (!byGid.has(it.id) && !evs().some(e => e.id === l.c)))) continue;
         let local = byGid.get(it.id);
-        if (!local && it.priv && it.priv.compassId) local = evs().find(e => e.id === it.priv.compassId && !e.g);
-        const f = fromGoogle(it, cal);
-        // the same thing already typed into both (common on first connect): link them, don't duplicate
+        if (!local && cid) local = evs().find(e => e.id === cid && !e.g);
+        const f = fromGoogle(it, cal), ro = !!cal.ro;
+        // the same thing already typed into both (common on first connect): link them, don't duplicate —
+        // keep everything Compass has, fill gaps from Google, and send the result back
         if (!local) {
           const twin = evs().find(e => !e.g && !claimed.has(e.id) && !e.recurring && e.date === f.date && (e.start || '') === f.start && normTitle(e.title) === normTitle(f.title));
           if (twin) {
-            twin.g = { cal: cal.id, id: it.id, etag: it.etag, ro: !!cal.ro, hash: evHash(twin) };
-            twin.g.etag = '';                 // treat as changed so the newer side wins below
-            local = twin; byGid.set(it.id, twin); G.linked[it.id] = { c: twin.id, cal: cal.id };
+            ['notes', 'location', 'end', 'endDate'].forEach(k => { if (!twin[k] && f[k]) twin[k] = f[k]; });
+            delete twin.noGcal;
+            twin.g = { cal: cal.id, id: it.id, etag: it.etag, ro, ...gSnap(twin), hash: '' };
+            if (twin.end !== f.end || twin.endDate !== f.endDate) twin.g.w = '';     // times differ: Compass's go
+            byGid.set(it.id, twin); G.linked[it.id] = { c: twin.id, cal: cal.id }; updated++;
+            continue;
           }
-        }
-        if (!local) {
-          const ev = { id: uid(), ...f, src: 'google', g: { cal: cal.id, id: it.id, etag: it.etag, ro: !!cal.ro } };
-          ev.g.hash = evHash(ev);
+          const ev = { id: uid(), ...f, src: 'google' };
+          ev.g = { cal: cal.id, id: it.id, etag: it.etag, ro, ...gSnap(ev) };
           evs().push(ev); syncEventCost(ev); byGid.set(it.id, ev);
           G.linked[it.id] = { c: ev.id, cal: cal.id }; added++;
           continue;
         }
         if (local.g && local.g.etag === it.etag) continue;                 // unchanged (or our own write echoing back)
-        const editedHere = local.g && evHash(local) !== local.g.hash;
-        if (editedHere && (local.mtime || 0) > Date.parse(it.updated || 0)) continue;   // ours is newer — pushed below
-        if (local.recurring) { local.g = { ...(local.g || {}), cal: cal.id, id: it.id, etag: it.etag }; continue; }
-        Object.assign(local, f, { g: { cal: cal.id, id: it.id, etag: it.etag, ro: !!cal.ro } });
-        local.g.hash = evHash(local);
+        if (local.recurring) continue;                                     // made weekly here: sent below
+        const editedHere = local.g ? evHash(local) !== local.g.hash : evHash(local) !== evHash({ ...local, ...f });
+        if (editedHere && (local.mtime || 0) > Date.parse(it.updated || 0)) {  // ours is newer — pushed below
+          if (!local.g) { local.g = { cal: cal.id, id: it.id, etag: it.etag, ro, ...gSnap(local), hash: '' }; byGid.set(it.id, local); G.linked[it.id] = { c: local.id, cal: cal.id }; }
+          continue;
+        }
+        const keep = editedHere || ro ? Object.fromEntries(GCAL_OWN.map(k => [k, local[k]])) : {};
+        Object.assign(local, f, keep);
+        local.g = { cal: cal.id, id: it.id, etag: it.etag, ro, ...gSnap(local) };
+        if (editedHere && !ro) local.g.hash = '';                          // send back what only Compass holds
         syncEventCost(local); byGid.set(it.id, local);
         G.linked[it.id] = { c: local.id, cal: cal.id }; updated++;
       }
       // gone from Google (inside the window we just read in full) → gone here.
       // Only when every page came back — a partial read must never delete anything.
       if (pageToken) continue;
-      evs().filter(e => e.g && e.g.cal === cal.id && !e.recurring && e.date >= from && e.date < to && !seen.has(e.g.id)).forEach(e => {
-        S.calendar.events = evs().filter(x => x !== e);
-        S.money.transactions = S.money.transactions.filter(t => t.eventId !== e.id);
-        delete G.linked[e.g.id]; removed++;
+      for (const [gid, l] of Object.entries(G.linked)) if (l.hide && l.cal === cal.id && !seen.has(gid)) delete G.linked[gid];
+      evs().filter(e => e.g && e.g.cal === cal.id && !e.g.revive).forEach(e => {
+        if (e.g.rec === undefined) e.g.rec = series.has(e.g.id) || (seen.has(e.g.id) ? false : undefined);   // copies from before `rec`
+        if (e.g.rec !== undefined && e.g.rec !== !!e.recurring) return;      // weekly ↔ one-off here: replaced below
+        if (e.recurring) { if (!series.has(e.g.id)) drop(e, true); return; } // whole series deleted in Google
+        if (!(e.date >= from && e.date < to) || seen.has(e.g.id)) return;
+        if (evHash(e) !== e.g.hash && !e.g.ro) { e.g.revive = 1; return; }   // deleted there, changed here since: the change wins
+        drop(e, true);
       });
     }
     // a calendar you switched off takes its imported events with it
     const on = new Set(enabledCals().map(c => c.id));
-    evs().filter(e => e.src === 'google' && e.g && !on.has(e.g.cal)).forEach(e => {
-      S.calendar.events = evs().filter(x => x !== e);
-      S.money.transactions = S.money.transactions.filter(t => t.eventId !== e.id);
-      delete G.linked[e.g.id]; removed++;
-    });
+    evs().filter(e => e.src === 'google' && e.g && !on.has(e.g.cal)).forEach(e => { const gid = e.g.id; if (gcalDrop(e)) { delete G.linked[gid]; } else drop(e); });
     /* 3. push what changed here */
     const writeCal = G.writeCal && G.cals[G.writeCal] && !G.cals[G.writeCal].ro ? G.writeCal : '';
     for (const e of evs().slice()) {
       if (e.g) {
-        if (e.g.ro || evHash(e) === e.g.hash) continue;
+        const flip = e.g.rec !== undefined && e.g.rec !== !!e.recurring;
+        if (e.g.ro || (!flip && !e.g.revive && evHash(e) === e.g.hash)) continue;
+        const snap = gSnap(e), g = e.g;
         try {
-          const r = await gcalAPI({ action: 'patch', calendarId: e.g.cal, eventId: e.g.id, event: toGoogle(e) });
-          e.g.etag = r.etag; e.g.hash = evHash(e); pushed++;
+          if (flip) {          // weekly ↔ one-off: Google can't turn one into the other in place, so replace it
+            await api({ action: 'delete', calendarId: g.cal, eventId: g.id });
+            delete G.linked[g.id];
+            const id = gidFor(e.id) + 'v' + Date.now().toString(32), body = toGoogle(e);
+            const r = await api({ action: 'insert', calendarId: g.cal, event: { ...body, id } });
+            e.g = { cal: g.cal, id, etag: r.etag, ...snap, d0: e.recurring ? firstDay(body) : '' };
+            G.linked[id] = { c: e.id, cal: g.cal };
+          } else {
+            const body = toGoogle(e, g);
+            const r = await api({ action: 'patch', calendarId: g.cal, eventId: g.id, event: g.revive ? { ...body, status: 'confirmed' } : body });
+            e.g = { ...g, etag: r.etag, ...snap, d0: e.recurring ? firstDay(body) || g.d0 : '' }; delete e.g.revive;
+          }
+          pushed++;
         } catch (err) {
-          if (err.status === 404 || err.status === 410) {      // deleted in Google while edited here: put it back as new
-            delete G.linked[e.g.id]; delete e.g;
-          } else throw err;
+          if (err.status === 404 || err.status === 410) {      // gone for good in Google while wanted here: send it as new
+            delete G.linked[g.id]; delete e.g; e.gBack = 1;
+          } else if (err.status === 400 || err.status === 403) { e.g.ro = true; refused++; }   // Google won't take changes to this one (an invite, a birthday…): they stay here
+          else throw err;
         }
         continue;
       }
       if (!writeCal || e.noGcal) continue;
       if (!e.recurring && !(e.date && e.date >= from)) continue;       // don't backfill old history into Google
-      const id = gidFor(e.id);
-      let r;
-      try { r = await gcalAPI({ action: 'insert', calendarId: writeCal, event: { ...toGoogle(e), id } }); }
+      let id = gidFor(e.id), r;
+      const body = toGoogle(e), snap = gSnap(e);
+      try { r = await api({ action: 'insert', calendarId: writeCal, event: { ...body, id } }); }
       catch (err) {
-        if (err.status !== 409) throw err;                         // 409: already there (another device / a retry)
-        r = await gcalAPI({ action: 'patch', calendarId: writeCal, eventId: id, event: toGoogle(e) });
+        if (err.status === 400 || err.status === 403) { e.noGcal = true; refused++; continue; }
+        if (err.status !== 409) throw err;
+        // 409: already there — another device or a retry sent it (or it was deleted in Google, and then
+        // it only comes back if it was deleted while wanted here)
+        try { r = await api({ action: 'patch', calendarId: writeCal, eventId: id, event: e.gBack ? { ...body, status: 'confirmed' } : body }); }
+        catch (err2) {
+          if (err2.status !== 404 && err2.status !== 410) throw err2;
+          if (!e.gBack) { e.noGcal = true; continue; }
+          id += 'v' + Date.now().toString(32);
+          r = await api({ action: 'insert', calendarId: writeCal, event: { ...body, id } });
+        }
       }
-      e.g = { cal: writeCal, id, etag: r.etag, hash: evHash(e) };
+      e.g = { cal: writeCal, id, etag: r.etag, ...snap, d0: e.recurring ? firstDay(body) : '' }; delete e.gBack;
       G.linked[id] = { c: e.id, cal: writeCal }; pushed++;
     }
     /* 4. deleted here → delete there */
     const ids = new Set(evs().map(e => e.id));
     for (const [gid, l] of Object.entries(G.linked)) {
-      if (ids.has(l.c)) continue;
-      if (G.cals[l.cal] && G.cals[l.cal].ro) { delete G.linked[gid]; continue; }
-      await gcalAPI({ action: 'delete', calendarId: l.cal, eventId: gid });
+      if (ids.has(l.c) || l.hide) continue;
+      if (G.cals[l.cal] && G.cals[l.cal].ro) { l.hide = 1; continue; }   // can't delete it there: keep it hidden here
+      try { await api({ action: 'delete', calendarId: l.cal, eventId: gid }); }
+      catch (err) { if (err.status !== 400 && err.status !== 403) throw err; refused++; }
       delete G.linked[gid]; deleted++;
     }
-    G.lastSync = Date.now(); G.err = '';
+    G.lastSync = Date.now(); G.err = refused ? `Google refused ${refused} change${refused > 1 ? 's' : ''} — kept here only` : '';
     save(false);
+    // send the new links to the cloud too, so another device doesn't import or re-send these —
+    // unless another device saved meanwhile: then its copy wins and the next run re-links by id
+    if (added || updated || removed || pushed || deleted) { await pull(); if (S === S0) { S.updatedAt = Date.now(); save(false); schedulePush(); } else gcalSoon(); }
     setSyncDot('ok');
     if (added || updated || removed) renderAll();
     if (opts.loud) toast(added + updated + removed + pushed + deleted
@@ -1276,6 +1365,7 @@ async function gcalSync(opts = {}) {
       : 'Google Calendar is up to date');
     return true;
   } catch (e) {
+    if (e.stale) { gcalSoon(1500); return false; }
     console.warn('gcal', e);
     G.err = e.message; save(false); setSyncDot('err');
     if (e.status === 401 && e.body && e.body.reconnect) { G.on = false; save(false); toast('Google Calendar needs reconnecting — Settings › Google Calendar'); }
@@ -5312,15 +5402,15 @@ Object.assign(ACT, {
   },
   gcalDisconnect() {
     sheetForm('Disconnect Google Calendar?',
-      'Events that came from Google are removed from Compass. Your own Compass events stay here, and anything already sent to Google stays there.',
+      'Events that came from Google are removed from Compass (unless you logged money against them). Your own Compass events stay here, and anything already sent to Google stays there.',
       '', { save: 'gcalDisconnectConfirm', saveLabel: 'Disconnect', noFocus: true });
   },
   async gcalDisconnectConfirm() {
     try { await gcalAPI({ action: 'disconnect' }); } catch (e) {}
-    const gone = new Set(S.calendar.events.filter(e => e.src === 'google').map(e => e.id));
+    const gone = new Set(S.calendar.events.filter(e => e.src === 'google' && !gcalDrop(e)).map(e => e.id));
     S.calendar.events = S.calendar.events.filter(e => !gone.has(e.id));
     S.money.transactions = S.money.transactions.filter(t => !gone.has(t.eventId));
-    S.calendar.events.forEach(e => { delete e.g; });   // ids sent to Google are fixed per event, so reconnecting can't duplicate them
+    S.calendar.events.forEach(e => { delete e.g; delete e.gBack; });   // ids sent to Google are fixed per event, so reconnecting can't duplicate them
     S.gcal = { on: false, email: '', cals: {}, writeCal: '', linked: {}, lastSync: 0, err: '' };
     save(); closeSheet(); render(currentTab); toast('Google Calendar disconnected');
   },

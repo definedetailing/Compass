@@ -143,6 +143,9 @@ sync (Step 3 and Step 4 above) has to be set up first.
 6. **Clients → Create client → Web application**. Under *Authorised redirect URIs*
    add `https://compass-psi-nine.vercel.app/api/gcal`. Create, then copy the
    **Client ID** and **Client secret** straight away.
+   Connect from that exact address — a preview or `*-git-*` Vercel URL sends a
+   different redirect URI and Google refuses it (or set `GOOGLE_REDIRECT_URI` to
+   the address above to pin it).
 
 ### Step 2 — Add the two env vars on Vercel
 Project → Settings → Environment Variables: `GOOGLE_CLIENT_ID` and
@@ -150,8 +153,8 @@ Project → Settings → Environment Variables: `GOOGLE_CLIENT_ID` and
 
 ### Step 3 — Connect, in the app
 Settings → **Google Calendar → Connect**. Google will say it hasn't verified the
-app — that's expected for a personal app: **Advanced → Go to Compass**, allow both
-permissions. Back in Compass, tick the calendars to show, give each a default
+app — that's expected for a personal app: **Advanced → Go to Compass**, and tick
+**both** permission boxes (Compass refuses the connection if either is unticked). Back in Compass, tick the calendars to show, give each a default
 category, and pick where new Compass events go.
 
 It syncs when the app opens, every 5 minutes while it's open, and a few seconds
