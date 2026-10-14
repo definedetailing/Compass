@@ -246,3 +246,10 @@ html.ideas-open, html.ideas-open body { overflow: hidden; overscroll-behavior: n
 .wbl-empty .empty { padding-bottom: 10px; }
 .wbl-empty .empty b { display: block; font-size: 16px; color: var(--text); margin-bottom: 4px; }
 .wb-menu .item { min-height: 52px; }
+
+/* while typing: Done takes the place of undo / redo / options in the top bar */
+.wb .wb-topdone { display: none; height: 36px; border-radius: 18px; margin-right: 4px; }
+.wb.editing .wb-topdone { display: inline-flex; align-items: center; }
+.wb.editing .wb-top [data-top="undo"], .wb.editing .wb-top [data-top="redo"], .wb.editing .wb-top [data-top="more"] { display: none; }
+.wb-sub .wb-dumpbtn { display: inline-flex; gap: 6px; align-items: center; font-weight: 600; font-size: 15px; color: var(--accent); }
+#wb_dump { min-height: 180px; }

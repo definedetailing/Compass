@@ -61,7 +61,7 @@ const TPL = {
     const fol = mkShape('ellipse', cx - w / 2, y + 9 * dy + 60, w, h, 'Follow-up', 3);
     const ar = steps.slice(1).map((s, i) => mkArrow(steps[i], s));
     return [...steps, dec, coat, pol, hand, fol, ...ar, mkArrow(steps[5], dec), mkArrow(dec, coat, 'Yes'), mkArrow(dec, pol, 'No'),
-      mkArrow(coat, hand), mkArrow(pol, hand), mkArrow(hand, fol)];
+      mkArrow(coat, hand, '', { from: { id: coat.id, side: 'b' }, to: { id: hand.id, side: 'r' } }), mkArrow(pol, hand), mkArrow(hand, fol)];
   } },
   mind: { name: 'Mind map', desc: 'One idea in the middle, six branches', icon: 'sparkles', make(cx, cy) {
     const c = mkShape('ellipse', cx - 120, cy - 60, 240, 120, 'Main idea', 4);
@@ -178,7 +178,8 @@ let cam = { x: 0, y: 0, s: 1 }, vw = 375, vh = 700, topH = 56, toolH = 64, rootT
 let tool = 'select', shapeKind = 'round', stickyC = 0, penC = -1, penW = 3, eraser = false, subMode = '', ctxMode = '';
 let sel = new Set(), multi = false, editing = null, G = null, lastTap = null, pendingRedraw = false, warned = false;
 const P = new Map(), els = new Map();
-let idx = new Map(), UND = [], RED = [], known = '';
+let idx = new Map(), UND = [], RED = [], known = '', openRef = null;
+let linkEls = new Map(), labelEls = new Map(), linkBox = null;   // arrow id → its <g> / label, and the links layer's extent
 const cur = () => findBoard(openId);
 const O = id => idx.get(id);
 function reindex() { idx = new Map(objsOf(cur()).map(o => [o.id, o])); }
@@ -215,7 +216,12 @@ function endChange(before) {
   known = snap();
   save();
   histBtns();
-  if (objsOf(b).length > MAX_OBJS && !warned) { warned = true; toast('This board is getting big — a new board will stay quicker'); }
+  // sync sends the whole state in one request (~1MB budget): warn well before a big board gets near it
+  if (!warned) {
+    const all = typeof lastSavedJSON === 'string' ? lastSavedJSON.length : 0;
+    if (all > 800e3) { warned = true; toast('Compass is nearly full for syncing — move old boards or pen scribbles out'); }
+    else if (objsOf(b).length > MAX_OBJS || now.length > 400e3) { warned = true; toast('This board is getting big — a new board will stay quicker'); }
+  }
   return true;
 }
 function histBtns() { if (undoBtn) { undoBtn.disabled = !UND.length; redoBtn.disabled = !RED.length; } }
@@ -236,7 +242,7 @@ function mkEl(o) {
   if (o.t === 'sticky' || o.t === 'text') e.innerHTML = `<div class="wbt">${esc(o.tx || '')}</div>`;
   else if (o.t === 'shape') e.innerHTML = `<svg class="wb-sh"></svg><div class="wbtx${o.va === 'top' ? ' top' : ''}"><div class="wbt">${esc(o.tx || '')}</div></div>`;
   else if (o.t === 'photo') {
-    e.innerHTML = '<img alt="" draggable="false">';
+    e.innerHTML = '<img alt="" draggable="false" decoding="async">';
     imgURL(o.img).then(u => { const im = e.firstChild; if (u && im) { im.src = u; } else e.classList.add('missing'); }).catch(() => e.classList.add('missing'));
   } else if (o.t === 'pen') {
     const pad = (o.sw || 3) + 4, w = o.w + 2 * pad, h = o.h + 2 * pad, d = smoothPath(o.p || []);
@@ -273,7 +279,7 @@ function draw() {
   if (!sel.size) multi = false;
   drawLinks(); uiBuild();
 }
-function drawLinks() {
+function drawLinks(pad = 30) {
   if (!root) return;
   let h = '', lab = '', x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const a of objsOf(cur())) {
@@ -284,12 +290,29 @@ function drawLinks() {
     if (a.tx && !(editing && editing.id === a.id)) lab += `<div class="wb-alabel" data-oid="${a.id}" style="left:${ri(r.mid.x)}px;top:${ri(r.mid.y)}px"><div class="wbt">${esc(a.tx)}</div></div>`;
   }
   if (x0 === Infinity) { x0 = y0 = 0; x1 = y1 = 1; }
-  x0 = Math.floor(x0 - 30); y0 = Math.floor(y0 - 30); x1 = Math.ceil(x1 + 30); y1 = Math.ceil(y1 + 30);
+  x0 = Math.floor(x0 - pad); y0 = Math.floor(y0 - pad); x1 = Math.ceil(x1 + pad); y1 = Math.ceil(y1 + pad);
+  linkBox = { x0, y0, x1, y1 };
   linksSvg.setAttribute('viewBox', `${x0} ${y0} ${x1 - x0} ${y1 - y0}`);
   linksSvg.setAttribute('width', x1 - x0); linksSvg.setAttribute('height', y1 - y0);
   linksSvg.style.left = x0 + 'px'; linksSvg.style.top = y0 + 'px';
   linksSvg.innerHTML = h;
   labelsLayer.innerHTML = lab;
+  linkEls = new Map([...linksSvg.children].map(g => [g.dataset.oid, g]));
+  labelEls = new Map([...labelsLayer.children].map(l => [l.dataset.oid, l]));
+}
+// while dragging, only re-route the arrows touching what moved (a full redraw of every
+// arrow per frame was ~13ms on a 600-object board on a Mac — far more on a phone)
+function drawLinksFor(ids) {
+  if (!linkBox) return drawLinks();
+  const inBox = p => p.x >= linkBox.x0 && p.x <= linkBox.x1 && p.y >= linkBox.y0 && p.y <= linkBox.y1;
+  for (const a of objsOf(cur())) {
+    if (a.t !== 'arrow' || !((a.from && ids.has(a.from.id)) || (a.to && ids.has(a.to.id)))) continue;
+    const r = route(a), g = linkEls.get(a.id);
+    if (!r || !g || ![r.A, r.B, r.c1, r.c2].every(inBox) || !!r.head !== !!g.children[2]) return drawLinks(600);   // grew past the layer: redraw with room to spare
+    g.children[0].setAttribute('d', r.d); g.children[1].setAttribute('d', r.d);
+    if (r.head) g.children[2].setAttribute('d', r.head);
+    const l = labelEls.get(a.id); if (l) { l.style.left = ri(r.mid.x) + 'px'; l.style.top = ri(r.mid.y) + 'px'; }
+  }
 }
 // grow to fit the words (text boxes also shrink); returns true if the height changed
 function fitH(o) {
@@ -313,9 +336,9 @@ function queue(k, id) {
 function frame() {
   rafId = 0; if (!root) return;
   for (const id of Q.ids) { const o = O(id), e = els.get(id); if (o && e) setBox(e, o); }
-  if (Q.ids.size) Q.links = true;
-  Q.ids.clear();
   if (Q.links) { Q.links = false; drawLinks(); }
+  else if (Q.ids.size) drawLinksFor(Q.ids);
+  Q.ids.clear();
   if (Q.temp) { Q.temp = false; drawTemp(); }
   if (Q.cam) { Q.cam = false; applyCam(); } else uiPlace();
 }
@@ -380,7 +403,7 @@ function uiBuild() {
 function ctxBuild(ids, one) {
   const b = (c, icon, label, extra = '') => `<button type="button" data-c="${c}" aria-label="${label}" ${extra}>${icon}</button>`;
   let h = '';
-  if (editing) h = `<button type="button" class="wb-done" data-c="done">${ic('check', 'sm')} Done</button>`;
+  if (editing) h = '';   // Done is in the top bar while typing
   else if (ids.length && ctxMode === 'color') {
     const os = ids.map(O), onlySticky = os.every(o => o.t === 'sticky');
     const cols = onlySticky ? [0, 1, 2, 3, 4, 5] : [-1, 0, 1, 2, 3, 4, 5];
@@ -393,6 +416,7 @@ function ctxBuild(ids, one) {
     if (one && one.t === 'text') h += b('size', '<b class="wb-aa">Aa</b>', 'Text size');
     if (os.some(o => o.t !== 'arrow')) h += b('dup', ic('copy'), 'Duplicate') + b('front', '<b class="wb-aa">⤒</b>', 'Bring to front');
     if (textish.length) h += `<button type="button" data-c="task" aria-label="Make a task" class="wb-task">${ic('check-square', 'sm')} Task</button>`;
+    if (os.filter(o => o.t !== 'arrow').length > 1) h += `<button type="button" data-c="tidy" aria-label="Tidy into a grid" class="wb-task">${ic('template', 'sm')} Tidy</button>`;
     h += b('del', ic('trash'), 'Delete', 'class="wb-del"');
   }
   ctxBar.innerHTML = h;
@@ -477,10 +501,13 @@ function quickAdd(side, at) {
   if (src.t === 'shape') { o.k = src.k; if (src.tp != null) o.tp = src.tp; if (src.va) o.va = src.va; }
   let link = true;
   if (at) { o.x = ri(at.x - o.w / 2); o.y = ri(at.y - o.h / 2); }
-  else if (src.t === 'shape' && src.k === 'funnel' && side === 'b' && src.w * (1 - 2 * taper(src)) >= 80) {
-    // funnels stack: the next stage starts as wide as this one ends
-    const i = ri(src.w * taper(src)); o.w = src.w - 2 * i; o.tp = +lim(i / o.w, 0, 0.45).toFixed(3);
-    o.x = src.x + i; o.y = src.y + src.h + 6; link = false;
+  else if (src.t === 'shape' && src.k === 'funnel' && side === 'b') {
+    // funnels stack: the next stage starts as wide as this one ends — but never so narrow
+    // that its words break mid-word ("Stag/e 5"); past that it stays a readable width
+    const i = ri(src.w * taper(src)), bw = src.w - 2 * i;
+    o.w = Math.max(bw, Math.min(src.w, 150));
+    o.tp = +(o.w === bw ? lim(i / o.w, 0, 0.45) : 0.1).toFixed(3);
+    o.x = ri(src.x + (src.w - o.w) / 2); o.y = src.y + src.h + 6; link = false;
   } else {
     const dir = { r: [1, 0], l: [-1, 0], b: [0, 1], t: [0, -1] }[side];
     const cx = src.x + src.w / 2 + dir[0] * Math.max(src.w * 1.5, src.w / 2 + o.w / 2 + 60);
@@ -563,7 +590,7 @@ function startEdit(id, before = snap()) {
   else if (o.t === 'arrow') ta.placeholder = 'Label';
   if (o.t === 'arrow') { host.textContent = ''; host.appendChild(ta); }
   else { host.style.display = 'none'; host.after(ta); els.get(id).classList.add('editing'); }
-  editing = { id, ta, host, before };
+  editing = { id, ta, host, before, orig: o.tx || '' };
   root.classList.add('editing');
   if (o.t === 'arrow') drawLinks();
   autosize();
@@ -600,15 +627,19 @@ function editView(o, soft) {
   let wr = o;
   if (o.t === 'arrow') { const rt = route(o); if (!rt) return; wr = { x: rt.mid.x - 60, y: rt.mid.y - 20, w: 120, h: 40 }; }
   let { x, y, s } = cam;
-  if (!soft && s < 1) {   // 16px text must look 16px or more while typing
-    const cx = wr.x + wr.w / 2, sx = cx * s + x, sy = wr.y * s + y;
-    s = 1; x = sx - cx; y = sy - wr.y;
+  if (!soft) {
+    // 16px text must look 16px or more while typing, but not so big that a sticky is wider
+    // than the phone and the line you're on sits under the keyboard
+    const ts = Math.max(1, Math.min(s, 2, (vw - 24) / Math.max(wr.w, 1)));
+    if (ts !== s) { const cx = wr.x + wr.w / 2, sx = cx * s + x, sy = wr.y * s + y; s = ts; x = sx - cx * s; y = sy - wr.y * s; }
   }
   const r = { x: wr.x * s + x, y: wr.y * s + y, w: wr.w * s, h: wr.h * s };
   const vv = window.visualViewport, avail = vv ? Math.min(vh, vv.height) : vh, top = topH + 16;
   if (soft) {
-    const over = r.y + r.h - (avail - 24);
-    if (over > 0) y -= Math.max(0, Math.min(over, r.y - top));
+    // keep the line being typed (the bottom of the text box) clear of the keyboard
+    const tb = editing && editing.ta.getBoundingClientRect(), caret = tb && tb.height ? tb.bottom - rootTop : r.y + r.h;
+    const over = caret - (avail - 24);
+    if (over > 0) y -= over;
   } else {
     const bottom = Math.max(top + 80, avail * 0.45);
     if (r.y < top) y += top - r.y;
@@ -749,6 +780,7 @@ function onMove(e) {
   dragMove(e, p, dx, dy);
 }
 function beginDrag(e) {
+  if (G.type.startsWith('h-') && !O(G.id)) G.type = 'empty';   // a sync removed it mid-press: just pan
   const T = G.type;
   if (T === 'empty' && G.lpFired) { G.type = 'marquee'; uiLayer.insertAdjacentHTML('beforeend', '<div class="wb-marq"></div>'); return; }
   if (T === 'empty' || T === 'place' || (T === 'obj' && !sel.has(G.id))) { G.type = 'pan'; G.cam0 = { ...cam }; root.classList.add('busy'); return; }
@@ -806,8 +838,10 @@ function dragMove(e, p, dx, dy) {
       const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
       for (const ev of (evs.length ? evs : [e])) {
         const w = toWorld(loc(ev)), last = G.pts[G.pts.length - 1];
-        if (Math.hypot(w.x - last[0], w.y - last[1]) * s >= 1.5 && G.pts.length < 2000) G.pts.push([w.x, w.y]);
+        if (Math.hypot(w.x - last[0], w.y - last[1]) * s >= 1.5) G.pts.push([w.x, w.y]);
       }
+      // a long scribble used to stop recording at 2000 points; thin it instead and keep going
+      if (G.pts.length > 2000) { let eps = 0.8 / s; do { G.pts = rdp(G.pts, eps); eps *= 1.6; } while (G.pts.length > 1200); }
       queue('temp'); break;
     }
     case 'erase': eraseAt(e); break;
@@ -832,7 +866,7 @@ function onUp(e) {
   else if (g.type === 'connect') {
     tempSvg.innerHTML = ''; hover(null);
     const t = targetObj(e, g.id);
-    if (t) {
+    if (t && O(g.id)) {
       const before = snap();
       addObjs([{ id: uid(), t: 'arrow', from: { id: g.id, side: 'auto' }, to: { id: t.id, side: 'auto' }, tx: '' }]);
       drawLinks(); endChange(before); haptic();
@@ -936,7 +970,7 @@ function subBuild() {
     + `<button type="button" data-pw class="wb-pw${penW > 4 ? ' thick' : ''}" aria-label="Pen width"><i></i></button>`
     + `<button type="button" data-er class="${eraser ? 'on' : ''}" aria-label="Eraser"><b class="wb-aa">⌫</b></button>`
     + `<button type="button" data-pdone class="wb-done">Done</button>`;
-  else if (subMode === 'hint') h = `<div class="wb-hint">Tap the board to place ${tool === 'sticky' ? 'a sticky' : 'text'}</div><button type="button" data-cancel aria-label="Cancel">${ic('x')}</button>`;
+  else if (subMode === 'hint') h = `<div class="wb-hint">Tap the board to place ${tool === 'sticky' ? 'a sticky' : 'text'}</div>${tool === 'sticky' ? `<button type="button" data-dump class="wb-dumpbtn">${ic('list', 'sm')} List</button>` : ''}<button type="button" data-cancel aria-label="Cancel">${ic('x')}</button>`;
   subBar.innerHTML = h; subBar.hidden = !h;
   subBar.classList.toggle('kinds', subMode === 'shape');
 }
@@ -954,6 +988,7 @@ function onBarClick(e) {
   if (t.closest('[data-pw]')) { penW = penW > 4 ? 3 : 7; subBuild(); return; }
   if (t.closest('[data-er]')) { eraser = !eraser; subBuild(); return; }
   if (t.closest('[data-pdone], [data-cancel]')) { setTool('select'); return; }
+  if (t.closest('[data-dump]')) { setTool('select'); ACT.wbDump(); return; }
   const top = t.closest('[data-top]');
   if (top) {
     const a = top.dataset.top;
@@ -978,6 +1013,7 @@ function onBarClick(e) {
     case 'dup': duplicate(); break;
     case 'front': toFront(); break;
     case 'task': toTasks(); break;
+    case 'tidy': tidy(); break;
     case 'del': delSel(); break;
   }
 }
@@ -986,21 +1022,62 @@ function boardMenu() {
   openSheet(`<h3>${esc(b.name)}</h3><p class="desc">${objsOf(b).length} items · edited ${fmtAgo(b.u || Date.now())}</p>
     <div class="list wb-menu">
       <div class="item tap" data-act="wbFit"><span class="att-ic">${ic('maximize')}</span><div class="body"><div class="t">Zoom to fit</div></div></div>
+      <div class="item tap" data-act="wbDump"><span class="att-ic">${ic('list')}</span><div class="body"><div class="t">Brain dump</div><div class="s">Type or paste a list — one sticky per line</div></div></div>
       <div class="item tap" data-act="wbTpls"><span class="att-ic">${ic('template')}</span><div class="body"><div class="t">Add a template</div><div class="s">Funnel, job process, mind map, kanban</div></div></div>
       <div class="item tap" data-act="wbRename" data-id="${b.id}"><span class="att-ic">${ic('pencil')}</span><div class="body"><div class="t">Rename</div></div></div>
       <div class="item tap" data-act="wbDelete" data-id="${b.id}"><span class="att-ic neg">${ic('trash')}</span><div class="body"><div class="t">Delete board</div></div></div>
     </div>`);
 }
-function insertTemplate(key) {
-  const T = TPL[key]; if (!T || !cur()) return;
-  commitEdit();
-  const before = snap(), c = viewCentre(), list = T.make(c.x, c.y);
-  // never drop it on top of what's already there: slide it to clear space on the right
+// never drop new things on top of what's already there: slide them to clear space on the right
+function placeClear(list) {
   const get = id => list.find(o => o.id === id) || O(id), tb = bboxOf(list, get), ex = bboxOf(objsOf(cur()).filter(o => o.t !== 'arrow'), O);
   if (tb && ex && tb.x < ex.x + ex.w && tb.x + tb.w > ex.x && tb.y < ex.y + ex.h && tb.y + tb.h > ex.y) {
     const dx = ri(ex.x + ex.w + 120 - tb.x);
     for (const o of list) { if (o.t === 'arrow') continue; o.x += dx; }
   }
+}
+// lay items out in rows, each row as tall as its tallest item
+function gridLayout(list, x0, y0, cols, gap = 20) {
+  const cw = Math.max(...list.map(o => o.w)) + gap;
+  let y = y0;
+  for (let i = 0; i < list.length; i += cols) {
+    const row = list.slice(i, i + cols);
+    row.forEach((o, k) => { o.x = ri(x0 + k * cw); o.y = ri(y); });
+    y += Math.max(...row.map(o => o.h)) + gap;
+  }
+}
+// Brain dump: a list (typed or pasted) → one sticky per line, in a tidy grid, ready to sort
+function dumpStickies(lines) {
+  if (!cur() || !lines.length) return;
+  commitEdit(); setTool('select');
+  const before = snap(), c = viewCentre(), n = lines.length, cols = n <= 2 ? n : n <= 6 ? 2 : 3;
+  const list = lines.map(t => mkSticky(0, 0, 160, 160, t, stickyC));
+  addObjs(list);
+  for (const o of list) fitH(o);
+  const w = cols * 180 - 20, rows = Math.ceil(n / cols);
+  gridLayout(list, c.x - w / 2, c.y - rows * 90, cols);
+  placeClear(list);
+  for (const o of list) setBox(els.get(o.id), o);
+  drawLinks();
+  sel = new Set(list.map(o => o.id)); multi = n > 1; ctxMode = '';
+  endChange(before); uiBuild(); haptic();
+  fitTo(bboxOf(list, O), true, Math.max(cam.s, 1));
+}
+// Tidy: line the selection up in a grid, in reading order (arrows follow)
+function tidy() {
+  const list = [...sel].map(O).filter(o => o && o.t !== 'arrow');
+  if (list.length < 2) return;
+  const before = snap(), bb = bboxOf(list, O), n = list.length;
+  list.sort((a, b) => ri(a.y / 80) - ri(b.y / 80) || a.x - b.x);
+  gridLayout(list, bb.x, bb.y, n <= 3 ? n : Math.min(4, Math.ceil(Math.sqrt(n))), 24);
+  for (const o of list) { const e = els.get(o.id); if (e) setBox(e, o); }
+  drawLinks(); endChange(before); uiBuild(); haptic();
+}
+function insertTemplate(key) {
+  const T = TPL[key]; if (!T || !cur()) return;
+  commitEdit();
+  const before = snap(), c = viewCentre(), list = T.make(c.x, c.y);
+  placeClear(list);
   addObjs(list);
   for (const o of list) if (o.t !== 'arrow') fitH(o);
   drawLinks();
@@ -1015,7 +1092,7 @@ async function addPhotos(files) {
     if (!/^image\//.test(f.type || '')) continue;
     let r;
     try { r = await imgPut(f); } catch (err) { console.warn('photo', err); toast("Couldn't add that photo"); continue; }
-    if (openId !== b.id || !cur()) return;
+    if (openId !== b.id || !cur()) { if (ids.length) save(); return; }
     const w = ri(Math.min(r.w, 0.62 * vw / cam.s)), h = ri(w * r.h / r.w), n = ids.length;
     const o = { id: uid(), t: 'photo', img: r.id, x: ri(c.x - w / 2 + n * 28), y: ri(c.y - h / 2 + n * 28), w, h };
     addObjs([o]); ids.push(o.id);
@@ -1040,6 +1117,7 @@ function build() {
       <button type="button" class="wb-ib" data-top="undo" aria-label="Undo">${ic('undo')}</button>
       <button type="button" class="wb-ib" data-top="redo" aria-label="Redo">${ic('redo')}</button>
       <button type="button" class="wb-ib" data-top="more" aria-label="Board options">${ic('more')}</button>
+      <button type="button" class="wb-done wb-topdone" data-c="done">Done</button>
     </div>
     <div class="wb-ctx" hidden></div>
     <div class="wb-sub" hidden></div>
@@ -1064,6 +1142,10 @@ function build() {
   root.addEventListener('click', onBarClick);
   fileIn.addEventListener('change', () => { const f = [...fileIn.files]; fileIn.value = ''; if (f.length) addPhotos(f); });
 }
+const onHide = () => { if (document.hidden && editing) commitEdit(); };
+const onPageHide = () => { if (editing) commitEdit(); };
+// photos that weren't on this device yet: try again once we're back online
+const onOnline = () => { if (!root) return; for (const e of objsLayer.querySelectorAll('.wb-photo.missing')) { const o = O(e.dataset.oid); if (o) mount(o); } };
 function closeBoard() {
   if (!root) return;
   commitEdit();
@@ -1073,7 +1155,10 @@ function closeBoard() {
   window.visualViewport?.removeEventListener('resize', onVV);
   window.visualViewport?.removeEventListener('scroll', onVV);
   window.removeEventListener('resize', onVV);
-  root.remove(); root = null;
+  document.removeEventListener('visibilitychange', onHide);
+  window.removeEventListener('pagehide', onPageHide);
+  window.removeEventListener('online', onOnline);
+  root.remove(); root = null; openRef = null; linkEls.clear(); labelEls.clear(); linkBox = null;
   document.documentElement.classList.remove('ideas-open');
   openId = null; G = null; P.clear(); els.clear(); sel.clear(); editing = null; UND = []; RED = [];
   if (typeof currentTab !== 'undefined' && currentTab === 'ideas') renderIdeas();
@@ -1098,20 +1183,33 @@ window.ideasOpenBoard = (id, objId) => {
   measure();
   const saved = loadCam(id);
   cam = saved || { x: vw / 2, y: vh / 2, s: 1 };
-  known = snap();
+  known = snap(); openRef = b;
   draw(); applyCam(); histBtns();
+  const a = toWorld({ x: 0, y: topH }), z = toWorld({ x: vw, y: vh - toolH });
+  const lost = saved && b.objs.length && !b.objs.some(o => o.t !== 'arrow' && o.x < z.x && o.x + o.w > a.x && o.y < z.y && o.y + o.h > a.y);
   if (objId && O(objId)) { const o = O(objId); centreOn(o); sel.add(objId); uiBuild(); }
-  else if (!saved && b.objs.length) zoomFit(false);
+  else if ((!saved || lost) && b.objs.length) zoomFit(false);
   window.addEventListener('keydown', onKey, true);
   window.visualViewport?.addEventListener('resize', onVV);
   window.visualViewport?.addEventListener('scroll', onVV);
   window.addEventListener('resize', onVV);
+  document.addEventListener('visibilitychange', onHide);
+  window.addEventListener('pagehide', onPageHide);
+  window.addEventListener('online', onOnline);
 };
 // a sync pull or a global undo replaced S: re-read the board, keep the camera
 document.addEventListener('compass:render', () => {
   if (!openId || !root) return;
-  const b = cur();
+  let b = cur();
+  if (!b && editing && openRef && editing.ta.value !== editing.orig) {
+    // another device deleted it mid-sentence: put this device's copy back rather than drop the words
+    const o = openRef.objs.find(x => x.id === editing.id); if (o) o.tx = editing.ta.value;
+    openRef.u = Date.now(); boards().push(openRef); save();
+    toast('This board was deleted on another device — kept your copy');
+    b = openRef;
+  }
   if (!b) { editing = null; closeBoard(); toast('That board was deleted'); return; }
+  openRef = b;
   if (!Array.isArray(b.objs)) b.objs = [];
   reindex();
   const now = snap();
@@ -1239,6 +1337,17 @@ Object.assign(ACT, {
     toast(`“${b.name}” deleted`, { undo: true });
   },
   wbFit() { closeSheet(); zoomFit(); },
+  wbDump() {
+    commitEdit();
+    sheetForm('Brain dump', 'One thought per line — each becomes a sticky you can drag into a plan.',
+      field('Thoughts', 'wb_dump', { type: 'textarea', ph: 'Quote the Hilux ceramic\nOrder more clay bars\nIdeas for the spring promo' }), { save: 'wbDumpSave', saveLabel: 'Add stickies' });
+  },
+  wbDumpSave() {
+    const raw = ($('#wb_dump') || {}).value || '';
+    const lines = raw.split(/\n+/).map(l => l.replace(/^\s*(?:(?:[-*•·–]|\d+[.)](?=\s)|\[[ xX]?\])\s*)+/, '').trim()).filter(Boolean).slice(0, 60);
+    closeSheet();
+    dumpStickies(lines);
+  },
   wbTpls() { openSheet(`<h3>Add a template</h3><p class="desc">It lands in the middle of what you're looking at.</p>${tplRows('wbTplIns')}`); },
   wbTplIns(d) { closeSheet(); insertTemplate(d.tpl); },
 });
