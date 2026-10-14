@@ -2496,10 +2496,10 @@ function go(tab, sec) {
 
 /* ---------- sub-tabs: Health / Money / Systems split into short pages ---------- */
 const SEGS = {
-  health:  [['food', 'Food'], ['body', 'Body'], ['train', 'Training']],
-  money:   [['spend', 'Spending'], ['bills', 'Bills'], ['wealth', 'Wealth']],
-  systems: [['habits', 'Habits'], ['goals', 'Goals'], ['review', 'Review']],
-  ideas:   [['notes', 'Notes'], ['board', 'Whiteboard']],
+  health:  [['overview', 'Overview'], ['food', 'Food'], ['body', 'Body'], ['train', 'Training']],
+  money:   [['overview', 'Overview'], ['spend', 'Spending'], ['bills', 'Bills'], ['wealth', 'Wealth']],
+  systems: [['overview', 'Overview'], ['habits', 'Habits'], ['goals', 'Goals'], ['review', 'Review']],
+  ideas:   [['overview', 'Overview'], ['notes', 'Notes'], ['board', 'Whiteboard']],
 };
 const SEG_OF = {
   health:  { food: 'food', foodStats: 'food', water: 'body', sleep: 'body', split: 'train', runs: 'train', pbs: 'train' },
@@ -2516,8 +2516,116 @@ function segBar(tab) {
 // the blocks of a tab that belong to its current sub-tab, laid out with their own saved order
 function segBlocks(tab, B) {
   const cur = segOf(tab);
+  if (cur === 'overview') return `<div class="ov">${OVERVIEW[tab]()}</div>`;
   return renderBlocks(tab, B.filter(b => SEG_OF[tab][b.key] === cur), tab + '.' + cur);
 }
+
+/* ---------- Overview: the first sub-page of each tab ----------
+   Quick actions up top (same tiles as the + menu), then one summary card per
+   sub-page — tap a card to open that sub-page. Small things (habits, must-dos,
+   goals, paying a bill) can be done right here without leaving. */
+const ovActs = acts => `<div class="qa-grid ov-acts">${acts.map(([act, icon, label, extra = '']) =>
+  `<button class="qa-tile" data-act="${act}" ${extra}>${ic(icon)}<span>${label}</span></button>`).join('')}</div>`;
+// a summary card: heading row opens the sub-page, body is whatever fits
+const ovCard = (tab, seg, title, meta, body) => `<div class="card ov-card">
+    <button class="ov-head tap" data-act="ovGo" data-tab="${tab}" data-seg="${seg}">
+      <span class="ov-title">${title}</span><span class="ov-meta">${meta || ''}</span>${ic('chevron')}</button>
+    ${body}</div>`;
+const ovStat = (v, k, cls = '') => `<div class="ov-stat"><div class="ov-v ${cls}">${v}</div><div class="ov-k">${k}</div></div>`;
+const ovBar = (p, cls = '') => `<div class="bar slim ov-bar ${cls}"><i style="width:${clamp(p, 0, 1) * 100}%"></i></div>`;
+
+function overviewHealth() {
+  const iso = todayISO(), fg = FOOD().goals, td = dayTotals(iso), kLeft = fg.kcal - td.kcal;
+  const water = S.health.water.log[iso] || 0, wGoal = S.health.water.goalMl || 1;
+  const nights = S.health.sleep.slice(-7), lastN = nights[nights.length - 1];
+  const wkAgo = shiftISO(iso, -6), runs = S.health.runs.filter(r => r.date >= wkAgo);
+  const km = runs.reduce((a, r) => a + (r.distanceKm || 0), 0);
+  const pb = S.health.pbs.filter(p => p.weight > 0).sort((a, b) => b.date.localeCompare(a.date))[0];
+  return ovActs([['qaFoodSheet', 'utensils', 'Food'], ['qaScan', 'barcode', 'Scan'], ['ovWater', 'droplet', '+250 ml', 'data-ml="250"'], ['liveStart', 'footprints', 'Run'],
+      ['addSleep', 'moon', 'Sleep'], ['addPB', 'dumbbell', 'PB'], ['addSplit', 'list-checks', 'Workout'], ['addRun', 'plus', 'Log run']]) +
+    ovCard('health', 'food', 'Food', 'today', `<div class="ov-row">
+        ${ovStat(kcalStr(Math.abs(kLeft)), kLeft >= 0 ? 'kcal left' : 'kcal over', kLeft < 0 ? 'neg' : '')}
+        ${ovStat(Math.round(td.p) + 'g', `protein of ${fg.protein}g`, fg.protein && td.p >= fg.protein ? 'pos' : '')}
+        ${ovStat(AUD(td.cost, 0), fg.budget ? `of ${AUD(fg.budget, 0)}` : 'spent', fg.budget && td.cost > fg.budget ? 'neg' : '')}
+      </div>${ovBar(td.kcal / (fg.kcal || 1), kLeft < 0 ? 'over' : '')}`) +
+    ovCard('health', 'body', 'Body', 'water · sleep', `<div class="ov-row">
+        ${ovStat((water / 1000).toFixed(1) + ' L', `of ${(wGoal / 1000).toFixed(1)} L water`, water >= wGoal ? 'pos' : '')}
+        ${ovStat(lastN ? lastN.hours.toFixed(1) + 'h' : '—', lastN && lastN.date === iso ? 'slept last night' : 'last sleep')}
+        ${ovStat(nights.length ? avgOf(nights, s => s.hours).toFixed(1) + 'h' : '—', '7-night avg')}
+      </div>${ovBar(water / wGoal)}`) +
+    ovCard('health', 'train', 'Training', 'last 7 days', `<div class="ov-row">
+        ${ovStat(km.toFixed(1), `km · ${runs.length} run${runs.length === 1 ? '' : 's'}`)}
+        ${ovStat(pb ? `${pb.weight}kg` : '—', pb ? `${esc(pb.lift)} PB` : 'no PBs yet')}
+        ${ovStat(S.health.splits.length, 'workout days')}
+      </div>`);
+}
+
+function overviewMoney() {
+  const wk = periodIsWeekly(), spent = wk ? spentThisWeek() : spentThisMonth();
+  const limit = S.money.budgets.reduce((a, b) => a + (wk ? b.limit / (52 / 12) : b.limit), 0);
+  const over = S.money.budgets.filter(b => { const l = wk ? b.limit / (52 / 12) : b.limit; return l && (wk ? spentThisWeek(b.category) : spentThisMonth(b.category)) > l; });
+  const bills = upcomingBills().slice(0, 3), pv = portfolioValue(), pc = portfolioDayChange();
+  const goals = (S.money.goals || []).slice(0, 2);
+  return ovActs([['addTxn', 'card', 'Expense'], ['addBill', 'receipt', 'Bill'], ['refreshPrices', 'repeat', 'Prices'], ['addMoneyGoal', 'target', 'Goal']]) +
+    ovCard('money', 'spend', 'Spending', wk ? 'this week' : 'this month', `<div class="ov-row">
+        ${ovStat(AUD(spent, 0), limit ? `of ${AUD(limit, 0)} budget` : 'spent', limit && spent > limit ? 'neg' : '')}
+        ${ovStat(AUD(balance(), 0), 'balance')}
+        ${ovStat(over.length || '✓', over.length ? `over budget` : 'budgets on track', over.length ? 'neg' : 'pos')}
+      </div>${limit ? ovBar(spent / limit, spent > limit ? 'over' : '') : ''}`) +
+    ovCard('money', 'bills', 'Bills', bills.length ? 'next due' : '', `<div class="list ov-list">${bills.map(b => `
+        <div class="item"><div class="body"><div class="t">${esc(b.name)}</div>
+          <div class="s ${b.status === 'over' ? 'neg' : ''}">${b.dd < 0 ? `${-b.dd}d overdue` : b.dd === 0 ? 'Due today' : `Due in ${b.dd}d`} · ${AUD(b.amount)}</div></div>
+          ${b.status !== 'ok' ? `<button class="btn sm" data-act="payBill" data-id="${b.id}">Paid</button>` : ''}</div>`).join('') || '<div class="empty">No bills yet</div>'}</div>`) +
+    ovCard('money', 'wealth', 'Wealth', 'portfolio', `<div class="ov-row">
+        ${ovStat(AUD(pv, 0), 'portfolio')}
+        ${ovStat(`${pc >= 0 ? '+' : '−'}${AUD(Math.abs(pc), 0)}`, 'today', pc >= 0 ? 'pos' : 'neg')}
+        ${ovStat(S.money.holdings.length, 'holdings')}
+      </div>${goals.map(g => `<div class="ov-goal"><div class="ov-gt"><span>${esc(g.name)}</span><span class="muted">${AUD(g.saved, 0)} / ${AUD(g.target, 0)}</span></div>${ovBar(g.target ? g.saved / g.target : 0)}</div>`).join('')}`);
+}
+
+function overviewSystems() {
+  const iso = todayISO(), wk = weekKey();
+  const habits = habitsToday(), hLeft = habits.filter(h => !(h.doneDays && h.doneDays[iso]));
+  const must = S.systems.weekly || [], mustLeft = must.filter(m => !m.weeks[wk]);
+  const goals = S.systems.goals || [], gOpen = goals.filter(g => !g.done);
+  const lastRv = (S.systems.reviews || []).slice().sort((a, b) => b.week.localeCompare(a.week))[0];
+  const reviewed = lastRv && lastRv.week === wk;
+  const check = (act, id, text, sub = '') => `<div class="check"><span class="box tap" data-act="${act}" data-id="${id}">${TICK}</span>
+      <span class="txt">${esc(text)}${sub ? `<span class="s muted">${esc(sub)}</span>` : ''}</span></div>`;
+  return `<button class="th-focus tap ov-focus ${S.systems.focus ? '' : 'empty'}" data-act="editFocus">${S.systems.focus ? esc(S.systems.focus) : 'Set a focus for today'}</button>` +
+    ovActs([['addHabit', 'repeat', 'Habit'], ['addGoal', 'target', 'Goal'], ['addWeekly', 'list-checks', 'Must-do'], ['writeReview', 'note', reviewed ? 'Review' : 'Review week']]) +
+    ovCard('systems', 'habits', 'Habits', habits.length ? `${habits.length - hLeft.length} of ${habits.length} today` : '', `<div class="list ov-list">${
+      hLeft.slice(0, 5).map(h => check('toggleHabit', h.id, h.text, [h.time, habitStreak(h) > 1 ? `${habitStreak(h)}-day streak` : ''].filter(Boolean).join(' · '))).join('')
+      || `<div class="empty">${habits.length ? 'All done today.' : 'No habits today.'}</div>`}</div>`) +
+    ovCard('systems', 'goals', 'This week', must.length ? `${must.length - mustLeft.length} of ${must.length} must-dos` : '', `<div class="list ov-list">${
+      mustLeft.slice(0, 4).map(m => check('toggleWeekly', m.id, m.text)).join('')
+      + gOpen.slice(0, 3).map(g => check('toggleGoal', g.id, g.text, 'Goal')).join('')
+      || `<div class="empty">${must.length || goals.length ? 'Everything ticked off.' : 'Add a weekly must-do or a goal.'}</div>`}</div>`) +
+    ovCard('systems', 'review', 'Review', reviewed ? 'done this week' : 'not done yet', `<div class="ov-note">${reviewed
+      ? `Reviewed ${fmtDay(lastRv.date || iso)}. ${esc((lastRv.change || '').slice(0, 90))}`
+      : new Date().getDay() === 0 ? 'It’s Sunday — two minutes on what worked and what to change.' : 'Write it at the end of the week.'}</div>`);
+}
+
+// ideas: capture a thought in one line, then jump back into recent notes and boards
+function overviewIdeas() {
+  const I = S.ideas, notes = I.notes.filter(n => !n.del), boards = I.boards || [];
+  const title = n => ((n.body || '').split(/\r?\n/).find(l => l.trim()) || 'New note').replace(/^#+\s*/, '').slice(0, 60);
+  const todos = notes.reduce((a, n) => a + ((n.body || '').match(/^[ \t]*[-*]?[ \t]*\[ \][ \t]*\S/gm) || []).length, 0);
+  const recent = [...notes.map(n => ({ k: 'n', u: n.u || 0, x: n })), ...boards.map(b => ({ k: 'b', u: b.u || 0, x: b }))].sort((a, b) => b.u - a.u).slice(0, 5);
+  const pinned = notes.filter(n => n.pin).slice(0, 6);
+  return `<div class="card ov-capture">
+      <textarea id="ovCap" rows="2" placeholder="Brain dump — type a thought, idea or plan…" autocapitalize="sentences"></textarea>
+      <div class="ov-cap-acts"><button class="btn sm" data-act="ovCapture" data-to="board">${ic('sticky')} To a board</button>
+        <button class="btn sm primary" data-act="ovCapture" data-to="note">${ic('note')} Save note</button></div>
+    </div>` +
+    ovActs([['addNote', 'note', 'Note'], ['nnTemplates', 'template', 'Template'], ['wbNew', 'sticky', 'Board'], ['ovTodos', 'list-checks', todos ? `To-dos · ${todos}` : 'To-dos']]) +
+    (pinned.length ? ovCard('ideas', 'notes', 'Pinned', '', `<div class="ov-chips">${pinned.map(n => `<button class="chip tap" data-act="openIdeaNote" data-id="${n.id}">${ic('pin', 'xs')} ${esc(title(n))}</button>`).join('')}</div>`) : '') +
+    ovCard('ideas', 'notes', 'Recent', `${notes.length} note${notes.length === 1 ? '' : 's'} · ${boards.length} board${boards.length === 1 ? '' : 's'}`, `<div class="list ov-list">${recent.map(r => r.k === 'n'
+      ? `<div class="item tap" data-act="openIdeaNote" data-id="${r.x.id}"><span class="att-ic">${ic('note')}</span><div class="body"><div class="t">${esc(title(r.x))}</div><div class="s">Note · ${fmtAgo(r.u)}</div></div></div>`
+      : `<div class="item tap" data-act="openIdeaBoard" data-id="${r.x.id}"><span class="att-ic">${ic('sticky')}</span><div class="body"><div class="t">${esc(r.x.name || 'Whiteboard')}</div><div class="s">Whiteboard · ${(r.x.objs || []).length} items · ${fmtAgo(r.u)}</div></div></div>`).join('')
+      || '<div class="empty">Nothing yet — type in the box above to start.</div>'}</div>`);
+}
+const OVERVIEW = { health: overviewHealth, money: overviewMoney, systems: overviewSystems, ideas: overviewIdeas };
 
 /* ---------- HOME ---------- */
 function renderHome() {
@@ -2659,6 +2767,7 @@ function renderHome() {
 function renderIdeas() {
   const seg = segOf('ideas');
   $('#view-ideas').innerHTML = segBar('ideas') + '<div id="ideasBody" class="ideas-body"></div>';
+  if (seg === 'overview') { $('#ideasBody').innerHTML = `<div class="ov">${overviewIdeas()}</div>`; return; }
   const fn = seg === 'board' ? window.renderIdeasBoard : window.renderIdeasNotes;
   if (typeof fn === 'function') fn($('#ideasBody'));
 }
@@ -3195,7 +3304,7 @@ function renderHealth() {
     </div>`;
 
   $('#view-health').innerHTML =
-    strip + segBar('health') + segBlocks('health', B);
+    (segOf('health') === 'overview' ? '' : strip) + segBar('health') + segBlocks('health', B);
 }
 
 /* ---------- MONEY ---------- */
@@ -4781,6 +4890,23 @@ const ACT = {
   setSeg(d) { S.settings.seg = S.settings.seg || {}; S.settings.seg[d.tab] = d.seg; save(false); tabScroll[d.tab] = 0; arranging = false; render(d.tab); window.scrollTo(0, 0); },
   toggleHomeDone() { homeDoneOpen = !homeDoneOpen; renderHome(); },
   quickAdd() { qaForceKind = ''; qaAddedN = 0; quickAddSheet(); },
+  /* ----- overviews ----- */
+  ovGo(d) { ACT.setSeg({ tab: d.tab, seg: d.seg }); },
+  ovWater(d) { ACT.water(d); render(currentTab); toast(`+${d.ml} ml water`, { undo: true }); },
+  ovTodos() { ACT.setSeg({ tab: 'ideas', seg: 'notes' }); if (ACT.nnGo) ACT.nnGo({ f: 'todo' }); },
+  ovCapture(d) {
+    const text = ($('#ovCap') || {}).value?.trim(); if (!text) { $('#ovCap')?.focus(); return; }
+    if (d.to === 'board') {
+      // into the board you used last (or a new one), as stickies — one per line
+      const b = (S.ideas.boards || []).slice().sort((a, b) => (b.u || 0) - (a.u || 0))[0];
+      if (b) ideasOpenBoard(b.id); else ACT.wbNewFrom({ tpl: '' });
+      setTimeout(() => { ACT.wbDump(); const ta = $('#wb_dump'); if (ta) ta.value = text; }, 120);
+      return;
+    }
+    const n = { id: uid(), folder: null, body: text, pin: false, c: Date.now(), u: Date.now() };
+    S.ideas.notes.push(n); save(); render(currentTab);
+    toast('Saved to Notes › Inbox', { action: { label: 'Open', fn: () => ideasOpenNote(n.id) } });
+  },
   search() { searchSheet(); },
   // Add saves and closes; Return saves and keeps the sheet open for the next one (a week's worth in one go)
   qaSaveTask(d = {}) {
@@ -5667,7 +5793,12 @@ document.addEventListener('click', e => {
     if (/^del[A-Z]/.test(a.dataset.act) && saveSeq > before && toastCount === tc) toast('Deleted', { undo: true });
   }
 });
-$$('.nav button').forEach(b => b.addEventListener('click', () => { if (b.dataset.tab === currentTab) { window.scrollTo({ top: 0, behavior: 'smooth' }); return; } render(b.dataset.tab); }));
+const toOverview = tab => { if (!SEGS[tab] || segOf(tab) === 'overview') return false; (S.settings.seg = S.settings.seg || {})[tab] = 'overview'; save(false); return true; };
+$$('.nav button').forEach(b => b.addEventListener('click', () => {
+  const tab = b.dataset.tab;
+  if (tab === currentTab) { if (toOverview(tab)) { render(tab); window.scrollTo(0, 0); } else window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
+  toOverview(tab); tabScroll[tab] = 0; render(tab);
+}));
 $('#btnSettings').addEventListener('click', openSettings);
 $('#btnSearch').addEventListener('click', () => ACT.search());
 $('#btnAdd').addEventListener('click', () => ACT.quickAdd());
