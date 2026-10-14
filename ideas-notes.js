@@ -16,6 +16,7 @@
   const CK = /^(\s*)[-*] \[( |x|X)\] ?(.*)$/;  // checklist line
   const BUL = /^(\s*)[-*] (.*)$/;               // bullet line (test after CK)
   const HEAD = /^(#{1,3}) (.*)$/;
+  const INDSVG = `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 5H11"/><path d="M21 12H11"/><path d="M21 19H11"/><path d="m3 8 4 4-4 4"/></svg>`;
   const TICKSVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l4 4 10-11"/></svg>`;
 
   const TEMPLATES = [
@@ -49,7 +50,7 @@
     return h === fid || (deep && h && (folderById(h) || {}).parent === fid);
   });
   const folderPath = fid => { const f = folderById(fid); if (!f) return 'Inbox'; const p = folderById(f.parent); return p ? `${p.name} › ${f.name}` : f.name; };
-  const fColor = f => (f && f.color) || 'var(--text-3)';
+  const fColor = f => (f && f.color && esc(f.color)) || 'var(--text-3)';
 
   const stripLine = l => {
     let m; l = l.replace(/\s↗$/, '');
@@ -58,7 +59,8 @@
     if ((m = BUL.exec(l))) return m[2];
     return l.replace(/\*\*/g, '');
   };
-  const lines = b => String(b || '').split('\n');
+  const nl = b => String(b || '').replace(/\r\n?/g, '\n');   // Windows / old-Mac line endings (pasted, imported, cloud)
+  const lines = b => nl(b).split('\n');
   const titleOf = n => { const l = lines(n.body).find(x => x.trim()); return l ? stripLine(l).replace(/\*\*/g, '').trim() || 'Untitled' : 'New note'; };
   const previewOf = n => {
     const ls = lines(n.body); const i = ls.findIndex(x => x.trim());
@@ -84,7 +86,9 @@
   const rerender = () => { if (currentTab === 'ideas') render('ideas'); };
 
   /* ---------- page state (survives re-renders) ---------- */
-  const nav = { f: undefined, q: '' };     // f: undefined = home, null = Inbox, 'trash', or a folder id
+  const nav = { f: undefined, q: '' };     // f: undefined = home, null = Inbox, 'trash', 'todo', or a folder id
+  const special = f => f === 'trash' || f === 'todo';
+  const navFolder = () => nav.f && !special(nav.f) ? nav.f : null;   // the folder a new note should land in
   const open = new Set();                  // folders expanded on the home list
   let qActive = false, qSel = null;         // the search box had the keyboard
 
@@ -101,7 +105,7 @@
       <div class="nn-row tap" data-act="openIdeaNote" data-id="${n.id}">
         <div class="nn-rt">${n.pin ? `<span class="nn-pinmark">${ic('pin')}</span>` : ''}${esc(titleOf(n))}</div>
         <div class="nn-rp">${pv ? esc(pv) : '<span class="muted">No additional text</span>'}</div>
-        <div class="nn-rm"><span>${esc(meta.join(''))}</span>${opts.folder && f ? `<span class="nn-fchip"><i style="background:${fColor(f)}"></i>${esc(f.name)}</span>` : ''}${c.t ? `<span class="nn-badge${c.d === c.t ? ' all' : ''}">${ic('check-square')}${c.d}/${c.t}</span>` : ''}</div>
+        <div class="nn-rm"><span>${esc(meta.join(''))}</span>${opts.folder && f ? `<span class="nn-fchip"><i style="background:${fColor(f)}"></i><span>${esc(f.name)}</span></span>` : ''}${c.t ? `<span class="nn-badge${c.d === c.t ? ' all' : ''}">${ic('check-square')}${c.d}/${c.t}</span>` : ''}</div>
       </div>
     </div>`;
   }
@@ -118,18 +122,19 @@
   /* ---------- the page ---------- */
   function renderIdeasNotes(el) {
     purge();
-    if (nav.f && nav.f !== 'trash' && !folderById(nav.f)) nav.f = undefined;   // folder gone (undo / other device)
+    if (nav.f && !special(nav.f) && !folderById(nav.f)) nav.f = undefined;   // folder gone (undo / other device)
     // keep the search box (and keyboard) if a re-render lands mid-typing
     // (the old box is already gone by now — renderIdeas() replaced the view — so go by what we tracked)
     const ae = document.activeElement, kept = qActive && (!ae || ae === document.body || ae.id === 'nnQ') ? qSel : null;
-    const inFolder = nav.f !== undefined && nav.f !== 'trash';
-    const search = nav.f === 'trash' ? '' : `<div class="nn-searchbar"><label class="nn-search">${ic('search')}
+    const inFolder = nav.f !== undefined && !special(nav.f);
+    const search = special(nav.f) ? '' : `<div class="nn-searchbar"><label class="nn-search">${ic('search')}
         <input id="nnQ" type="search" placeholder="${inFolder ? `Search ${esc(nav.f === null ? 'Inbox' : folderById(nav.f).name)}` : 'Search all notes'}" value="${esc(nav.q)}" autocomplete="off" enterkeyhint="search">
         ${nav.q ? `<button class="nn-qx" data-act="nnClearQ" aria-label="Clear search">${ic('x')}</button>` : ''}</label></div>`;
     let body;
-    if (nav.q.trim() && nav.f !== 'trash') body = resultsHTML();
+    if (nav.q.trim() && !special(nav.f)) body = resultsHTML();
     else if (nav.f === undefined) body = homeHTML();
     else if (nav.f === 'trash') body = trashHTML();
+    else if (nav.f === 'todo') body = todoHTML();
     else body = folderHTML(nav.f);
     el.innerHTML = `<div class="nn">${nav.f !== undefined ? crumbHTML() : ''}${search}<div class="nn-main">${body}</div></div>`;
     const q = $('#nnQ', el);
@@ -159,7 +164,7 @@
   function crumbHTML() {
     const f = folderById(nav.f), p = f && folderById(f.parent);
     const back = p ? { f: p.id, l: p.name } : { f: '', l: 'Notes' };
-    const name = nav.f === 'trash' ? 'Recently deleted' : f ? f.name : 'Inbox';
+    const name = nav.f === 'trash' ? 'Recently deleted' : nav.f === 'todo' ? 'Open to-dos' : f ? f.name : 'Inbox';
     const menu = f ? `<button class="iconbtn nn-more" data-act="nnFolderMenu" data-f="${f.id}" aria-label="Folder options">${ic('more')}</button>`
       : nav.f === 'trash' && I().notes.some(n => n.del) ? `<button class="btn sm ghost nn-empty-trash" data-act="nnEmptyTrash">Empty</button>` : '';
     return `<div class="nn-crumb">
@@ -181,7 +186,7 @@
   function homeHTML() {
     const all = live(), pins = all.filter(n => n.pin).sort(byRecent);
     const recents = all.filter(n => !n.pin).sort(byRecent).slice(0, 5);
-    const inbox = notesIn(null).length, del = I().notes.filter(n => n.del).length, tops = topFolders();
+    const inbox = notesIn(null).length, del = I().notes.filter(n => n.del).length, tops = topFolders(), todo = openItems().length;
     const intro = !all.length ? `<div class="card nn-intro">
         <div class="nn-intro-ic">${ic('lightbulb')}</div>
         <h3>Your brain-dump space</h3>
@@ -201,6 +206,8 @@
         <div class="nn-frow"><button class="nn-fmain tap" data-act="nnGo" data-f="inbox"><span class="nn-fic">${ic('note')}</span>
           <span class="nn-fname">Inbox<small>Unfiled notes</small></span><span class="nn-count">${inbox}</span></button><span class="nn-fgo">${ic('chevron')}</span></div>
         ${tops.map(f => folderRow(f)).join('')}
+        ${todo ? `<div class="nn-frow"><button class="nn-fmain tap" data-act="nnGo" data-f="todo"><span class="nn-fic">${ic('list-checks')}</span>
+          <span class="nn-fname">Open to-dos<small>Every unticked item, from every note</small></span><span class="nn-count">${todo}</span></button><span class="nn-fgo">${ic('chevron')}</span></div>` : ''}
         ${tops.length ? '' : `<div class="nn-fhint">No folders yet — add one per topic, like “Define Detailing” or “Uni”.</div>`}
         <div class="nn-frow"><button class="nn-fmain tap" data-act="nnGo" data-f="trash"><span class="nn-fic">${ic('trash')}</span>
           <span class="nn-fname">Recently deleted</span><span class="nn-count">${del}</span></button><span class="nn-fgo">${ic('chevron')}</span></div>
@@ -228,6 +235,32 @@
           <button class="btn sm" data-act="nnRestore" data-id="${n.id}">Restore</button>
           <button class="iconbtn nn-purge" data-act="nnPurge" data-id="${n.id}" aria-label="Delete forever">${ic('x')}</button></div>`;
       }).join('')}</div>`;
+  }
+
+  // every unticked, not-yet-sent checklist line across live notes: [{n, i, text}]
+  function openItems() {
+    const out = [];
+    live().sort(byRecent).forEach(n => lines(n.body).forEach((l, i) => {
+      const m = CK.exec(l);
+      if (m && m[2] === ' ' && m[3].trim() && !/\s↗$/.test(l)) out.push({ n, i, text: m[3] });
+    }));
+    return out;
+  }
+  function todoHTML() {
+    const items = openItems();
+    if (!items.length) return `<div class="empty nn-emptyf">${ic('list-checks')}Nothing open.<br>Unticked “- [ ]” items from all your notes show up here.</div>`;
+    const groups = []; items.forEach(it => { const g = groups[groups.length - 1]; if (g && g.n === it.n) g.items.push(it); else groups.push({ n: it.n, items: [it] }); });
+    return `<p class="nn-note">Tick them off here, or send one to Tasks to give it a day. ${items.length} open across ${groups.length} note${groups.length === 1 ? '' : 's'}.</p>
+      ${groups.map(g => { const f = folderById(homeOf(g.n)); return `<div class="section-head nn-tdh"><button class="link nn-tdn" data-act="openIdeaNote" data-id="${g.n.id}">${f ? `<i class="nn-dot" style="background:${fColor(f)}"></i>` : ''}<span>${esc(titleOf(g.n))}</span></button></div>
+        <div class="card nn-list">${g.items.map(it => `<div class="nn-td">
+          <button class="nn-vbox" data-act="nnTickLine" data-id="${g.n.id}" data-ln="${it.i}" aria-label="Tick"><span class="box"></span></button>
+          <span class="nn-tdt">${inline(it.text)}</span>
+          <button class="btn sm nn-tdgo" data-act="nnLineTask" data-id="${g.n.id}" data-ln="${it.i}">${ic('arrow-right')}Task</button></div>`).join('')}</div>`; }).join('')}`;
+  }
+  // the line still says what it said when the list was drawn (a sync may have moved things)
+  function openLine(d) {
+    const n = noteById(d.id), ls = n && lines(n.body), i = +d.ln, m = ls && CK.exec(ls[i] || '');
+    return m && m[2] === ' ' && !/\s↗$/.test(ls[i]) ? { n, ls, i, m } : null;
   }
 
   function matches(n, q) {
@@ -260,7 +293,7 @@
       f ? '' : parent ? `Inside ${esc(folderById(parent).name)}.` : 'One per topic — Define Detailing, Uni, Gym, Money…',
       `${field('Name', 'nn_fname', { val: f ? f.name : '', ph: parent ? 'e.g. Marketing' : 'e.g. Define Detailing' })}
        <div class="field"><span class="nn-lbl">Colour</span><div class="nn-swatches">${COLORS.map(c => `<button type="button" class="nn-sw-c${c === col ? ' on' : ''}" data-act="nnPickColor" data-c="${c}" style="background:${c}" aria-label="Colour"></button>`).join('')}</div></div>
-       <input type="hidden" id="nn_fcol" value="${col}"><input type="hidden" id="nn_fpar" value="${parent || ''}">`,
+       <input type="hidden" id="nn_fcol" value="${esc(col)}"><input type="hidden" id="nn_fpar" value="${parent || ''}">`,
       { save: 'nnSaveFolder', id: f ? f.id : '', saveLabel: f ? 'Save' : 'Create' });
     if (f) setTimeout(() => $('#nn_fname')?.select(), 0);
   }
@@ -316,7 +349,7 @@
     if (!n) { toast('That note no longer exists'); return; }
     if (n.del) { nav.f = 'trash'; nav.q = ''; go('ideas', 'notes'); toast('That note is in Recently deleted'); return; }
     if (isOpen()) { if (ed.id === id) return; closeEditor(); }
-    ed = { id, folder: homeOf(n), created: true, text: n.body, dirty: false, mode: n.body.trim() ? 'view' : 'edit' };
+    ed = { id, folder: homeOf(n), created: true, text: nl(n.body), dirty: false, mode: n.body.trim() ? 'view' : 'edit' };
     mount();
     if (ed.mode === 'edit') ed.ta.focus({ preventScroll: true });
   }
@@ -342,6 +375,7 @@
         <button data-tb="check" aria-label="Checklist">${ic('check-square')}</button>
         <button data-tb="head" aria-label="Heading">${ic('heading')}</button>
         <button data-tb="bullet" aria-label="Bullet list">${ic('list')}</button>
+        <button data-tb="indent" aria-label="Indent (Return on an empty item steps back out)">${INDSVG}</button>
         <button data-tb="bold" aria-label="Bold">${ic('bold')}</button>
         <button data-tb="task" class="nn-tbtask" aria-label="Send line to tasks">${ic('arrow-right')}<span>Task</span></button>
         <button data-tb="done" class="nn-tbdone">Done</button>
@@ -358,10 +392,11 @@
   function paint() {
     if (!isOpen()) return;
     const n = noteById(ed.id), el = ed.el, f = folderById(ed.folder);
+    if (n) ed.last = { pin: !!n.pin, c: n.c, folder: n.folder };
     $('.nn-eback', el).textContent = f ? f.name : nav.f === null ? 'Inbox' : 'Notes';
     $('.nn-epin', el).classList.toggle('on', !!(n && n.pin));
     $('.nn-epin', el).setAttribute('aria-label', n && n.pin ? 'Unpin' : 'Pin');
-    $('[data-ed="move"]', el).innerHTML = f ? `<i style="background:${fColor(f)}"></i>${esc(folderPath(f.id))}${ic('chevron-down')}` : `${ic('note')}Inbox${ic('chevron-down')}`;
+    $('[data-ed="move"]', el).innerHTML = f ? `<i style="background:${fColor(f)}"></i><span>${esc(folderPath(f.id))}</span>${ic('chevron-down')}` : `${ic('note')}<span>Inbox</span>${ic('chevron-down')}`;
     $('.nn-ewhen', el).textContent = n ? `Edited ${when(n.u).toLowerCase()}` : 'New note';
     const view = ed.mode === 'view';
     el.classList.toggle('viewing', view);
@@ -371,6 +406,8 @@
   }
   function grow() {
     const ta = ed.ta; if (!ta) return;
+    const len = ta.value.length, longer = len >= (ed.len || 0) && ta.style.height; ed.len = len;
+    if (longer) { if (ta.scrollHeight > ta.clientHeight) ta.style.height = ta.scrollHeight + 2 + 'px'; return; }
     const sc = $('.nn-escroll', ed.el), keep = sc.scrollTop;
     ta.style.height = 'auto';
     ta.style.height = Math.max(220, ta.scrollHeight + 2) + 'px';
@@ -455,19 +492,29 @@
     if (!isOpen()) return;
     const n = noteById(ed.id);
     if (ed.dirty) { flush(); paint(); return; }   // keep what's being typed; it lands on the new state
-    if (!n || n.del) {
-      if (!ed.created && !n) { paint(); return; }  // a new note that hasn't been saved yet
+    if (!n) {
+      // not in the incoming state: a new note not saved yet, or (sync) one made here that the
+      // other device hadn't seen yet — put it back rather than closing on what was typed
+      if (ed.created && ed.text.trim()) {
+        I().notes.push({ ...(ed.last || {}), id: ed.id, folder: folderById(ed.folder) ? ed.folder : null, body: ed.text, u: Date.now() });
+        save();
+      }
+      paint(); return;
+    }
+    if (n.del) {
       const el = ed.el; ed = null; el.remove(); vvOff();
       document.documentElement.classList.remove('ideas-open');
-      toast(n ? 'Note moved to Recently deleted' : 'Note was removed');
+      toast('Note moved to Recently deleted');
       return;
     }
     ed.folder = homeOf(n);
-    if (n.body !== ed.text) {
-      ed.text = n.body;
+    const body = nl(n.body);
+    if (body !== ed.text) {
+      ed.text = body;
       const ta = ed.ta, s = ta.selectionStart, e = ta.selectionEnd;
-      ta.value = n.body;
-      if (document.activeElement === ta) ta.setSelectionRange(Math.min(s, n.body.length), Math.min(e, n.body.length));
+      ta.value = body;
+      if (document.activeElement === ta) ta.setSelectionRange(Math.min(s, body.length), Math.min(e, body.length));
+      grow();
     }
     paint();
   });
@@ -513,15 +560,28 @@
     }
     input();
   }
-  // Return carries a list on; Return on an empty item ends it
+  // nest the line(s) one step in (or out); 2 spaces per level, 4 levels deep at most
+  function indent(dir) {
+    replaceLines(ls => ls.map(l => {
+      if (!l.trim() && ls.length > 1) return l;
+      if (dir > 0) return /^\s{8}/.test(l) ? l : '  ' + l;
+      return l.replace(/^(\t| {1,2})/, '');
+    }));
+  }
+  // Return carries a list on; Return on an empty item steps out a level, then ends the list
   function onKey(e) {
     if (e.key === 'Escape') { e.preventDefault(); ed.ta.blur(); return; }
+    if (e.key === 'Tab' && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); indent(e.shiftKey ? -1 : 1); return; }
     if (e.key !== 'Enter' || e.shiftKey || e.isComposing || e.metaKey || e.ctrlKey) return;
     const ta = ed.ta, v = ta.value, at = ta.selectionStart; if (ta.selectionEnd !== at) return;
     const [s] = lineBounds(v, at), line = v.slice(s, at);
     const m = /^(\s*)([-*] \[[ xX]\] |[-*] |(\d+)([.)]) )(.*)$/.exec(line); if (!m) return;
     e.preventDefault();
-    if (!m[5].trim() && v.slice(at, lineBounds(v, at)[1]).trim() === '') { ta.setRangeText('', s, at, 'end'); input(); return; }
+    if (!m[5].trim() && v.slice(at, lineBounds(v, at)[1]).trim() === '') {
+      if (m[1]) { const out = m[1].replace(/^(\t| {1,2})/, ''); ta.setRangeText(out, s, s + m[1].length, 'end'); ta.setSelectionRange(s + out.length + m[2].length, s + out.length + m[2].length); }
+      else ta.setRangeText('', s, at, 'end');
+      input(); return;
+    }
     let p = m[2];
     if (m[3]) p = (+m[3] + 1) + m[4] + ' ';
     else p = p.replace(/\[[xX]\]/, '[ ]');
@@ -592,6 +652,7 @@
   function runTool(k) {
     if (k === 'check' || k === 'head' || k === 'bullet') setPrefix(k);
     else if (k === 'bold') bold();
+    else if (k === 'indent') indent(1);
     else if (k === 'task') taskFromLine();
     else if (k === 'done') { ed.ta.blur(); if (ed.text.trim()) { ed.mode = 'view'; ed.swallow = Date.now(); paint(); } }
   }
@@ -709,10 +770,10 @@
     },
     nnExpand(d) { open.has(d.f) ? open.delete(d.f) : open.add(d.f); rerender(); },
     nnClearQ() { nav.q = ''; rerender(); $('#nnQ')?.focus({ preventScroll: true }); },
-    nnNew(d) { ideasNewNote(d.f || (nav.f && nav.f !== 'trash' ? nav.f : null)); },
-    nnNewFrom() { const q = nav.q.trim(); nav.q = ''; ideasNewNote(nav.f && nav.f !== 'trash' ? nav.f : null, q + '\n'); rerender(); },
+    nnNew(d) { ideasNewNote(d.f || navFolder()); },
+    nnNewFrom() { const q = nav.q.trim(); nav.q = ''; ideasNewNote(navFolder(), q + '\n'); rerender(); },
     nnTemplates(d) {
-      const f = d.f || (nav.f && nav.f !== 'trash' ? nav.f : '');
+      const f = d.f || navFolder() || '';
       openSheet(`<h3>New from template</h3><p class="desc">${f ? `Goes in ${esc(folderPath(f))}.` : 'A head start. Rename the first line and fill in the gaps.'}</p>
         <div class="nn-menu">${TEMPLATES.map(t => `<button class="nn-mrow tap" data-act="nnUseTemplate" data-k="${t.k}" data-f="${f}">${ic(t.icon)}<span>${esc(t.name)}<small>${esc(t.s)}</small></span></button>`).join('')}</div>`);
     },
@@ -798,6 +859,19 @@
       toast('Recently deleted emptied', { undo: true });
     },
     nnSendTasks() { if (isOpen()) sendUnticked(); },
+    nnTickLine(d) {
+      const x = openLine(d); if (!x) { rerender(); return; }
+      x.ls[x.i] = x.ls[x.i].replace(/\[ \]/, '[x]'); x.n.body = x.ls.join('\n'); x.n.u = Date.now();
+      save(); haptic(); rerender();
+      toast(`Ticked “${[...stripLine(x.ls[x.i])].slice(0, 40).join('').trim()}”`, { undo: true });
+    },
+    nnLineTask(d) {
+      const x = openLine(d); if (!x) { rerender(); return; }
+      const msg = lineToTask(x.m[3].replace(/\*\*/g, '').trim()); if (!msg) return;
+      x.ls[x.i] += SENT; x.n.body = x.ls.join('\n'); x.n.u = Date.now();
+      save(); haptic(); rerender();
+      toast(msg, { undo: true });
+    },
   });
 
   window.renderIdeasNotes = renderIdeasNotes;

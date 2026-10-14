@@ -294,11 +294,16 @@ let weatherCache = null;
 // so old shapes are upgraded wherever they arrive from
 function fresh(x) { return migrateIdeas(deepMerge(defaultState(), x)); }
 // the old flat Systems notes move into Ideas › Notes once (first line = title)
+// Runs whenever any are left, not just once: a phone still on the old cached version can
+// add one after the move (it keeps S.ideas as an unknown key), and it'd sit there unseen.
 function migrateIdeas(s) {
-  const I = s.ideas;
-  if (!I.mig) {
-    (s.systems.notes || []).forEach(n => I.notes.push({ id: n.id, folder: null,
-      body: [n.title, n.body].filter(Boolean).join('\n'), pin: false, c: n.updatedAt || Date.now(), u: n.updatedAt || Date.now() }));
+  const I = s.ideas, old = s.systems.notes || [];
+  if (!I.mig || old.length) {
+    old.forEach(n => {
+      const body = [n.title, n.body].filter(Boolean).join('\n').replace(/\r\n?/g, '\n');
+      if (!body.trim() || I.notes.some(x => x.id === n.id)) return;
+      I.notes.push({ id: n.id, folder: null, body, pin: false, c: n.updatedAt || Date.now(), u: n.updatedAt || Date.now() });
+    });
     s.systems.notes = []; I.mig = 1;
   }
   return s;

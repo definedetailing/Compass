@@ -61,6 +61,7 @@
 .nn-badge.all { color: var(--pos); }
 .nn-fchip { display: inline-flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .nn-fchip i { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.nn-fchip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }   /* the label, so a long folder name ellipsises instead of pushing the chevron out */
 
 /* folders list */
 .nn-folders { padding: 0 0 0 16px; overflow: hidden; }
@@ -184,3 +185,15 @@ html.ideas-open .toast { bottom: calc(var(--nn-kb, 0px) + 72px + var(--safe-b));
 .nn-ed:not(.viewing) .nn-emode { display: none; }
 .nn-sw:not(.swiping):not(.open) .nn-acts { visibility: hidden; }
 .nn-vck:not(.done) .box svg { visibility: hidden; }
+
+/* Open to-dos: every unticked item across notes */
+.nn-tdh { margin-top: 18px; }
+.nn-tdn { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; min-width: 0; max-width: 100%; font-size: 15px; font-weight: 600; color: var(--text); }
+.nn-tdn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nn-tdn .nn-dot { width: 9px; height: 9px; }
+.nn-td { display: flex; align-items: center; gap: 2px; padding: 4px 8px 4px 2px; min-height: 52px; }
+.nn-td + .nn-td { border-top: 1px solid var(--border); }
+.nn-td .nn-vbox { margin: 0; }
+.nn-tdt { flex: 1; min-width: 0; font-size: 15px; line-height: 1.35; overflow-wrap: anywhere; }
+.nn-tdgo { flex: none; min-height: 36px; color: var(--accent); gap: 3px; }
+.nn-tdgo .ic { width: 14px; height: 14px; }
