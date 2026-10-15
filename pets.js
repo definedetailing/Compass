@@ -2,7 +2,8 @@
    Pets & cursors — bought in the Shop (Systems › Goals › Shop).
 
    · A pet wanders anywhere on screen between the top bar and the tab
-     bar: walks to a spot, stops, sits, heads off again. Tap it for a heart and
+     bar: walks to a spot, stops, sits, heads off again. Drag it around
+     and fling it — it flies, bounces and lands (dizzy, if you threw hard). Tap it for a heart and
      a line about your day. Reduced-motion: it just sits there.
    · Cursors swap the mouse pointer (desktop only — phones have none).
    Both are equipped like any other shop item: S.ach.equip.pet / .cursor
@@ -117,6 +118,8 @@ function petTick(t) {
   if (!pet) return;
   const dt = Math.min(0.05, (t - (pet.last || t)) / 1000); pet.last = t;
   const b = petBounds();
+  if (pet.mode === 'held') { petDraw(); pet.raf = requestAnimationFrame(petTick); return; }
+  if (pet.mode === 'fly') { petFly(dt, b, t); petDraw(); pet.raf = requestAnimationFrame(petTick); return; }
   if (pet.mode === 'walk') {
     const dx = pet.tx - pet.x, dy = pet.ty - pet.y, d = Math.hypot(dx, dy), step = pet.def.speed * 1.4 * dt;
     if (d <= step) {
@@ -130,10 +133,89 @@ function petTick(t) {
   } else if (t > pet.until) { pet.mode = 'walk'; petNewTarget(); }
   pet.x = clamp(pet.x, b.minX, Math.max(b.minX, b.maxX));
   pet.y = clamp(pet.y, b.minY, Math.max(b.minY, b.maxY));
+  petDraw();
+  pet.raf = requestAnimationFrame(petTick);
+}
+function petDraw() {
   pet.el.style.transform = `translate(${pet.x.toFixed(1)}px, ${pet.y.toFixed(1)}px)`;
+  pet.el.style.setProperty('--spin', (pet.spin || 0).toFixed(1) + 'deg');
   pet.el.dataset.mode = pet.mode;
   pet.el.classList.toggle('left', pet.dir < 0);
-  pet.raf = requestAnimationFrame(petTick);
+}
+
+/* ---------- picking it up and throwing it ----------
+   Grab and drag anywhere; let go while moving and it flies — gravity pulls it
+   to the floor above the tab bar, it bounces off the walls, the top and the
+   floor, spins while airborne, and lands dizzy after a big throw. */
+const PET_G = 2600;   // gravity, px/s²
+function petSay(text, ms = 1600) {
+  const old = $('.pet-say'); if (old) old.remove();
+  const say = document.createElement('div'); say.className = 'pet-say';
+  say.textContent = text;
+  const r = pet.el.getBoundingClientRect();
+  say.style.left = clamp(r.left + r.width / 2, 110, innerWidth - 110) + 'px';
+  say.style.top = Math.max(8, r.top - 8) + 'px';
+  document.body.appendChild(say);
+  setTimeout(() => say.classList.add('out'), ms); setTimeout(() => say.remove(), ms + 400);
+}
+function petFly(dt, b, t) {
+  pet.vy += PET_G * dt;
+  pet.x += pet.vx * dt; pet.y += pet.vy * dt;
+  pet.spin += pet.vx * dt * 0.9;
+  pet.peak = Math.max(pet.peak || 0, Math.hypot(pet.vx, pet.vy));
+  const left = 0, right = innerWidth - 46, top = 0;
+  if (pet.x < left) { pet.x = left; pet.vx = Math.abs(pet.vx) * 0.6; petBonk(); }
+  if (pet.x > right) { pet.x = right; pet.vx = -Math.abs(pet.vx) * 0.6; petBonk(); }
+  if (pet.y < top) { pet.y = top; pet.vy = Math.abs(pet.vy) * 0.5; petBonk(); }
+  if (pet.y >= b.maxY && pet.vy > 0) {
+    pet.y = b.maxY;
+    if (pet.vy > 320) { pet.vy = -pet.vy * 0.42; pet.vx *= 0.75; petBonk(); }
+    else {
+      // landed: back on its feet, dizzy if that was a big one
+      const big = pet.peak > 1500;
+      pet.vx = pet.vy = 0; pet.spin = 0; pet.peak = 0;
+      pet.mode = big ? 'dizzy' : 'idle'; pet.until = t + (big ? 2200 : 900);
+      if (big) petSay(['Again!', 'Ow…', 'Wheee!', 'The room is spinning', 'I can fly!'][Math.floor(Math.random() * 5)]);
+    }
+  }
+}
+function petBonk() {
+  if (Math.hypot(pet.vx, pet.vy) < 260) return;
+  haptic();
+  pet.el.classList.remove('bonk'); void pet.el.offsetWidth; pet.el.classList.add('bonk');
+}
+function petGrab(e) {
+  if (!pet || e.button > 0) return;
+  e.preventDefault();
+  const r = pet.el.getBoundingClientRect();
+  const g = { id: e.pointerId, ox: e.clientX - r.left, oy: e.clientY - r.top, sx: e.clientX, sy: e.clientY, moved: false, hist: [{ x: e.clientX, y: e.clientY, t: performance.now() }] };
+  try { pet.el.setPointerCapture(e.pointerId); } catch (_) {}
+  const move = ev => {
+    if (ev.pointerId !== g.id) return;
+    if (!g.moved && Math.hypot(ev.clientX - g.sx, ev.clientY - g.sy) < 6) return;
+    if (!g.moved) { g.moved = true; pet.mode = 'held'; pet.spin = 0; $('.pet-say')?.remove(); haptic(); }
+    pet.x = clamp(ev.clientX - g.ox, 0, innerWidth - 46);
+    pet.y = clamp(ev.clientY - g.oy, 0, innerHeight - 44);
+    if (Math.abs(ev.movementX) > 0.5) pet.dir = ev.movementX < 0 ? -1 : 1;
+    g.hist.push({ x: ev.clientX, y: ev.clientY, t: performance.now() });
+    if (g.hist.length > 6) g.hist.shift();
+    if (!pet.raf || pet.el.dataset.mode !== 'held') petDraw();
+  };
+  const up = ev => {
+    if (ev.pointerId !== g.id) return;
+    pet.el.removeEventListener('pointermove', move); pet.el.removeEventListener('pointerup', up); pet.el.removeEventListener('pointercancel', up);
+    if (!g.moved) return;                         // a plain tap — the click handler says hi
+    pet.dragged = performance.now();
+    // throw speed from the last ~80 ms of the drag
+    const now = performance.now(), recent = g.hist.filter(h => now - h.t < 90), a = recent[0] || g.hist[0], z = g.hist[g.hist.length - 1];
+    const dt = Math.max(0.016, (z.t - a.t) / 1000);
+    pet.vx = clamp((z.x - a.x) / dt, -3200, 3200); pet.vy = clamp((z.y - a.y) / dt, -3200, 3200);
+    if (now - z.t > 120) pet.vx = pet.vy = 0;     // held still before letting go: just drop it
+    pet.peak = 0; pet.mode = 'fly'; pet.last = 0;
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) { pet.y = petBounds().maxY; pet.mode = 'sit'; pet.vx = pet.vy = 0; petDraw(); return; }
+    if (!pet.raf) pet.raf = requestAnimationFrame(petTick);
+  };
+  pet.el.addEventListener('pointermove', move); pet.el.addEventListener('pointerup', up); pet.el.addEventListener('pointercancel', up);
 }
 function applyPet() {
   const def = PETS.find(x => x.id === (S.ach && S.ach.equip && S.ach.equip.pet));
@@ -143,15 +225,18 @@ function applyPet() {
   el.className = `pet gait-${def.gait}`; el.setAttribute('aria-label', `${def.name} — tap to say hi`);
   el.innerHTML = `<span class="pet-body">${petSVG(def)}</span>`;
   el.addEventListener('click', petPoke);
+  el.addEventListener('pointerdown', petGrab);
+  el.innerHTML += '<span class="pet-stars"><i></i><i></i><i></i></span>';
   document.body.appendChild(el);
   const b = petBounds();
-  pet = { el, def, x: b.minX + 20, y: b.maxY, dir: 1, mode: 'walk', until: 0, last: 0 };
+  pet = { el, def, x: b.minX + 20, y: b.maxY, dir: 1, mode: 'walk', until: 0, last: 0, vx: 0, vy: 0, spin: 0 };
   petNewTarget();
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) { pet.mode = 'sit'; pet.el.dataset.mode = 'sit'; pet.el.style.transform = `translate(${pet.x}px, ${pet.y}px)`; return; }
   pet.raf = requestAnimationFrame(petTick);
 }
 function petPoke(e) {
   e.stopPropagation(); if (!pet) return;
+  if (pet.dragged && performance.now() - pet.dragged < 400) return;   // that was a throw, not a tap
   haptic();
   pet.mode = 'happy'; pet.until = performance.now() + 2200; pet.el.dataset.mode = 'happy';
   const old = $('.pet-say'); if (old) old.remove();

@@ -2,7 +2,7 @@
    BUMP `CACHE` whenever index.html's ?v= changes. The activate handler deletes
    every cache that isn't the current one, so bumping it is what actually forces
    an installed home-screen app off a stale shell. */
-const CACHE = 'compass-v52';
+const CACHE = 'compass-v53';
 const ASSETS = [
   './', './index.html', './styles.css', './app.js', './manifest.webmanifest',
   './ideas-notes.js', './ideas-notes.css', './ideas-board.js', './ideas-board.css', './mission.js', './mission.css', './streaks.js', './streaks.css', './pbs.js', './pbs.css', './achieve.js', './achieve.css', './pets.js', './pets.css', './stocks.js', './stocks.css',
