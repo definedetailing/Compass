@@ -1,8 +1,8 @@
 /* ============================================================
    Pets & cursors — bought in the Shop (Systems › Goals › Shop).
 
-   · A pet walks along the bottom of the screen, just above the tab
-     bar: wanders, stops, sits, sometimes hops. Tap it for a heart and
+   · A pet wanders anywhere on screen between the top bar and the tab
+     bar: walks to a spot, stops, sits, heads off again. Tap it for a heart and
      a line about your day. Reduced-motion: it just sits there.
    · Cursors swap the mouse pointer (desktop only — phones have none).
    Both are equipped like any other shop item: S.ach.equip.pet / .cursor
@@ -98,29 +98,39 @@ const PET_LINES = [
   () => { const w = S.health.water.log[todayISO()] || 0, g = S.health.water.goalMl || 1; return w >= g ? 'Water goal smashed.' : `${((g - w) / 1000).toFixed(1)} L of water to go.`; },
   () => ['Hi!', 'Go train.', '*happy noises*', 'Pat pat.', 'You got this.', 'No reels today, yeah?'][Math.floor(Math.random() * 6)],
 ];
-let pet = null;   // {el, def, x, dir, mode, until, last, raf}
+let pet = null;   // {el, def, x, y, tx, ty, dir, mode, until, last, raf}
+// the box a pet can wander in: below the top bar, above the tab bar, right of the desktop side nav
 function petBounds() {
-  const side = matchMedia('(min-width: 900px)').matches && $('.nav') && $('.nav').getBoundingClientRect().width < 200 ? $('.nav').getBoundingClientRect().right : 0;
-  return { min: side + 8, max: innerWidth - 52 };
+  const nav = $('.nav'), nr = nav && nav.getBoundingClientRect();
+  const side = nr && nr.width < 200 && nr.height > innerHeight / 2 ? nr.right : 0;
+  const bottomBar = nr && nr.width >= 200 ? nr.top : innerHeight;
+  const top = ($('.topbar') ? $('.topbar').getBoundingClientRect().bottom : 60) + 4;
+  return { minX: side + 8, maxX: innerWidth - 54, minY: top, maxY: bottomBar - 46 };
+}
+function petNewTarget() {
+  const b = petBounds();
+  // a third of the time it heads back down to "the floor" above the tab bar
+  pet.tx = b.minX + Math.random() * Math.max(0, b.maxX - b.minX);
+  pet.ty = Math.random() < 0.33 ? b.maxY : b.minY + Math.random() * Math.max(0, b.maxY - b.minY);
 }
 function petTick(t) {
   if (!pet) return;
   const dt = Math.min(0.05, (t - (pet.last || t)) / 1000); pet.last = t;
-  if (t > pet.until) {
-    // pick what to do next: mostly wander, sometimes stop for a bit
-    const r = Math.random();
-    pet.mode = r < 0.55 ? 'walk' : r < 0.85 ? 'idle' : 'sit';
-    if (pet.mode === 'walk' && Math.random() < 0.4) pet.dir *= -1;
-    pet.until = t + (pet.mode === 'walk' ? 2500 + Math.random() * 5000 : 1500 + Math.random() * 3500);
-  }
   const b = petBounds();
   if (pet.mode === 'walk') {
-    pet.x += pet.dir * pet.def.speed * dt;
-    if (pet.x < b.min) { pet.x = b.min; pet.dir = 1; }
-    if (pet.x > b.max) { pet.x = b.max; pet.dir = -1; }
-  }
-  pet.x = clamp(pet.x, b.min, Math.max(b.min, b.max));
-  pet.el.style.transform = `translateX(${pet.x.toFixed(1)}px)`;
+    const dx = pet.tx - pet.x, dy = pet.ty - pet.y, d = Math.hypot(dx, dy), step = pet.def.speed * 1.4 * dt;
+    if (d <= step) {
+      pet.x = pet.tx; pet.y = pet.ty;
+      pet.mode = Math.random() < 0.6 ? 'idle' : 'sit';
+      pet.until = t + 1500 + Math.random() * 4000;
+    } else {
+      pet.x += dx / d * step; pet.y += dy / d * step;
+      if (Math.abs(dx) > 1) pet.dir = dx < 0 ? -1 : 1;
+    }
+  } else if (t > pet.until) { pet.mode = 'walk'; petNewTarget(); }
+  pet.x = clamp(pet.x, b.minX, Math.max(b.minX, b.maxX));
+  pet.y = clamp(pet.y, b.minY, Math.max(b.minY, b.maxY));
+  pet.el.style.transform = `translate(${pet.x.toFixed(1)}px, ${pet.y.toFixed(1)}px)`;
   pet.el.dataset.mode = pet.mode;
   pet.el.classList.toggle('left', pet.dir < 0);
   pet.raf = requestAnimationFrame(petTick);
@@ -134,8 +144,10 @@ function applyPet() {
   el.innerHTML = `<span class="pet-body">${petSVG(def)}</span>`;
   el.addEventListener('click', petPoke);
   document.body.appendChild(el);
-  pet = { el, def, x: petBounds().min + 20, dir: 1, mode: 'walk', until: 0, last: 0 };
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) { pet.mode = 'sit'; pet.el.dataset.mode = 'sit'; pet.el.style.transform = `translateX(${pet.x}px)`; return; }
+  const b = petBounds();
+  pet = { el, def, x: b.minX + 20, y: b.maxY, dir: 1, mode: 'walk', until: 0, last: 0 };
+  petNewTarget();
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) { pet.mode = 'sit'; pet.el.dataset.mode = 'sit'; pet.el.style.transform = `translate(${pet.x}px, ${pet.y}px)`; return; }
   pet.raf = requestAnimationFrame(petTick);
 }
 function petPoke(e) {
@@ -148,6 +160,7 @@ function petPoke(e) {
   say.innerHTML = `<span class="pet-heart">♥</span>${esc(line)}`;
   const r = pet.el.getBoundingClientRect();
   say.style.left = clamp(r.left + r.width / 2, 110, innerWidth - 110) + 'px';
+  say.style.top = Math.max(8, r.top - 8) + 'px';
   document.body.appendChild(say);
   setTimeout(() => say.classList.add('out'), 2600); setTimeout(() => say.remove(), 3000);
 }

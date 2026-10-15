@@ -18,6 +18,9 @@ async function yahoo(symbol) {
         prev: (typeof m.chartPreviousClose === 'number' ? m.chartPreviousClose
               : typeof m.previousClose === 'number' ? m.previousClose : m.regularMarketPrice),
         currency: m.currency || 'USD',
+        time: m.regularMarketTime || 0,          // unix seconds of that price
+        name: m.longName || m.shortName || '',
+        hi52: m.fiftyTwoWeekHigh || null, lo52: m.fiftyTwoWeekLow || null,
       };
     } catch (e) { /* try next host */ }
   }

@@ -2570,7 +2570,8 @@ function overviewMoney() {
   const over = S.money.budgets.filter(b => { const l = wk ? b.limit / (52 / 12) : b.limit; return l && (wk ? spentThisWeek(b.category) : spentThisMonth(b.category)) > l; });
   const bills = upcomingBills().slice(0, 3), pv = portfolioValue(), pc = portfolioDayChange();
   const goals = (S.money.goals || []).slice(0, 2);
-  return ovActs([['addTxn', 'card', 'Expense'], ['addBill', 'receipt', 'Bill'], ['refreshPrices', 'repeat', 'Prices'], ['addMoneyGoal', 'target', 'Goal']]) +
+  return (typeof pfCard === 'function' ? pfCard('money', { list: true }) : '') +
+    ovActs([['addTxn', 'card', 'Expense'], ['addBill', 'receipt', 'Bill'], ['addHolding', 'trending', 'Shares'], ['addMoneyGoal', 'target', 'Goal']]) +
     ovCard('money', 'spend', 'Spending', wk ? 'this week' : 'this month', `<div class="ov-row">
         ${ovStat(AUD(spent, 0), limit ? `of ${AUD(limit, 0)} budget` : 'spent', limit && spent > limit ? 'neg' : '')}
         ${ovStat(AUD(balance(), 0), 'balance')}
@@ -2580,11 +2581,7 @@ function overviewMoney() {
         <div class="item"><div class="body"><div class="t">${esc(b.name)}</div>
           <div class="s ${b.status === 'over' ? 'neg' : ''}">${b.dd < 0 ? `${-b.dd}d overdue` : b.dd === 0 ? 'Due today' : `Due in ${b.dd}d`} · ${AUD(b.amount)}</div></div>
           ${b.status !== 'ok' ? `<button class="btn sm" data-act="payBill" data-id="${b.id}">Paid</button>` : ''}</div>`).join('') || '<div class="empty">No bills yet</div>'}</div>`) +
-    ovCard('money', 'wealth', 'Wealth', 'portfolio', `<div class="ov-row">
-        ${ovStat(AUD(pv, 0), 'portfolio')}
-        ${ovStat(`${pc >= 0 ? '+' : '−'}${AUD(Math.abs(pc), 0)}`, 'today', pc >= 0 ? 'pos' : 'neg')}
-        ${ovStat(S.money.holdings.length, 'holdings')}
-      </div>${goals.map(g => `<div class="ov-goal"><div class="ov-gt"><span>${esc(g.name)}</span><span class="muted">${AUD(g.saved, 0)} / ${AUD(g.target, 0)}</span></div>${ovBar(g.target ? g.saved / g.target : 0)}</div>`).join('')}`);
+    (goals.length ? ovCard('money', 'wealth', 'Savings goals', '', goals.map(g => `<div class="ov-goal"><div class="ov-gt"><span>${esc(g.name)}</span><span class="muted">${AUD(g.saved, 0)} / ${AUD(g.target, 0)}</span></div>${ovBar(g.target ? g.saved / g.target : 0)}</div>`).join('')) : '');
 }
 
 function overviewSystems() {
@@ -2740,6 +2737,7 @@ function renderHome() {
     ${typeof missionCard === 'function' ? missionCard() : ''}
     ${rings}
     ${typeof streakStrip === 'function' ? streakStrip() : ''}
+    ${typeof pfHomeCard === 'function' ? pfHomeCard() : ''}
     ${planCard()}
 
     <div class="section-head" id="upnext"><h3>${hourNow >= 18 ? 'Rest of today' : 'Up next'}</h3>
@@ -3324,6 +3322,9 @@ function renderMoney() {
   // Six separate sections, so each heading on the left pairs with one on the right:
   //   Portfolio | Bills · Holdings | Budgets · Money goals | Money tracker
   // Every pair shares a grid row, which is what makes the headings line up exactly.
+  // stocks.js draws the portfolio (chart, ranges, holdings) as one card
+  if (typeof pfCard === 'function') B.push({ key:'value', name:'Portfolio', grow:true, html: pfCard('wealth', { list: true }) });
+  else {
   B.push({ key:'value', name:'Portfolio value', html: `
     <div class="money-value">
       <div class="card-label" style="margin:0">Portfolio</div>
@@ -3353,6 +3354,7 @@ function renderMoney() {
             <div class="s ${dc>=0?'pos':'neg'}">${q?`${dc>=0?'+':''}${pctc.toFixed(2)}%`:'…'}</div></div>
         </div>`; }).join('') || `<div class="empty">Add stocks/ETFs (e.g. VAS.AX, VOO)</div>`}
     </div></div>` });
+  }
 
   B.push({ key:'goals', name:'Money goals', grow:true, html: `
     <div class="section-head"><h3>Money goals</h3><button class="link" data-act="addMoneyGoal">+ Goal</button></div>

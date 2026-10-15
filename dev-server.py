@@ -76,10 +76,13 @@ def slim_activity(a):
     }
 
 
-def yahoo_chart(symbol):
+CHART_RANGES = {"1mo": "1d", "6mo": "1d", "1y": "1d", "5y": "1wk", "max": "1wk"}
+
+
+def yahoo_chart(symbol, rng="1mo"):
     for host in ("query1.finance.yahoo.com", "query2.finance.yahoo.com"):
         try:
-            url = f"https://{host}/v8/finance/chart/{urllib.parse.quote(symbol)}?range=1mo&interval=1d"
+            url = f"https://{host}/v8/finance/chart/{urllib.parse.quote(symbol)}?range={rng}&interval={CHART_RANGES[rng]}"
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; Compass/1.0)"})
             with urllib.request.urlopen(req, timeout=8) as r:
                 j = json.load(r)
@@ -91,7 +94,7 @@ def yahoo_chart(symbol):
                 if isinstance(v, (int, float)):
                     T.append(t[i]); C.append(v)
             if len(C) >= 2:
-                return {"t": T, "c": C}
+                return {"t": T, "c": C, "currency": res.get("meta", {}).get("currency", "")}
         except Exception:
             continue
     return None
@@ -109,7 +112,8 @@ def yahoo(symbol):
             if not isinstance(price, (int, float)):
                 continue
             prev = m.get("chartPreviousClose", m.get("previousClose", price))
-            return {"price": price, "prev": prev, "currency": m.get("currency", "USD")}
+            return {"price": price, "prev": prev, "currency": m.get("currency", "USD"), "time": m.get("regularMarketTime", 0),
+                    "name": m.get("longName") or m.get("shortName") or "", "hi52": m.get("fiftyTwoWeekHigh"), "lo52": m.get("fiftyTwoWeekLow")}
         except Exception:
             continue
     return None
@@ -323,9 +327,11 @@ class H(http.server.SimpleHTTPRequestHandler):
             qs = urllib.parse.urlparse(self.path).query
             raw = urllib.parse.parse_qs(qs).get("symbols", [""])[0]
             syms = [s.strip().upper() for s in raw.split(",") if s.strip()][:40]
+            rng = urllib.parse.parse_qs(qs).get("range", ["1mo"])[0]
+            rng = rng if rng in CHART_RANGES else "1mo"
             out = {}
             for s in syms:
-                ch = yahoo_chart(s)
+                ch = yahoo_chart(s, rng)
                 if ch:
                     out[s] = ch
             return self._json(200, out)
