@@ -240,6 +240,7 @@ function defaultState() {
         { id: uid(), lift: 'Deadlift', weight: 0, reps: 1, date: t },
       ],
       water: { goalMl: 3000, log: {} },
+      gymLog: [],                    // {id, date, splitId, name} — one gym session, picked by split
       runs: [],
       sleep: [],
       sleepGoal: 8,                  // hours per night
@@ -278,6 +279,7 @@ function defaultState() {
       ],
       habits: [],                    // {id, text, time:"HH:MM", days:[0-6] (empty = every day), doneDays:{}}
       roughDays: {},                 // iso -> true; a day you called rough (streaks forgive it)
+      streaks: { log: { stretch: {}, read: {}, noreels: {} }, best: {}, perWeek: { gym: 5, run: 5 } },   // see streaks.js
       reviews: [],                   // {week, date, worked, change, stats}
     },
   };
@@ -2499,13 +2501,13 @@ function go(tab, sec) {
 const SEGS = {
   health:  [['overview', 'Overview'], ['food', 'Food'], ['body', 'Body'], ['train', 'Training']],
   money:   [['overview', 'Overview'], ['spend', 'Spending'], ['bills', 'Bills'], ['wealth', 'Wealth']],
-  systems: [['overview', 'Overview'], ['habits', 'Habits'], ['goals', 'Goals'], ['review', 'Review']],
+  systems: [['overview', 'Overview'], ['streaks', 'Streaks'], ['habits', 'Habits'], ['goals', 'Goals'], ['review', 'Review']],
   ideas:   [['overview', 'Overview'], ['notes', 'Notes'], ['board', 'Whiteboard']],
 };
 const SEG_OF = {
   health:  { food: 'food', foodStats: 'food', water: 'body', sleep: 'body', split: 'train', runs: 'train', pbs: 'train' },
   money:   { tracker: 'spend', budgets: 'spend', bills: 'bills', value: 'wealth', chart: 'wealth', holdings: 'wealth', goals: 'wealth' },
-  systems: { habits: 'habits', badday: 'habits', focus: 'goals', goals: 'goals', weekly: 'goals', review: 'review' },
+  systems: { streaks: 'streaks', habits: 'habits', badday: 'habits', focus: 'goals', goals: 'goals', weekly: 'goals', review: 'review' },
   ideas:   { notes: 'notes', board: 'board' },
 };
 const segOf = tab => { const v = (S.settings.seg || {})[tab]; return SEGS[tab].some(s => s[0] === v) ? v : SEGS[tab][0][0]; };
@@ -2543,7 +2545,7 @@ function overviewHealth() {
   const km = runs.reduce((a, r) => a + (r.distanceKm || 0), 0);
   const pb = S.health.pbs.filter(p => p.weight > 0).sort((a, b) => b.date.localeCompare(a.date))[0];
   return ovActs([['qaFoodSheet', 'utensils', 'Food'], ['qaScan', 'barcode', 'Scan'], ['ovWater', 'droplet', '+250 ml', 'data-ml="250"'], ['liveStart', 'footprints', 'Run'],
-      ['addSleep', 'moon', 'Sleep'], ['addPB', 'dumbbell', 'PB'], ['addSplit', 'list-checks', 'Workout'], ['addRun', 'plus', 'Log run']]) +
+      ['addSleep', 'moon', 'Sleep'], ['addPB', 'dumbbell', 'PB'], ['gymPick', 'dumbbell', 'Log gym'], ['addRun', 'plus', 'Log run']]) +
     ovCard('health', 'food', 'Food', 'today', `<div class="ov-row">
         ${ovStat(kcalStr(Math.abs(kLeft)), kLeft >= 0 ? 'kcal left' : 'kcal over', kLeft < 0 ? 'neg' : '')}
         ${ovStat(Math.round(td.p) + 'g', `protein of ${fg.protein}g`, fg.protein && td.p >= fg.protein ? 'pos' : '')}
@@ -2557,7 +2559,7 @@ function overviewHealth() {
     ovCard('health', 'train', 'Training', 'last 7 days', `<div class="ov-row">
         ${ovStat(km.toFixed(1), `km · ${runs.length} run${runs.length === 1 ? '' : 's'}`)}
         ${ovStat(pb ? `${pb.weight}kg` : '—', pb ? `${esc(pb.lift)} PB` : 'no PBs yet')}
-        ${ovStat(S.health.splits.length, 'workout days')}
+        ${ovStat((S.health.gymLog || []).filter(g => g.date >= wkAgo).length, 'gym sessions')}
       </div>`);
 }
 
@@ -2595,6 +2597,7 @@ function overviewSystems() {
       <span class="txt">${esc(text)}${sub ? `<span class="s muted">${esc(sub)}</span>` : ''}</span></div>`;
   return `<button class="th-focus tap ov-focus ${S.systems.focus ? '' : 'empty'}" data-act="editFocus">${S.systems.focus ? esc(S.systems.focus) : 'Set a focus for today'}</button>` +
     ovActs([['addHabit', 'repeat', 'Habit'], ['addGoal', 'target', 'Goal'], ['addWeekly', 'list-checks', 'Must-do'], ['writeReview', 'note', reviewed ? 'Review' : 'Review week']]) +
+    (typeof streakOvCard === 'function' ? streakOvCard() : '') +
     ovCard('systems', 'habits', 'Habits', habits.length ? `${habits.length - hLeft.length} of ${habits.length} today` : '', `<div class="list ov-list">${
       hLeft.slice(0, 5).map(h => check('toggleHabit', h.id, h.text, [h.time, habitStreak(h) > 1 ? `${habitStreak(h)}-day streak` : ''].filter(Boolean).join(' · '))).join('')
       || `<div class="empty">${habits.length ? 'All done today.' : 'No habits today.'}</div>`}</div>`) +
@@ -2734,6 +2737,7 @@ function renderHome() {
     })() : `
     ${typeof missionCard === 'function' ? missionCard() : ''}
     ${rings}
+    ${typeof streakStrip === 'function' ? streakStrip() : ''}
     ${planCard()}
 
     <div class="section-head" id="upnext"><h3>${hourNow >= 18 ? 'Rest of today' : 'Up next'}</h3>
@@ -3435,6 +3439,7 @@ function renderSystems() {
   const wk = weekKey();
   const iso = todayISO();
   const B = [];
+  if (typeof streaksSection === 'function') B.push({ key:'streaks', name:'Streaks', html: streaksSection() });
   B.push({ key:'focus', name:'Current focus', html: `
     <div class="section-head"><h3>Current focus</h3></div>
     <div class="card"><textarea id="focusInput" data-bind="focus" placeholder="What are you focusing on right now?">${esc(S.systems.focus)}</textarea></div>` });
@@ -6031,6 +6036,7 @@ function checkMilestones() {
   });
   const w = S.health.water.log[iso] || 0;
   if (w >= S.health.water.goalMl) once(iso + ':water', 'Water goal reached');
+  if (typeof streakMilestones === 'function') streakMilestones(once);
   const g = FOOD().goals, t = dayTotals(iso);
   if (g.protein && t.p >= g.protein) once(iso + ':protein', `Protein goal hit — ${Math.round(t.p)} g`);
   // forget old keys so the store doesn't grow forever
@@ -6061,6 +6067,7 @@ function quickAddSheet() {
       <button class="qa-tile" data-act="addRun">${ic('footprints')}<span>Run</span></button>
       <button class="qa-tile" data-act="addNote">${ic('note')}<span>Note</span></button>
       <button class="qa-tile" data-act="addHabit">${ic('repeat')}<span>Habit</span></button>
+      <button class="qa-tile" data-act="gymPick">${ic('dumbbell')}<span>Gym</span></button>
     </div>
     <div class="card-label" style="margin:16px 0 8px">Water</div>
     <div class="qa-chips">${[250, 500, 750].map(ml => `<button class="chip qa-chip" data-act="qaWater" data-ml="${ml}">${ic('droplet')} +${ml} ml</button>`).join('')}</div>
