@@ -1,0 +1,27 @@
+/* Mission card (Today) + plan sheet — see mission.js */
+.mission-card { display: grid; gap: 12px; }
+.mission-card .mc-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.mission-card .mc-head { min-width: 0; cursor: pointer; }
+.mc-eyebrow { font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--text-3); font-weight: 600; }
+.mc-count { font-size: 15px; color: var(--text-2); margin-top: 2px; }
+.mc-count b { font-family: var(--font-num); font-size: 34px; line-height: 1; color: var(--text); font-weight: 700; margin-right: 4px; font-variant-numeric: tabular-nums; }
+.mc-streak { flex: none; display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 999px;
+  background: var(--accent-soft); color: var(--primary); font-weight: 700; font-variant-numeric: tabular-nums; }
+.mc-dots { display: grid; grid-template-columns: repeat(auto-fill, minmax(9px, 1fr)); gap: 4px; }
+.mc-dots i { display: block; aspect-ratio: 1; border-radius: 50%; background: var(--surface-2); }
+.mc-dots i.on { background: var(--primary); }
+.mc-dots i.miss { background: var(--border-strong); opacity: .55; }
+.mc-dots i.today { box-shadow: 0 0 0 2px var(--primary); }
+.mc-line { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; color: var(--text-2); }
+.mc-line .ic { flex: none; margin-top: 3px; color: var(--text-3); }
+.mc-prompt span { font-style: italic; }
+.mc-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.mc-actions .btn { flex: 1 1 140px; }
+.mc-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; margin: 6px 0 4px; }
+.mc-stats div { background: var(--surface-2); border-radius: var(--radius-sm); padding: 10px 12px; }
+.mc-stats b { display: block; font-family: var(--font-num); font-size: 18px; font-variant-numeric: tabular-nums; }
+.mc-stats span { font-size: 12px; color: var(--text-3); }
+.item.mc-now { box-shadow: inset 3px 0 0 var(--primary); }
+.item.mc-past .t { color: var(--text-3); text-decoration: line-through; }
+.field.mc-check { flex-direction: row; align-items: center; gap: 10px; }
+.field.mc-check input { width: 20px; height: 20px; accent-color: var(--primary); flex: none; }

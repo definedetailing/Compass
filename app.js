@@ -210,6 +210,7 @@ function defaultState() {
     // Ideas: notes in folders + whiteboards (ideas-notes.js / ideas-board.js)
     ideas: { mig: 0, folders: [], notes: [], boards: [] },
     gcal: { on: false, email: '', cals: {}, writeCal: '', linked: {}, lastSync: 0, err: '' },
+    mission: null,                 // imported time-boxed plan + daily log (mission.js)
     health: {
       splits: [
         { id: uid(), name: 'Push', ex: [
@@ -2629,6 +2630,7 @@ const OVERVIEW = { health: overviewHealth, money: overviewMoney, systems: overvi
 
 /* ---------- HOME ---------- */
 function renderHome() {
+  if (typeof applyMissionFocus === 'function') applyMissionFocus();
   const now = new Date(), iso = todayISO();
   const dateStr = `${DOW[now.getDay()]} ${now.getDate()} ${MON[now.getMonth()]}`;
   const wx = weatherCache;
@@ -2730,6 +2732,7 @@ function renderHome() {
       ${eventsForDate(iso).length ? `<div class="section-head"><h3>Still on today</h3></div>
         <div class="card list-card"><div class="list">${rowsAll.filter(r => r.html.includes('editEvent')).map(r => r.html).join('')}</div></div>` : ''}`;
     })() : `
+    ${typeof missionCard === 'function' ? missionCard() : ''}
     ${rings}
     ${planCard()}
 
@@ -5719,6 +5722,7 @@ function openSettings() {
 
     <div class="section-head" style="margin:14px 2px 8px"><h3>Data</h3></div>
     <div class="row"><button class="btn" data-act="exportData">Export backup</button><button class="btn" data-act="importData">Import</button></div>
+    <button class="btn" data-act="importPlan">${ic('flag')} Import a plan</button>
 
     <div class="sheet-actions"><button class="btn primary" data-act="saveSettings">Save settings</button></div>
     <div style="height:8px"></div>
