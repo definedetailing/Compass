@@ -211,6 +211,7 @@ function defaultState() {
     ideas: { mig: 0, folders: [], notes: [], boards: [] },
     gcal: { on: false, email: '', cals: {}, writeCal: '', linked: {}, lastSync: 0, err: '' },
     mission: null,                 // imported time-boxed plan + daily log (mission.js)
+    ach: { goals: [], quests: [], ledger: [], owned: {}, equip: {}, rewards: [] },   // achievements, quests, Lodestones (achieve.js)
     health: {
       splits: [
         { id: uid(), name: 'Push', ex: [
@@ -2507,7 +2508,7 @@ const SEGS = {
 const SEG_OF = {
   health:  { food: 'food', foodStats: 'food', water: 'body', sleep: 'body', split: 'train', runs: 'train', pbs: 'train' },
   money:   { tracker: 'spend', budgets: 'spend', bills: 'bills', value: 'wealth', chart: 'wealth', holdings: 'wealth', goals: 'wealth' },
-  systems: { streaks: 'streaks', habits: 'habits', badday: 'habits', focus: 'goals', goals: 'goals', weekly: 'goals', review: 'review' },
+  systems: { streaks: 'streaks', habits: 'habits', badday: 'habits', quests: 'goals', achieve: 'goals', relics: 'goals', focus: 'goals', goals: 'goals', weekly: 'goals', review: 'review' },
   ideas:   { notes: 'notes', board: 'board' },
 };
 const segOf = tab => { const v = (S.settings.seg || {})[tab]; return SEGS[tab].some(s => s[0] === v) ? v : SEGS[tab][0][0]; };
@@ -2596,8 +2597,9 @@ function overviewSystems() {
   const check = (act, id, text, sub = '') => `<div class="check"><span class="box tap" data-act="${act}" data-id="${id}">${TICK}</span>
       <span class="txt">${esc(text)}${sub ? `<span class="s muted">${esc(sub)}</span>` : ''}</span></div>`;
   return `<button class="th-focus tap ov-focus ${S.systems.focus ? '' : 'empty'}" data-act="editFocus">${S.systems.focus ? esc(S.systems.focus) : 'Set a focus for today'}</button>` +
-    ovActs([['addHabit', 'repeat', 'Habit'], ['addGoal', 'target', 'Goal'], ['addWeekly', 'list-checks', 'Must-do'], ['writeReview', 'note', reviewed ? 'Review' : 'Review week']]) +
+    ovActs([['addHabit', 'repeat', 'Habit'], ['addGoal', 'target', 'Goal'], ['addWeekly', 'list-checks', 'Must-do'], ['achShop', 'sparkles', 'Shop']]) +
     (typeof streakOvCard === 'function' ? streakOvCard() : '') +
+    (typeof achOvCard === 'function' ? achOvCard() : '') +
     ovCard('systems', 'habits', 'Habits', habits.length ? `${habits.length - hLeft.length} of ${habits.length} today` : '', `<div class="list ov-list">${
       hLeft.slice(0, 5).map(h => check('toggleHabit', h.id, h.text, [h.time, habitStreak(h) > 1 ? `${habitStreak(h)}-day streak` : ''].filter(Boolean).join(' · '))).join('')
       || `<div class="empty">${habits.length ? 'All done today.' : 'No habits today.'}</div>`}</div>`) +
@@ -3432,12 +3434,13 @@ function renderSystems() {
   const iso = todayISO();
   const B = [];
   if (typeof streaksSection === 'function') B.push({ key:'streaks', name:'Streaks', html: streaksSection() });
+  if (typeof achBlocks === 'function') B.push(...achBlocks());   // achieve.js
   B.push({ key:'focus', name:'Current focus', html: `
     <div class="section-head"><h3>Current focus</h3></div>
     <div class="card"><textarea id="focusInput" data-bind="focus" placeholder="What are you focusing on right now?">${esc(S.systems.focus)}</textarea></div>` });
 
   B.push({ key:'goals', name:'Goals', html: `
-    <div class="section-head"><h3>Goals</h3><button class="link" data-act="addGoal">+ Goal</button></div>
+    <div class="section-head"><h3>Quick goals</h3><button class="link" data-act="achQuick">+ Goal</button></div>
     <div class="card"><div class="list">
       ${S.systems.goals.map(g => `
         <div class="check ${g.done?'done':''}">
@@ -3578,7 +3581,7 @@ function renderSystems() {
 
 
   $('#view-systems').innerHTML =
-    segBar('systems') + segBlocks('systems', B);
+    segBar('systems') + (segOf('systems') === 'goals' && typeof walletCard === 'function' ? `<div class="ach-wallet-wrap">${walletCard()}</div>` : '') + segBlocks('systems', B);
 }
 
 /* ============================================================
@@ -6009,6 +6012,7 @@ function checkMilestones() {
   const w = S.health.water.log[iso] || 0;
   if (w >= S.health.water.goalMl) once(iso + ':water', 'Water goal reached');
   if (typeof streakMilestones === 'function') streakMilestones(once);
+  if (typeof achSweep === 'function') achSweep();
   const g = FOOD().goals, t = dayTotals(iso);
   if (g.protein && t.p >= g.protein) once(iso + ':protein', `Protein goal hit — ${Math.round(t.p)} g`);
   // forget old keys so the store doesn't grow forever

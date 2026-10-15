@@ -1,0 +1,156 @@
+/* Achievements, quests, relics, wallet and shop — see achieve.js */
+:root { --medal-off: #D6D6D1; }
+:root[data-theme="dark"] { --medal-off: #34343A; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --medal-off: #34343A; } }
+
+.ls-ic { width: 18px; height: 18px; display: inline-block; vertical-align: -3px; flex: none; }
+.ls-ic.sm { width: 14px; height: 14px; vertical-align: -2px; }
+.ls-ic.lg { width: 40px; height: 40px; filter: drop-shadow(0 4px 10px rgba(109, 91, 255, .35)); }
+.ls-ic.xl { width: 52px; height: 52px; }
+.medal { flex: none; display: block; overflow: visible; }
+.medal.got.m-diamond, .medal.got.m-prestige { filter: drop-shadow(0 0 6px color-mix(in srgb, currentColor 0%, transparent)); }
+.medal.got.m-prestige { animation: achGlow 2.6s ease-in-out infinite; }
+@keyframes achGlow { 50% { filter: drop-shadow(0 0 7px rgba(155, 92, 246, .75)); } }
+
+/* wallet */
+.ach-wallet-wrap { margin-top: var(--gap); }
+.ach-wallet { display: grid; gap: 14px; padding: 16px;
+  background: radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, #6D5BFF 14%, var(--surface)) 0%, var(--surface) 60%); }
+.aw-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.aw-bal { display: flex; align-items: center; gap: 10px; }
+.aw-bal b { display: block; font-family: var(--font-num); font-size: 32px; line-height: 1; font-variant-numeric: tabular-nums; }
+.aw-bal small, .aw-rank small { font-size: 12px; color: var(--text-3); }
+.aw-rank { text-align: right; display: grid; justify-items: end; gap: 2px; }
+.aw-rank b { font-size: 16px; }
+.aw-lvl { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; background: linear-gradient(90deg, #5EE7DF, #6D5BFF); color: #fff; }
+.aw-xp small { display: block; font-size: 12px; color: var(--text-3); margin-top: 6px; font-variant-numeric: tabular-nums; }
+.aw-xp .bar > i { background: linear-gradient(90deg, #5EE7DF, #6D5BFF); }
+.aw-case { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.aw-medal { display: grid; justify-items: center; gap: 2px; }
+.aw-medal b { font-family: var(--font-num); font-size: 14px; font-variant-numeric: tabular-nums; }
+.aw-medal.none b { color: var(--text-3); }
+.aw-q { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: var(--surface-2); color: var(--accent); }
+.aw-acts { display: flex; gap: 8px; flex-wrap: wrap; }
+.aw-acts .btn { flex: 1 1 auto; width: auto; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+
+.ach-stack { display: grid; gap: 10px; }
+.ach-stack > .card + .card { margin-top: 0; }
+.ach-empty { display: flex; align-items: center; gap: 12px; padding: 14px 16px; }
+.ach-empty > .ic { width: 28px; height: 28px; color: var(--accent); flex: none; }
+.ach-empty > div { flex: 1; min-width: 0; }
+.ach-empty small { display: block; font-size: 13px; color: var(--text-3); margin-top: 2px; }
+.ach-empty .btn { width: auto; }
+
+/* tiered achievement */
+.ach-goal { display: grid; gap: 12px; padding: 14px 16px; border-left: 3px solid var(--tier); }
+.ach-goal.maxed { background: linear-gradient(135deg, color-mix(in srgb, #9B5CF6 12%, var(--surface)), var(--surface)); }
+.ag-top { display: flex; align-items: center; gap: 10px; }
+.ag-name { flex: 1; min-width: 0; }
+.ag-name b { font-size: 16px; }
+.ag-name small { display: block; font-size: 12.5px; color: var(--text-3); margin-top: 2px; }
+.ag-name small .ic { vertical-align: -1px; color: var(--warn); }
+.ag-track { display: flex; align-items: flex-start; }
+.ag-step { display: grid; justify-items: center; gap: 2px; flex: none; min-width: 34px; }
+.ag-step small { font-size: 10.5px; color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ag-step.next .medal { animation: achPulse 1.8s ease-in-out infinite; }
+.ag-step.got small { color: var(--text); font-weight: 600; }
+@keyframes achPulse { 50% { transform: scale(1.12); } }
+.ag-link { flex: 1; height: 2px; margin-top: 18px; background: var(--border); border-radius: 2px; min-width: 6px; }
+.ag-bar > i { background: var(--tier); }
+.ag-acts { display: flex; gap: 6px; }
+.ag-acts .chip { min-height: 34px; padding: 6px 12px; font-size: 13.5px; cursor: pointer; }
+
+/* relic */
+.ach-relic { display: flex; align-items: center; gap: 12px; padding: 12px 16px; }
+.ar-body { flex: 1; min-width: 0; }
+.ar-body small { display: block; font-size: 12.5px; color: var(--text-3); margin-top: 2px; }
+.ach-relic .btn { width: auto; }
+.ach-relic.done { opacity: .8; }
+.ach-relic.done .ar-body b { color: #12B886; }
+
+/* quest */
+.ach-quest { display: grid; gap: 12px; padding: 14px 16px; position: relative; overflow: hidden; }
+.aq-top { display: flex; align-items: center; gap: 10px; }
+.aq-flag { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; flex: none;
+  background: linear-gradient(135deg, #5EE7DF, #6D5BFF); color: #fff; }
+.aq-name { flex: 1; min-width: 0; }
+.aq-name b { font-size: 16px; }
+.aq-name small { display: block; font-size: 12.5px; color: var(--text-3); margin-top: 2px; }
+.aq-path { display: flex; gap: 4px; }
+.aq-path i { flex: 1; height: 6px; border-radius: 3px; background: var(--surface-2); }
+.aq-path i.on { background: linear-gradient(90deg, #5EE7DF, #6D5BFF); }
+.aq-path i.cur { background: color-mix(in srgb, #6D5BFF 35%, transparent); animation: achPulseBar 1.6s ease-in-out infinite; }
+@keyframes achPulseBar { 50% { opacity: .5; } }
+.aq-steps { display: grid; gap: 8px; }
+.aq-s { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--text-3); }
+.aq-s svg { width: 16px; height: 16px; flex: none; }
+.aq-s.done svg { color: var(--pos); }
+.aq-s.done span { text-decoration: line-through; flex: 1; }
+.aq-s.locked { opacity: .75; }
+.aq-s .ic { width: 15px; height: 15px; flex: none; }
+.aq-cur { display: grid; gap: 8px; padding: 12px; border-radius: var(--radius-sm); background: color-mix(in srgb, #6D5BFF 9%, var(--surface-2)); }
+.aq-cur small { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: #6D5BFF; }
+:root[data-theme="dark"] .aq-cur small { color: #A99CFF; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .aq-cur small { color: #A99CFF; } }
+.aq-cur b { font-size: 17px; }
+.aq-cur .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+.aq-rw { opacity: .85; font-size: 13px; display: inline-flex; align-items: center; gap: 3px; }
+.aq-more { font-size: 12px; color: var(--text-3); padding-left: 24px; }
+.aq-prog { position: absolute; top: 14px; right: 16px; font-family: var(--font-num); font-size: 13px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.ach-quest.stepping .aq-cur { animation: achStep .38s ease forwards; }
+@keyframes achStep { to { transform: translateX(-24px); opacity: 0; } }
+.ach-done summary { cursor: pointer; font-size: 13px; color: var(--text-3); padding: 6px 2px; }
+.ach-done[open] { display: grid; gap: 10px; }
+.ach-quest.done { opacity: .85; }
+
+/* new-goal picker + tier inputs */
+.ach-picks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 6px; }
+.ach-pick { display: grid; justify-items: center; gap: 6px; padding: 16px 10px; border: none; border-radius: var(--radius-sm);
+  background: var(--surface-2); color: var(--text); font: inherit; text-align: center; cursor: pointer; }
+.ach-pick small { font-size: 12px; color: var(--text-3); }
+.ach-pick:active { transform: scale(.98); }
+.ach-tier-in { display: grid; gap: 6px; }
+.ati { display: flex; align-items: center; gap: 10px; }
+.ati span { flex: 1; font-weight: 600; }
+.ati span small { margin-left: 6px; font-weight: 500; color: var(--text-3); font-size: 12px; }
+.ati input { width: 110px; text-align: right; }
+
+/* the unlock banner */
+.ach-banner { position: fixed; left: 50%; top: calc(env(safe-area-inset-top, 0px) + 14px); z-index: 120; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 12px; padding: 10px 16px 10px 12px; min-width: min(340px, calc(100vw - 32px)); max-width: calc(100vw - 32px);
+  border-radius: 18px; background: var(--surface); box-shadow: var(--shadow-lg), 0 0 0 1px var(--border);
+  animation: achIn .45s cubic-bezier(.2, 1.4, .4, 1); cursor: pointer; }
+.ach-banner.out { transition: opacity .4s, transform .4s; opacity: 0; transform: translate(-50%, -16px); }
+@keyframes achIn { from { transform: translate(-50%, -40px) scale(.9); opacity: 0; } }
+.ach-b-medal { animation: achSpin .9s ease-out; }
+@keyframes achSpin { from { transform: rotateY(540deg) scale(.6); } }
+.ach-b-txt { flex: 1; min-width: 0; }
+.ach-b-txt small { display: block; font-size: 12px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ach-b-txt b { font-size: 17px; }
+.ach-b-amt { font-family: var(--font-num); font-weight: 700; font-size: 18px; display: flex; align-items: center; gap: 4px; color: #6D5BFF; }
+:root[data-theme="dark"] .ach-b-amt { color: #A99CFF; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .ach-b-amt { color: #A99CFF; } }
+@media (prefers-reduced-motion: reduce) { .ach-banner, .ach-b-medal, .ag-step.next .medal, .medal.got.m-prestige, .aq-path i.cur { animation: none; } }
+
+/* shop */
+.shop-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.shop-head h3 { margin: 0; }
+.shop-bal { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-num); font-weight: 700; font-size: 18px; font-variant-numeric: tabular-nums; }
+.shop-tabs { margin: 12px 0; }
+.shop-tabs button { min-width: 0; padding: 0 4px; font-size: 12.5px; }
+.shop-list { display: grid; gap: 8px; }
+.shop-item { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--surface-2); }
+.shop-item.on { box-shadow: inset 0 0 0 2px var(--accent); }
+.shop-item .btn { width: auto; }
+.si-body { flex: 1; min-width: 0; }
+.si-body small { display: flex; align-items: center; gap: 4px; font-size: 12.5px; color: var(--text-3); margin-top: 2px; }
+.si-sw { flex: none; width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center; }
+.si-sw.conf { grid-template-columns: repeat(3, 8px); gap: 3px; background: var(--surface); }
+.si-sw.conf i { width: 8px; height: 12px; border-radius: 2px; }
+.si-sw.ttl { background: var(--surface); font-size: 26px; font-weight: 700; color: var(--accent); }
+.si-sw.gift { background: var(--surface); color: var(--accent); }
+.shop-add { display: flex; gap: 8px; margin-top: 10px; }
+.shop-add input:first-child { flex: 1; min-width: 0; }
+.shop-add input:nth-child(2) { width: 72px; }
+.shop-add .btn { width: auto; }
+.ov-ls { display: inline-flex; align-items: center; gap: 4px; }
