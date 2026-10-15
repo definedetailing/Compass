@@ -295,7 +295,7 @@ let weatherCache = null;
 
 // every state that comes in (this device, the cloud, undo, a backup) goes through here,
 // so old shapes are upgraded wherever they arrive from
-function fresh(x) { return migrateIdeas(deepMerge(defaultState(), x)); }
+function fresh(x) { const s = migrateIdeas(deepMerge(defaultState(), x)); return typeof migratePBs === 'function' ? migratePBs(s) : s; }
 // the old flat Systems notes move into Ideas › Notes once (first line = title)
 // Runs whenever any are left, not just once: a phone still on the old cached version can
 // add one after the move (it keeps S.ideas as an unknown key), and it'd sit there unseen.
@@ -3157,15 +3157,7 @@ function renderHealth() {
         </div>
       </div>
     </div>` });
-  B.push({ key:'pbs', name:'Personal bests', html: `
-    <div class="section-head"><h3>Personal bests</h3><button class="link" data-act="addPB">+ PB</button></div>
-    <div class="card"><div class="list pb-list">
-      ${S.health.pbs.map(p => `
-        <div class="item tap" data-act="editPB" data-id="${p.id}">
-          <div class="body"><div class="t">${esc(p.lift)}</div><div class="s">${esc(fmtDay(p.date))}</div></div>
-          <div class="trail">${p.weight} kg${p.reps>1?` ×${p.reps}`:''}</div>
-        </div>`).join('') || '<div class="empty">No PBs yet</div>'}
-    </div></div>` });
+  if (typeof pbsBlock === 'function') B.push({ key:'pbs', name:'Personal bests', html: pbsBlock() });   // pbs.js
 
   // one card holding six sessions in a 2×3 grid; any spare slot invites a new day
   const SPLIT_SLOTS = 6;
@@ -4604,27 +4596,7 @@ const ACT = {
   },
   delSplit(d) { S.health.splits = S.health.splits.filter(x=>x.id!==d.id); save(); closeSheet(); render(currentTab); },
 
-  /* ----- PBs ----- */
-  addPB() { ACT.editPB({ id:'' }); },
-  editPB(d) {
-    const p = S.health.pbs.find(x=>x.id===d.id) || { lift:'', weight:'', reps:1, date:todayISO() };
-    sheetForm(d.id?'Edit PB':'New PB','',
-      field('Lift','pb_lift',{val:p.lift,ph:'e.g. Bench Press'}) +
-      `<div class="row">${field('Weight (kg)','pb_w',{type:'number',val:p.weight,inputmode:'decimal'})}${field('Reps','pb_r',{type:'number',val:p.reps,inputmode:'numeric'})}</div>` +
-      field('Date','pb_date',{type:'date',val:p.date}),
-      { save:'savePB', id:d.id, del:d.id?'delPB':'' });
-  },
-  savePB(d) {
-    const lift = val('pb_lift'); if (!lift) return toast('Add a lift');
-    if (!(num(val('pb_w')) > 0 && num(val('pb_w')) <= 1000)) return toast('Weight should be above 0 kg');
-    if (!(num(val('pb_r'), 1) >= 1 && num(val('pb_r'), 1) <= 100)) return toast('Reps should be 1 – 100');
-    if ((val('pb_date') || '') > todayISO()) return toast("A PB can't be in the future");
-    const rec = { lift, weight: num(val('pb_w')), reps: num(val('pb_r'),1), date: val('pb_date')||todayISO() };
-    if (d.id) Object.assign(S.health.pbs.find(x=>x.id===d.id), rec);
-    else S.health.pbs.push({ id: uid(), ...rec });
-    save(); closeSheet(); render(currentTab); toast('PB saved');
-  },
-  delPB(d) { S.health.pbs = S.health.pbs.filter(x=>x.id!==d.id); save(); closeSheet(); render(currentTab); },
+  /* ----- PBs: see pbs.js ----- */
 
   /* ----- runs ----- */
   addRun() { ACT.editRun({ id:'' }); },

@@ -1,0 +1,33 @@
+/* Personal bests — 1RM / Split tabs, history sheet, growth chart. See pbs.js */
+.pb-card .pb-seg { margin-bottom: 8px; }
+.pb-seg button small { font-size: 11px; color: var(--text-3); font-weight: 500; margin-left: 2px; }
+.pb-group { font-size: 11.5px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; color: var(--text-3); padding: 10px 2px 2px; flex: none; }
+.pb-list > .pb-group:first-child { padding-top: 2px; }
+.pb-row { gap: 10px; }
+.pb-spark { flex: none; opacity: .9; }
+.pb-trail { display: grid; justify-items: end; gap: 1px; white-space: nowrap; }
+.pb-trail b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.pb-grow, .pb-step { font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.pb-grow.up, .pb-step.up { color: var(--pos); }
+.pb-grow.down, .pb-step.down { color: var(--neg); }
+.pb-step { margin-left: 6px; }
+
+.pb-sh-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.pb-sh-top h3 { margin: 0; }
+.pb-now { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin: 14px 0 6px; }
+.pb-now-v { font-family: var(--font-num); font-size: 32px; font-weight: 700; line-height: 1.05; font-variant-numeric: tabular-nums; }
+.pb-now-g { text-align: right; display: grid; gap: 2px; }
+.pb-now-g b { font-family: var(--font-num); font-size: 19px; font-variant-numeric: tabular-nums; }
+.pb-now-g span { font-size: 12px; color: var(--text-3); }
+.pb-now-g.up b { color: var(--pos); }
+.pb-now-g.down b { color: var(--neg); }
+
+.pb-chart { width: 100%; height: auto; display: block; margin-top: 6px; overflow: visible; }
+.pb-chart text { font-size: 10px; fill: var(--text-3); font-family: var(--font); font-variant-numeric: tabular-nums; }
+.pb-chart .pb-grid { stroke: var(--border); stroke-dasharray: 3 3; }
+.pb-chart .pb-area { fill: color-mix(in srgb, var(--accent) 12%, transparent); }
+.pb-chart .pb-line { fill: none; stroke: var(--accent); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.pb-chart circle { fill: var(--surface); stroke: var(--accent); stroke-width: 2; }
+.pb-chart circle.last { fill: var(--accent); }
+.pb-hist .item { padding-top: 9px; padding-bottom: 9px; }
+.pb-hist .chip.pb-best { padding: 1px 6px; font-size: 11px; margin-left: 6px; background: var(--accent-soft); color: var(--accent); vertical-align: 1px; }
